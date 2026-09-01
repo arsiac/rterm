@@ -29,6 +29,9 @@ settings:
   terminal_font_size: 终端字号
   appearance_note: 终端配色、字体与字号均即时作用于所有已打开的终端标签。
   language: 语言
+  language_system: 跟随系统
+  language_zh_cn: 简体中文
+  language_en: English
   updates: 更新
   auto_check_updates: 启动时自动检查更新
   check_now: 立即检查

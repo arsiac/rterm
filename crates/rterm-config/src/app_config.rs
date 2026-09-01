@@ -68,7 +68,7 @@ impl LogLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Language {
-    /// 跟随系统区域（依次读取 `LC_ALL` → `LANG` → `LANGUAGE`，含 `zh` 取中文，否则英文）。
+    /// 跟随系统区域（跨平台读取系统 locale，含 `zh` 取中文，否则英文）。
     #[default]
     System,
     /// 简体中文（locale 码 `zh-CN`）。
@@ -82,11 +82,15 @@ impl Language {
     /// 设置面板下拉框选项（跟随系统在最前）。
     pub const ALL: [Language; 3] = [Language::System, Language::ZhCn, Language::En];
 
-    /// 环境变量含 `zh`（不分大小写）取中文，否则英文。
+    /// 检测系统语言：跨平台读取系统 locale（Windows 上 `LANG` 等环境变量通常为空，
+    /// 必须走系统 API），locale 串含 `zh` 取中文，否则英文。
+    ///
+    /// 依次尝试系统 API → `LC_ALL` → `LANG` → `LANGUAGE`，最后回退英文。
     pub fn detect_system() -> Language {
-        let lang = std::env::var("LC_ALL")
-            .or_else(|_| std::env::var("LANG"))
-            .or_else(|_| std::env::var("LANGUAGE"))
+        let lang = sys_locale::get_locale()
+            .or_else(|| std::env::var("LC_ALL").ok())
+            .or_else(|| std::env::var("LANG").ok())
+            .or_else(|| std::env::var("LANGUAGE").ok())
             .unwrap_or_default();
         if lang.to_lowercase().contains("zh") {
             Language::ZhCn

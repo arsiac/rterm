@@ -29,6 +29,9 @@ settings:
   terminal_font_size: Terminal font size
   appearance_note: Terminal color theme, font, and size all apply to all open tabs immediately.
   language: Language
+  language_system: Follow system
+  language_zh_cn: Simplified Chinese
+  language_en: English
   updates: Updates
   auto_check_updates: Automatically check for updates on startup
   check_now: Check now

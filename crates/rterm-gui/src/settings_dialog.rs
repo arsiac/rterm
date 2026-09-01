@@ -24,6 +24,29 @@ use iced::widget::{
 };
 use iced::{Border, Element, Length, Theme};
 use rterm_config::{Language, LogLevel};
+use std::fmt;
+
+/// 语言下拉框项的本地化展示名：随当前 UI 语言变化，避免英文界面仍显示「跟随系统」。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LanguageOption(Language);
+
+impl fmt::Display for LanguageOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self.0 {
+            Language::System => t!("settings.language_system"),
+            Language::ZhCn => t!("settings.language_zh_cn"),
+            Language::En => t!("settings.language_en"),
+        };
+        f.write_str(&s)
+    }
+}
+
+/// 语言下拉框的静态选项（`'static`，可被 iced 的 `pick_list` 借用而不受函数作用域限制）。
+const LANGUAGE_OPTIONS: [LanguageOption; 3] = [
+    LanguageOption(Language::System),
+    LanguageOption(Language::ZhCn),
+    LanguageOption(Language::En),
+];
 
 /// 设置弹窗面板宽度（像素）。
 const SETTINGS_W: f32 = 720.0;
@@ -188,9 +211,11 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     })
     .style(theme::pick_list_style)
     .width(Length::Fill);
-    let language_picker = pick_list(&Language::ALL[..], Some(app.config.language), |lang| {
-        Message::Settings(settings::Message::Language(lang))
-    })
+    let language_picker = pick_list(
+        &LANGUAGE_OPTIONS[..],
+        Some(LanguageOption(app.config.language)),
+        |lang| Message::Settings(settings::Message::Language(lang.0)),
+    )
     .style(theme::pick_list_style)
     .width(Length::Fill);
     column![
