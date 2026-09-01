@@ -43,8 +43,17 @@ open = "5.4.2"
 polling = "3.11"
 log = "0.4.34"
 rfd = "0.17"
+keyring = "4.1.6"
 russh = "0.63.1"
 russh-sftp = "2.4.0"
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+] }
+piper = "0.2"
 rust-i18n = "4.2.1"
 semver = "1"
 reqwest = { version = "0.13", features = ["json"] }
@@ -56,6 +65,7 @@ rterm-crypto = { path = "crates/rterm-crypto" }
 rterm-core = { path = "crates/rterm-core" }
 rterm-gui = { path = "crates/rterm-gui" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 toml = "1"
@@ -75,9 +85,6 @@ log.workspace = true
 rterm-config.workspace = true
 rterm-gui.workspace = true
 
-# ---------------------------------------------------------------------------
-# Packaging: cargo-deb (`cargo deb`)
-# ---------------------------------------------------------------------------
 [package.metadata.deb]
 maintainer = "arsiac"
 copyright = "2026, arsiac"
@@ -109,9 +116,6 @@ assets = [
     ],
 ]
 
-# ---------------------------------------------------------------------------
-# Packaging: cargo-generate-rpm (`cargo generate-rpm`)
-# ---------------------------------------------------------------------------
 [package.metadata.generate-rpm]
 summary = "rterm - a terminal/SSH client with integrated SFTP"
 license = "MIT"

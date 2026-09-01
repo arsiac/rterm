@@ -14,7 +14,19 @@ use iced::Task;
 use iced::widget::Id;
 use rterm_core::{ConnectionStatus, SshConnection};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// 终端桥接就绪后回传的结果：conout 读端、conin 写端、断开标志与尺寸发送端。
+/// 抽成别名以免 `TerminalOpened` 变体与 `terminal_opened` 参数触发 `type_complexity`。
+type BridgeResult = Result<
+    (
+        Arc<std::fs::File>,
+        Arc<std::fs::File>,
+        Arc<AtomicBool>,
+        ResizeSender,
+    ),
+    String,
+>;
 
 /// 标签模块只读上下文：来自父层 `App` 的共享导航态（供联动写回判定）。
 /// 每次 `update` 前重建，确保读到最新父状态；仅持有 owned 数据，不借用 `App`，
@@ -53,13 +65,12 @@ pub enum Message {
     SwitchTab(u64),
     /// 关闭标签：移除并清理，更新活动指针与导航态。
     CloseTab(u64),
+    /// 应用窗口关闭请求：置位所有标签的桥接断开标志，让后台 pump / 线程尽快退出。
+    WindowClosing,
     /// 切换标签列表 dropdown 显隐。
     ToggleTabList,
     /// 终端桥接就绪：挂载终端组件（父层执行）。
-    TerminalOpened(
-        u64,
-        Result<(Arc<std::fs::File>, Arc<AtomicBool>, ResizeSender), String>,
-    ),
+    TerminalOpened(u64, BridgeResult),
     /// 终端桥接断开：置标签为 Error。
     TerminalDisconnected(u64),
     /// 终端挂载完成：强制刷新首屏。
@@ -90,7 +101,13 @@ pub enum Event {
     /// 为已连接标签拉起终端桥接（父层执行）。
     OpenTerminalBridge(u64, Arc<SshConnection>),
     /// 桥接就绪后挂载终端组件（父层执行）。
-    SpawnTerminal(u64, Arc<std::fs::File>, Arc<AtomicBool>, ResizeSender),
+    SpawnTerminal(
+        u64,
+        Arc<std::fs::File>,
+        Arc<std::fs::File>,
+        Arc<AtomicBool>,
+        ResizeSender,
+    ),
     /// 关闭标签时清理其挂起的主机密钥确认。
     RemoveHostKeyForTab(u64),
     /// 转发终端部件事件给父层（父层拥有的 widget 交互逻辑）。
@@ -165,6 +182,7 @@ impl State {
             conn: None,
             terminal: None,
             resize_tx: None,
+            disconnect: None,
             title,
         });
         self.active_tab = Some(tab_id);
@@ -188,6 +206,7 @@ impl State {
             Message::SelectTab(tab_id) => self.select_tab(tab_id, ctx, sftp),
             Message::SwitchTab(tab_id) => self.switch_tab(tab_id),
             Message::CloseTab(tab_id) => self.close_tab(tab_id, ctx),
+            Message::WindowClosing => self.window_closing(),
             Message::ToggleTabList => {
                 self.show_tab_list = !self.show_tab_list;
                 Task::none()
@@ -257,6 +276,13 @@ impl State {
             .find(|t| t.id == tab_id)
             .map(|t| t.session_id.clone());
         let mut events = vec![Event::RemoveHostKeyForTab(tab_id)];
+        // 置位该标签的桥接断开标志，让核心层 pump 任务尽快退出（释放服务端管道句柄，
+        // 进而使 win_io 后台读/写线程退出），避免关标签后进程残留。
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
+            && let Some(d) = &tab.disconnect
+        {
+            d.store(true, Ordering::SeqCst);
+        }
         // 本标签若有暂停在主机密钥弹窗上的握手，一并按拒绝处理，
         // 否则弹窗仍会挂在队列里等待一个已被关闭的连接（由父层执行清理）。
         self.tabs.retain(|t| t.id != tab_id);
@@ -281,17 +307,23 @@ impl State {
         Task::batch(events.into_iter().map(Task::done).collect::<Vec<_>>())
     }
 
-    /// 处理终端打开结果：成功则挂载终端组件（父层执行）；失败则丢弃该标签并清理活动指针与会话关联。
-    fn terminal_opened(
-        &mut self,
-        tab_id: u64,
-        result: Result<(Arc<std::fs::File>, Arc<AtomicBool>, ResizeSender), String>,
-        ctx: &Ctx,
-    ) -> Task<Event> {
-        match result {
-            Ok((local, disconnect, resize_tx)) => {
-                Task::done(Event::SpawnTerminal(tab_id, local, disconnect, resize_tx))
+    /// 应用窗口关闭：置位全部标签的桥接断开标志，使核心层 pump 与 win_io 后台线程尽快退出。
+    ///
+    /// 窗口关闭时 `App` 会整体 drop，标签未必逐个走 `CloseTab`；此处显式通知所有 pump，
+    /// 避免后台任务与进程残留。返回空任务（窗口本身由 iced 默认行为关闭）。
+    fn window_closing(&mut self) -> Task<Event> {
+        for tab in self.tabs.iter_mut() {
+            if let Some(d) = &tab.disconnect {
+                d.store(true, Ordering::SeqCst);
             }
+        }
+        Task::none()
+    }
+    fn terminal_opened(&mut self, tab_id: u64, result: BridgeResult, ctx: &Ctx) -> Task<Event> {
+        match result {
+            Ok((conout, conin, disconnect, resize_tx)) => Task::done(Event::SpawnTerminal(
+                tab_id, conout, conin, disconnect, resize_tx,
+            )),
             Err(e) => {
                 let mut events = vec![Event::SetStatus(t!(
                     "app.open_terminal_failed",

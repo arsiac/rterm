@@ -8,6 +8,7 @@ use rterm_core::{
     ConnectionStatus, FileEntry, HostKeyPrompt, HostKeyReply, SftpClient, SshConnection,
 };
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// 中心面板可显示的内容类型（由最左侧活动栏切换）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,9 @@ pub struct TerminalTab {
     pub terminal: Option<Terminal>,
     /// 窗口尺寸变更发送端（桥接任务据此下发 window-change）。
     pub resize_tx: Option<ResizeSender>,
+    /// 桥接断开标志：关标签 / 关窗口时置位，通知核心层 pump 任务尽快退出，
+    /// 释放服务端管道句柄（否则后台线程与进程残留）。
+    pub disconnect: Option<Arc<AtomicBool>>,
     /// 标签标题（默认取会话名）。
     pub title: String,
 }

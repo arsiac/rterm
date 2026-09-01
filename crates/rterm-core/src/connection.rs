@@ -270,9 +270,14 @@ impl SshConnection {
             }
             AuthMethod::Agent => {
                 debug!("使用 SSH agent 认证");
+                #[cfg(unix)]
                 let mut agent = russh::keys::agent::client::AgentClient::connect_env()
                     .await
                     .map_err(|e| CoreError::ssh("连接 SSH agent 失败", e))?;
+                #[cfg(windows)]
+                let mut agent = russh::keys::agent::client::AgentClient::connect_pageant()
+                    .await
+                    .map_err(|e| CoreError::ssh("连接 SSH agent (Pageant) 失败", e))?;
                 let identities = agent
                     .request_identities()
                     .await

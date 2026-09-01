@@ -90,7 +90,8 @@ pub(crate) fn connect_deadline(timeout: u64) -> Pin<Box<dyn Future<Output = ()> 
     }
 }
 
-/// 创建终端桥接（进程内 socketpair + 打开 shell 通道），返回本地端、断开标志与尺寸发送端。
+/// 创建终端桥接（进程内 OUT/IN 双管道 + 打开 shell 通道），返回 conout 读端、conin 写端、
+/// 断开标志与尺寸发送端。
 ///
 /// 桥接任务结束时核心层会置位 `disconnect` 标志；此处另起一个轻量 watcher 轮询该标志，
 /// 一旦翻转即经 `disconnect_tx` 按标签通知 GUI（`Message::TerminalDisconnected`），
@@ -103,12 +104,13 @@ pub(crate) async fn open_terminal_task(
 ) -> Result<
     (
         std::sync::Arc<std::fs::File>,
+        std::sync::Arc<std::fs::File>,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         ResizeSender,
     ),
     CoreError,
 > {
-    let (local, disconnect, resize_tx) =
+    let (conout, conin, disconnect, resize_tx) =
         rterm_core::spawn_terminal_bridge(&conn, cols, rows).await?;
 
     let disc = disconnect.clone();
@@ -123,7 +125,12 @@ pub(crate) async fn open_terminal_task(
         }
     });
 
-    Ok((std::sync::Arc::new(local), disconnect, resize_tx))
+    Ok((
+        std::sync::Arc::new(conout),
+        std::sync::Arc::new(conin),
+        disconnect,
+        resize_tx,
+    ))
 }
 
 /// 建立 SFTP 通道并返回客户端。

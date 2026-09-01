@@ -279,8 +279,8 @@ impl App {
                     self.open_terminal_bridge(tab_id, conn)
                 }
                 // 桥接就绪后挂载终端组件（widget 生命周期属父层）。
-                tabs::Event::SpawnTerminal(tab_id, local, disc, resize) => {
-                    self.spawn_terminal_widget(tab_id, local, disc, resize)
+                tabs::Event::SpawnTerminal(tab_id, conout, conin, disc, resize) => {
+                    self.spawn_terminal_widget(tab_id, conout, conin, disc, resize)
                 }
                 // 关闭标签时清理其挂起的主机密钥确认。
                 tabs::Event::RemoveHostKeyForTab(tab_id) => {
@@ -548,6 +548,11 @@ impl App {
             }
             iced::Event::Window(iced::window::Event::Unfocused) => {
                 Some(Message::Tabs(tabs::Message::WindowFocused(false)))
+            }
+            iced::Event::Window(iced::window::Event::CloseRequested) => {
+                // 窗口关闭请求：先通知所有标签的桥接断开，使后台 pump / 线程尽快退出，
+                // 避免进程残留；窗口本身由 iced 默认行为（exit_on_close_request）关闭。
+                Some(Message::Tabs(tabs::Message::WindowClosing))
             }
             _ => None,
         });
@@ -919,17 +924,19 @@ impl App {
         Task::batch([bridge, disconnect])
     }
 
-    /// 桥接就绪后用返回的本地 socket 端创建终端组件，并自动聚焦。
+    /// 桥接就绪后用返回的本地 OUT/IN 双管道端创建终端组件，并自动聚焦。
     fn spawn_terminal_widget(
         &mut self,
         tab_id: u64,
-        local: std::sync::Arc<std::fs::File>,
+        conout: std::sync::Arc<std::fs::File>,
+        conin: std::sync::Arc<std::fs::File>,
         disconnect: std::sync::Arc<std::sync::atomic::AtomicBool>,
         resize_tx: ResizeSender,
     ) -> Task<Message> {
         // 把本地管道同步端包成 russh 自定义 pty，直接桥接远端 shell 通道。
-        let local = local.try_clone().expect("克隆本地管道句柄失败");
-        let russh_pty = RusshPty::new(local, disconnect, resize_tx.clone());
+        let conout = conout.try_clone().expect("克隆本地管道输出句柄失败");
+        let conin = conin.try_clone().expect("克隆本地管道输入句柄失败");
+        let russh_pty = RusshPty::new(conout, conin, disconnect.clone(), resize_tx.clone());
         let settings = TermSettings {
             backend: Default::default(),
             font: FontSettings {
@@ -946,6 +953,8 @@ impl App {
                 if let Some(tab) = self.tabs.tab_mut(tab_id) {
                     tab.terminal = Some(terminal);
                     tab.resize_tx = Some(resize_tx);
+                    // 记录桥接断开标志，关标签 / 关窗口时置位以通知 pump 退出。
+                    tab.disconnect = Some(disconnect.clone());
                     // 终端组件就绪即代表连接可用，此时才把本标签标记为已连接，
                     // 使文件管理等依赖 Connected 的逻辑与终端实际可用状态一致。
                     tab.status = ConnectionStatus::Connected;

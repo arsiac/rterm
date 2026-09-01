@@ -13,7 +13,7 @@ use iced::widget::canvas::{Path, Text};
 use iced::widget::container;
 use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_core::clipboard::Kind as ClipboardKind;
-use iced_core::keyboard::{Key, Modifiers};
+use iced_core::keyboard::{Key, Modifiers, key::Named};
 use iced_core::mouse::{self, Click};
 use iced_core::text::{Alignment, LineHeight, Shaping};
 use iced_core::widget::operation;
@@ -311,11 +311,17 @@ impl<'a> TerminalView<'a> {
                         last_content.terminal_mode,
                     );
 
-                    // 若无匹配绑定，则仅写入可打印文本（若有）
-                    if binding_action == BindingAction::Ignore
-                        && let Some(c) = text
-                    {
-                        return Some(Command::Write(c.as_bytes().to_vec()));
+                    // 若无匹配绑定，则写入可打印文本（若有）；否则对 Ctrl+字母 / 数字
+                    // 退回生成控制字符（如 Ctrl+C => \x03），避免这些组合键完全无输入。
+                    if binding_action == BindingAction::Ignore {
+                        if let Some(c) = text {
+                            return Some(Command::Write(c.as_bytes().to_vec()));
+                        } else if modifiers.control()
+                            && k.chars().count() == 1
+                            && let Some(ctrl_byte) = char_to_ctrl(k.chars().next().unwrap())
+                        {
+                            return Some(Command::Write(vec![ctrl_byte]));
+                        }
                     }
                 }
                 Key::Named(code) => {
@@ -324,6 +330,14 @@ impl<'a> TerminalView<'a> {
                         *modifiers,
                         last_content.terminal_mode,
                     );
+
+                    // 命名键（回车 / 退格 / 方向键等）若无匹配绑定，退回标准转义序列：
+                    // 否则这些键在终端里完全无输入（如回车按了没反应）。已匹配绑定的键不受影响。
+                    if binding_action == BindingAction::Ignore
+                        && let Some(bytes) = named_key_bytes(*code, *modifiers, text.as_deref())
+                    {
+                        return Some(Command::Write(bytes));
+                    }
                 }
                 _ => {}
             },
@@ -356,6 +370,91 @@ impl<'a> TerminalView<'a> {
 
         None
     }
+}
+
+/// 把 `Ctrl+字母/数字/符号` 转成对应的 ASCII 控制字符（如 `Ctrl+C` => `\x03`）。
+///
+/// 仅当系统未给出 `text`（iced 在某些情况下对组合键不填充 `text`）时作为回退使用；
+/// 普通字符键优先走 `text` 路径，不会经过此处。
+fn char_to_ctrl(ch: char) -> Option<u8> {
+    if ch.is_ascii() {
+        // 'a'..='z' / 'A'..='Z' => 0x01..0x1a；'@' => 0x00；'[' => 0x1b（Ctrl+[ = ESC）等。
+        Some(ch.to_ascii_lowercase() as u8 & 0x1f)
+    } else {
+        None
+    }
+}
+
+/// 把「无键位绑定」的命名键转成终端字节序列。
+///
+/// 优先采用系统给出的 `text`（回车 `\r`、Tab `\t` 等已含），缺失时再查标准转义序列。
+/// `modifiers` 用于为方向键 / Home / End 等生成带修饰符的 CSI 序列（如 `Ctrl+←` => `\x1b[1;5D`）。
+fn named_key_bytes(name: Named, modifiers: Modifiers, text: Option<&str>) -> Option<Vec<u8>> {
+    // 系统已给出文本（回车 / Tab / 空格等），直接采用。
+    if let Some(t) = text
+        && !t.is_empty()
+    {
+        return Some(t.as_bytes().to_vec());
+    }
+
+    // CSI 修饰符字节：1 + Shift(1) + Alt(2) + Ctrl(4)。无修饰符时为 1（不含修饰段）。
+    let mut m = 1u8;
+    if modifiers.contains(Modifiers::SHIFT) {
+        m += 1;
+    }
+    if modifiers.contains(Modifiers::ALT) {
+        m += 2;
+    }
+    if modifiers.contains(Modifiers::CTRL) {
+        m += 4;
+    }
+
+    // 方向键 / Home / End：无修饰符为 `\x1b[A`，有修饰符为 `\x1b[1;{m}A`。
+    let arrow = |dir: u8| -> Vec<u8> {
+        if m > 1 {
+            format!("\x1b[1;{m}{}", dir as char).into_bytes()
+        } else {
+            format!("\x1b[{}", dir as char).into_bytes()
+        }
+    };
+    // 其余转义键：无修饰符为 `\x1b[{n}~`，有修饰符为 `\x1b[{n};{m}~`。
+    let tilde = |n: u8| -> Vec<u8> {
+        if m > 1 {
+            format!("\x1b[{n};{m}~").into_bytes()
+        } else {
+            format!("\x1b[{n}~").into_bytes()
+        }
+    };
+
+    Some(match name {
+        Named::Enter => b"\r".to_vec(),
+        Named::Backspace => b"\x7f".to_vec(),
+        Named::Tab => b"\t".to_vec(),
+        Named::Escape => b"\x1b".to_vec(),
+        Named::ArrowUp => arrow(b'A'),
+        Named::ArrowDown => arrow(b'B'),
+        Named::ArrowRight => arrow(b'C'),
+        Named::ArrowLeft => arrow(b'D'),
+        Named::Home => arrow(b'H'),
+        Named::End => arrow(b'F'),
+        Named::Insert => tilde(2),
+        Named::Delete => tilde(3),
+        Named::PageUp => tilde(5),
+        Named::PageDown => tilde(6),
+        Named::F1 => b"\x1bOP".to_vec(),
+        Named::F2 => b"\x1bOQ".to_vec(),
+        Named::F3 => b"\x1bOR".to_vec(),
+        Named::F4 => b"\x1bOS".to_vec(),
+        Named::F5 => b"\x1b[15~".to_vec(),
+        Named::F6 => b"\x1b[17~".to_vec(),
+        Named::F7 => b"\x1b[18~".to_vec(),
+        Named::F8 => b"\x1b[19~".to_vec(),
+        Named::F9 => b"\x1b[20~".to_vec(),
+        Named::F10 => b"\x1b[21~".to_vec(),
+        Named::F11 => b"\x1b[23~".to_vec(),
+        Named::F12 => b"\x1b[24~".to_vec(),
+        _ => return None,
+    })
 }
 
 impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {

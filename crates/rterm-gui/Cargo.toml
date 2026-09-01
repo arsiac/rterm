@@ -16,6 +16,7 @@ iced_core.workspace = true
 iced_graphics.workspace = true
 open.workspace = true
 polling.workspace = true
+piper.workspace = true
 log.workspace = true
 rfd.workspace = true
 reqwest.workspace = true
@@ -26,9 +27,7 @@ rterm-config.workspace = true
 rterm-crypto.workspace = true
 rterm-core.workspace = true
 tokio.workspace = true
-keyring = "4.1.6"
+keyring.workspace = true
 
 [dev-dependencies]
-# 测试中需把 `iced::Task` 跑完并收集产出的 `Message`（`iced_runtime::task::into_stream`）。
-# 该 API 未从 `iced` 顶层公开，故直接依赖 `iced_runtime`（与主依赖版本保持一致）。
 iced_runtime.workspace = true

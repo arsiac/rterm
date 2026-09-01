@@ -516,7 +516,7 @@ impl Backend {
 
     /// 将输入字节经 notifier 写入 PTY。
     fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
-        self.notifier.notify(input);
+        self.notifier.notify(input.into());
     }
 
     /// 按行滚动视口；若终端处于 alt 屏或 alt-screen 滚动模式则改发方向键序列。
