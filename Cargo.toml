@@ -1,0 +1,128 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rterm-core",
+    "crates/rterm-gui",
+    "crates/rterm-config",
+    "crates/rterm-crypto",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+dark-light = "3"
+dirs = "6"
+aes-gcm = "0.11"
+argon2 = "0.6"
+base64 = "0.23"
+flexi_logger = "0.31.10"
+fontdb = "0.24"
+futures = "0.3"
+iced = { version = "0.14.0", features = [
+    "tokio",
+    "image",
+    "svg",
+    "canvas",
+    "lazy",
+    "advanced",
+] }
+iced_widget = "0.14.2"
+iced_aw = { version = "0.14.1", features = ["context_menu", "drop_down"] }
+alacritty_terminal = "0.26.0"
+iced_runtime = "0.14.0"
+anyhow = "1"
+iced_core = "0.14.0"
+iced_graphics = "0.14.0"
+open = "5.4.2"
+polling = "3.11"
+log = "0.4.34"
+rfd = "0.17"
+russh = "0.63.1"
+russh-sftp = "2.4.0"
+rust-i18n = "4.2.1"
+semver = "1"
+reqwest = { version = "0.13", features = ["json"] }
+rterm-config = { path = "crates/rterm-config" }
+secrecy = "0.10"
+rand = "0.10"
+zeroize = "1"
+rterm-crypto = { path = "crates/rterm-crypto" }
+rterm-core = { path = "crates/rterm-core" }
+rterm-gui = { path = "crates/rterm-gui" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+
+[package]
+name = "rterm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A terminal/SSH client with integrated SFTP file manager"
+authors = ["rterm"]
+
+[dependencies]
+dirs.workspace = true
+flexi_logger.workspace = true
+log.workspace = true
+rterm-config.workspace = true
+rterm-gui.workspace = true
+
+# ---------------------------------------------------------------------------
+# Packaging: cargo-deb (`cargo deb`)
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+maintainer = "arsiac"
+copyright = "2026, arsiac"
+extended-description = """\
+rterm is a cross-platform terminal/SSH client with an integrated SFTP file \
+manager: multi-session terminal, key-based authentication, and a three-pane GUI."""
+section = "utils"
+priority = "optional"
+assets = [
+    [
+        "target/release/rterm",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "packaging/rterm.desktop",
+        "usr/share/applications/",
+        "644",
+    ],
+    [
+        "crates/rterm-gui/icons/app/icon-256.png",
+        "usr/share/icons/hicolor/256x256/apps/rterm.png",
+        "644",
+    ],
+    [
+        "crates/rterm-gui/icons/app/app.png",
+        "usr/share/icons/hicolor/512x512/apps/rterm.png",
+        "644",
+    ],
+]
+
+# ---------------------------------------------------------------------------
+# Packaging: cargo-generate-rpm (`cargo generate-rpm`)
+# ---------------------------------------------------------------------------
+[package.metadata.generate-rpm]
+summary = "rterm - a terminal/SSH client with integrated SFTP"
+license = "MIT"
+assets = [
+    { source = "target/release/rterm", dest = "/usr/bin/rterm", mode = "755" },
+    { source = "packaging/rterm.desktop", dest = "/usr/share/applications/rterm.desktop", mode = "644" },
+    { source = "crates/rterm-gui/icons/app/icon-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/rterm.png", mode = "644" },
+    { source = "crates/rterm-gui/icons/app/app.png", dest = "/usr/share/icons/hicolor/512x512/apps/rterm.png", mode = "644" },
+]
+
+[profile.release]
+debug = "limited"
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  BINARY_NAME: rterm
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_os: linux
+            artifact_arch: amd64
+            ext: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_os: linux
+            artifact_arch: arm64
+            ext: ""
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact_os: macos
+            artifact_arch: amd64
+            ext: ""
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact_os: macos
+            artifact_arch: aarch64
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_os: windows
+            artifact_arch: amd64
+            ext: ".exe"
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact_os: windows
+            artifact_arch: arm64
+            ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libfontconfig1-dev \
+            pkg-config
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Run tests
+        run: cargo test --target ${{ matrix.target }}
+
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BINARY="${{ env.BINARY_NAME }}${{ matrix.ext }}"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            strip "target/${{ matrix.target }}/release/$BINARY"
+          fi
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/$BINARY" dist/
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "../${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.zip" "$BINARY"
+          else
+            zip -r "../${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.zip" "$BINARY"
+          fi
+        working-directory: ${{ github.workspace }}
+
+      - name: Build deb/rpm packages (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo install cargo-deb cargo-generate-rpm --locked
+          # deb builds the release binary itself; reuse target dir
+          cargo deb --target ${{ matrix.target }} --no-strip
+          cargo generate-rpm --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/debian/*.deb \
+            "${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.deb"
+          cp target/${{ matrix.target }}/generate-rpm/*.rpm \
+            "${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.rpm"
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ${{ env.BINARY_NAME }}-*.zip
+            ${{ env.BINARY_NAME }}-*.deb
+            ${{ env.BINARY_NAME }}-*.rpm
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true

@@ -1,0 +1,214 @@
+common:
+  close: Close
+  cancel: Cancel
+  retry: Retry
+  remove: Remove
+settings:
+  title: Settings
+  general: General
+  appearance: Appearance
+  about: About
+  masterpw: Master Password
+  connect_timeout: Connect timeout (seconds, 0 = no limit)
+  log_level: Log level
+  open_log_folder: Open log folder
+  restart_note: Takes effect after restart; third-party library logs are suppressed to reduce noise.
+  about_name: Name
+  about_version: Version
+  about_desc: Description
+  about_description: An SSH GUI client built with Rust + iced, with session management and SFTP file transfer.
+  ui_font_placeholder: Select or type a font family
+  ui_font_default: Use system default
+  theme: Theme
+  ui_font: UI font (searchable; leave empty for system default)
+  ui_font_preview: UI font preview
+  terminal_theme: Terminal color theme
+  terminal_font: Terminal font (monospace only)
+  terminal_font_placeholder: Select or type a monospace font family
+  terminal_font_preview: Terminal font preview
+  terminal_font_size: Terminal font size
+  appearance_note: Terminal color theme, font, and size all apply to all open tabs immediately.
+  language: Language
+  updates: Updates
+  auto_check_updates: Automatically check for updates on startup
+  check_now: Check now
+  current_version: Current version
+  latest_version: Latest version
+  update_unknown: Unknown (not checked or check failed)
+  view_release: View release
+  update_banner: "Update available: v%{version}"
+session:
+  new: New session
+  refresh: Refresh
+  import: Import sessions
+  export: Export sessions
+  connect: Connect
+  edit: Edit
+  delete: Delete
+  open_files: Open file manager
+  ungrouped: Ungrouped
+  editor_new: New session
+  editor_edit: Edit session
+  name: Name (optional)
+  group: Group (optional)
+  host: Host
+  port: Port
+  username: Username
+  auth: Authentication
+  auth_password: Password
+  auth_publickey: Public key
+  auth_agent: SSH agent
+  password: Password
+  key_path: Private key path
+  pick_key: Choose private key file
+  passphrase: Passphrase (optional)
+  agent_hint: Authenticate using an identity provided by the local SSH agent.
+  keep_unchanged: Leave empty to keep unchanged
+  save: Save
+  host_empty: Host cannot be empty
+  port_invalid: Port must be a number
+  port_zero: Port cannot be 0
+masterpw:
+  set_title: Set master passphrase
+  set_body: Set a master passphrase to encrypt session credentials. It derives the key; the passphrase itself is never stored. If forgotten, saved credentials cannot be recovered.
+  unlock_title: Unlock credential vault
+  unlock_body: Enter your master passphrase to decrypt session credentials.
+  password: Master passphrase
+  confirm: Re-enter passphrase
+  memorized: I have memorized the passphrase (cannot be recovered if forgotten)
+  save: Save
+  unlock: Unlock
+  empty: Passphrase cannot be empty
+  mismatch: The two passphrases do not match
+  not_memorized: Please confirm you have memorized the passphrase
+  write_failed: "Failed to write encrypted file: %{err}"
+  no_store: Session store unavailable
+  read_failed: "Failed to read encrypted file: %{err}"
+  wrong: Incorrect master passphrase
+  deriving: Deriving key...
+  reencrypting: Re-encrypting credentials...
+  change_title: Change master passphrase
+  change_current: Current passphrase
+  change_new: New passphrase
+  change_confirm: Re-enter new passphrase
+  change: Change
+  cancel: Cancel
+  changed: Master passphrase changed
+  status_enabled: Enabled
+  status_desc: Credentials are encrypted with the master passphrase.
+  remember: Remember master passphrase on this device (auto-unlock)
+  remember_desc: When enabled, the derived key is stored in the system keyring so the app unlocks automatically on launch without prompting. Disable keyring support and you will be prompted every launch. The keyring is protected by your system login password.
+  status_random: Using a random key (no passphrase)
+  status_random_desc: Credentials are encrypted with a system-generated key stored in the system keyring, so the app unlocks automatically on this device without a passphrase. This mode cannot be synced across devices; set a master passphrase before enabling sync.
+  setup: Set master passphrase
+  disable: Disable master passphrase
+  setup_hint: After setting a passphrase, credentials are re-encrypted with it and can be synced across devices; the re-encryption runs on this device and requires entering the new passphrase once.
+  disabled: Master passphrase disabled; credentials are now encrypted with a local random key (sync unavailable)
+  enable_sync_required: Set a master passphrase before enabling sync
+  keyring_lost: The local keyring had no random key; a new local key was generated. Previously saved credentials may no longer decrypt — please re-enter them
+sftp:
+  open_hint: The file manager is not open yet. Connect a session first, then click the “Files” icon on the left.
+  up_dir: Up
+  refresh: Refresh
+  new_dir: New folder
+  new_dir_name: New folder
+  upload: Upload
+  go_path_placeholder: Type a path and press Enter to navigate…
+  enter: Enter
+  download: Download
+  rename: Rename
+  delete: Delete
+  copy_path: Copy path
+  properties: Properties
+  delete_title: Delete confirmation
+  delete_confirm: Delete %{kind} "%{name}"? This cannot be undone.
+  overwrite_title: Overwrite confirmation
+  overwrite_confirm: '"%{name}" already exists in the target folder. Overwrite?'
+  overwrite: Overwrite
+  file: File
+  dir: Folder
+  unknown: Unknown
+  not_connected: SFTP channel not established. Connect a session first.
+  mkdir_failed: Failed to create directory
+  delete_failed: Failed to delete
+  rename_failed: Failed to rename
+  upload_failed: Failed to upload
+  download_failed: Failed to download
+  transfer_lost: Transfer task terminated unexpectedly
+  upload_title: Select files to upload
+  download_title: Select download folder
+  prop_name: Name
+  prop_type: Type
+  prop_size: Size
+  prop_modified: Modified
+  prop_path: Path
+hostkey:
+  unknown_title: Unknown host
+  unknown_body: This host's identity has not been verified yet. Please confirm the following information matches the server you expect.
+  host: Host
+  port: Port
+  key_type: Key type
+  fingerprint: SHA256 fingerprint
+  trust: Trust and connect
+  changed_title: 'Warning: host key changed'
+  changed_body: This host's key does not match the recorded one! This could mean a man-in-the-middle attack, or the server was reinstalled. Refuse the connection if you cannot confirm the reason.
+  stored_fp: Recorded fingerprint
+  current_fp: Current fingerprint
+  reject: Refuse connection
+  still_trust: Trust anyway
+transfer:
+  title: Transfers (%{count})
+  empty: No transfers yet
+  queued: Queued
+  eta: " · %{time} left"
+terminal:
+  empty: No terminal open yet. Connect in a session and the terminal opens automatically.
+  close_tab: Close tab
+  connect_failed: Connection failed
+  connecting: Connecting…
+  pick_tab: Please select a tab
+  connected: Connected
+  connecting_status: Connecting
+  error_status: Connection failed
+  disconnected: Disconnected
+  ready: Terminal ready
+activity:
+  settings: Settings
+  sessions: Sessions
+  files: Files
+  transfers: Transfers
+app:
+  toast:
+    success: Success
+    error: Error
+    warning: Warning
+  session_saved: Session saved
+  no_password: Session is missing login password; please fill it in the editor and retry
+  tab_closed: "Tab closed, discarding connection result: %{id}"
+  connect_failed: "Connection failed: %{err}"
+  conn_established: "Connection established for new tab: %{id}"
+  open_terminal_failed: "Failed to open terminal: %{err}"
+  disconnected: "Disconnected: %{id}"
+  sftp_open_failed: "Failed to open SFTP: %{err}"
+  list_failed: "Failed to list directory: %{err}"
+  transfer_partial: Some transfers failed
+  transfer_done: Transfers complete
+  canceled: Canceled
+  op_success: Operation succeeded
+  op_failed: "Operation failed: %{err}"
+  exported: Exported %{count} sessions to %{path}
+  export_failed: "Export failed: %{err}"
+  imported: Imported %{count} sessions
+  import_failed: "Import failed: %{err}"
+  copied_path: Path copied
+  save_failed: "Save failed: %{err}"
+  decrypt_failed: "Failed to decrypt credential (master passphrase may have changed)"
+  vault_locked: Credential vault is locked
+  terminal_ready: Terminal ready
+  terminal_create_failed: "Failed to create terminal widget: %{err}"
+  open_terminal_first: Open this session's terminal first
+  connect_session_first: Connect to a session first
+  sftp_not_ready: SFTP not ready
+  transfer_error: "Transfer task error: %{err}"
+  connect_task_error: "Connection task exited with error: %{err}"
+  connect_timeout: Connection timed out

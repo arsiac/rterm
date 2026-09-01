@@ -1,0 +1,13 @@
+[package]
+name = "rterm-config"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dark-light.workspace = true
+dirs.workspace = true
+log.workspace = true
+rterm-crypto.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true

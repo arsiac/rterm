@@ -1,0 +1,23 @@
+[package]
+name = "rterm-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono.workspace = true
+dirs.workspace = true
+log.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
+rterm-config.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+# 仅在 Windows 上提供命名管道 API（用于 SSH 终端桥接的本地管道）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+] }

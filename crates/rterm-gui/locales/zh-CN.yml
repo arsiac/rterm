@@ -1,0 +1,214 @@
+common:
+  close: 关闭
+  cancel: 取消
+  retry: 重试
+  remove: 移除
+settings:
+  title: 设置
+  general: 通用
+  masterpw: 主密码
+  appearance: 外观
+  about: 关于
+  connect_timeout: 连接超时（秒，0 表示不限制）
+  log_level: 日志级别
+  open_log_folder: 打开日志所在文件夹
+  restart_note: 修改后重启程序方可生效；第三方库日志会被抑制以降低噪声。
+  about_name: 名称
+  about_version: 版本
+  about_desc: 描述
+  about_description: Rust + iced 实现的 SSH GUI 客户端，支持会话管理与 SFTP 文件传输。
+  ui_font_placeholder: 选择或输入字体族名称
+  ui_font_default: 系统默认
+  theme: 主题
+  ui_font: 界面字体（可搜索选择，留空使用系统默认）
+  ui_font_preview: 界面字体预览
+  terminal_theme: 终端配色主题
+  terminal_font: 终端字体（仅列出等宽字体）
+  terminal_font_placeholder: 选择或输入等宽字体族名称
+  terminal_font_preview: 终端字体预览
+  terminal_font_size: 终端字号
+  appearance_note: 终端配色、字体与字号均即时作用于所有已打开的终端标签。
+  language: 语言
+  updates: 更新
+  auto_check_updates: 启动时自动检查更新
+  check_now: 立即检查
+  current_version: 当前版本
+  latest_version: 最新版本
+  update_unknown: 未知（尚未检查或检查失败）
+  view_release: 前往下载
+  update_banner: 发现新版本 v%{version}
+session:
+  new: 新建会话
+  refresh: 刷新
+  import: 导入会话
+  export: 导出会话
+  connect: 连接
+  edit: 编辑
+  delete: 删除
+  open_files: 打开文件管理
+  ungrouped: 未分组
+  editor_new: 新建会话
+  editor_edit: 编辑会话
+  name: 名称(选填)
+  group: 分组(可选)
+  host: 主机
+  port: 端口
+  username: 用户名
+  auth: 认证方式
+  auth_password: 密码
+  auth_publickey: 公钥
+  auth_agent: SSH agent
+  password: 密码
+  key_path: 私钥路径
+  pick_key: 选择私钥文件
+  passphrase: 私钥口令(可选)
+  agent_hint: 使用本地 SSH agent 提供的身份进行认证。
+  keep_unchanged: 留空表示保持不变
+  save: 保存
+  host_empty: 主机不能为空
+  port_invalid: 端口必须是数字
+  port_zero: 端口不能为 0
+masterpw:
+  set_title: 设置主密码
+  set_body: 请设置用于加密会话凭据的主密码。它将派生主密钥，口令本身不会保存在本机；一旦忘记，已保存的凭据将无法恢复。
+  unlock_title: 解锁凭据库
+  unlock_body: 请输入主密码以解密会话凭据。
+  password: 主密码
+  confirm: 再次输入主密码
+  memorized: 我已牢记主密码（忘记后将无法恢复）
+  save: 保存
+  unlock: 解锁
+  empty: 主密码不能为空
+  mismatch: 两次输入的口令不一致
+  not_memorized: 请确认已牢记主密码
+  write_failed: "写入加密文件失败: %{err}"
+  no_store: 会话存储不可用
+  read_failed: "读取加密文件失败: %{err}"
+  wrong: 主密码不正确
+  deriving: 正在派生密钥...
+  reencrypting: 正在重新加密凭证...
+  change_title: 更改主密码
+  change_current: 当前主密码
+  change_new: 新主密码
+  change_confirm: 确认新主密码
+  change: 更改
+  cancel: 取消
+  changed: 主密码已更新，全部凭据已用新口令重新加密
+  status_enabled: 主密码保护已启用
+  status_desc: 所有会话凭据均由主密码加密存储于本机；更改主密码会用新口令重新加密全部凭据，之后需用新口令解锁。
+  remember: 在本机记住主密码（自动解锁）
+  remember_desc: 勾选后把解密密钥存入系统钥匙串，下次启动自动解锁、无需输入。关闭钥匙串支持时仍每次输入；钥匙串由系统登录口令保护。
+  status_random: 使用随机密钥（免口令）
+  status_random_desc: 凭据由系统随机生成的主密钥加密，密钥保存在系统钥匙串中，本机启动自动解锁、无需输入口令；此模式不可用于跨设备同步，开启同步前需先设置主密码。
+  setup: 设置主密码
+  disable: 关闭主密码
+  setup_hint: 设置主密码后，凭据改由主密码加密，可在多设备间同步共享；设置时本机会用新口令重新加密全部凭据，期间需输入一次主密码。
+  disabled: 已关闭主密码，凭据改回本机随机密钥加密（同步不可用）
+  enable_sync_required: 请先设置主密码，才能开启同步
+  keyring_lost: 本机钥匙串中未找到随机密钥，已生成本机新密钥；此前保存的凭据可能无法解密，请重新输入
+sftp:
+  open_hint: 尚未打开文件管理。请先在会话中“连接”，再点击左侧“文件”图标打开。
+  up_dir: 返回上级
+  refresh: 刷新
+  new_dir: 新建目录
+  new_dir_name: 新建文件夹
+  upload: 上传
+  go_path_placeholder: 输入路径后回车跳转…
+  enter: 进入
+  download: 下载
+  rename: 重命名
+  delete: 删除
+  copy_path: 复制路径
+  properties: 属性
+  delete_title: 删除确认
+  delete_confirm: 确定删除%{kind} “%{name}” 吗？此操作不可恢复。
+  overwrite_title: 覆盖确认
+  overwrite_confirm: “%{name}” 已存在于目标目录，是否覆盖？
+  overwrite: 覆盖
+  file: 文件
+  dir: 目录
+  not_connected: SFTP 通道未建立，请先连接会话
+  mkdir_failed: 创建目录失败
+  delete_failed: 删除失败
+  rename_failed: 重命名失败
+  upload_failed: 上传失败
+  download_failed: 下载失败
+  transfer_lost: 传输任务异常终止
+  upload_title: 选择要上传的文件
+  download_title: 选择下载目录
+  unknown: 未知
+  prop_name: 名称
+  prop_type: 类型
+  prop_size: 大小
+  prop_modified: 修改时间
+  prop_path: 路径
+hostkey:
+  unknown_title: 未知主机
+  unknown_body: 该主机的身份尚未经过验证，请核对以下信息是否为您预期的服务器。
+  host: 主机
+  port: 端口
+  key_type: 密钥类型
+  fingerprint: SHA256 指纹
+  trust: 信任并连接
+  changed_title: 警告：主机密钥已变更
+  changed_body: 该主机的密钥与已记录的不一致！这可能意味着中间人攻击，或服务器刚重装。如无法确认原因，请拒绝连接。
+  stored_fp: 已记录指纹
+  current_fp: 本次指纹
+  reject: 拒绝连接
+  still_trust: 仍然信任
+transfer:
+  title: 传输 (%{count})
+  empty: 暂无传输任务
+  queued: 排队中
+  eta: " · 剩 %{time}"
+terminal:
+  empty: 尚未打开终端。请在会话中“连接”，终端将自动打开。
+  close_tab: 关闭标签
+  connect_failed: 连接失败
+  connecting: 正在连接…
+  pick_tab: 请选择一个标签
+  connected: 已连接
+  connecting_status: 连接中
+  error_status: 连接失败
+  disconnected: 未连接
+  ready: 终端已就绪
+activity:
+  settings: 设置
+  sessions: 会话
+  files: 文件
+  transfers: 传输
+app:
+  toast:
+    success: 成功
+    error: 错误
+    warning: 警告
+  session_saved: 会话已保存
+  tab_closed: "标签已关闭，丢弃连接结果: %{id}"
+  connect_failed: "连接失败: %{err}"
+  conn_established: "已为新标签建立连接: %{id}"
+  open_terminal_failed: "打开终端失败: %{err}"
+  disconnected: "连接已断开: %{id}"
+  sftp_open_failed: "打开 SFTP 失败: %{err}"
+  list_failed: "列举目录失败: %{err}"
+  transfer_partial: 部分传输失败
+  transfer_done: 传输完成
+  canceled: 已取消
+  op_success: 操作成功
+  op_failed: "操作失败: %{err}"
+  exported: 已导出 %{count} 个会话到 %{path}
+  export_failed: "导出失败: %{err}"
+  imported: 已导入 %{count} 个会话
+  import_failed: "导入失败: %{err}"
+  copied_path: 已复制路径
+  save_failed: "保存失败: %{err}"
+  decrypt_failed: 凭据解密失败（主密码可能已变更）
+  vault_locked: 凭据库未解锁
+  no_password: 会话缺少登录密码，请在编辑中填写后重试
+  terminal_ready: 终端已就绪
+  terminal_create_failed: "创建终端组件失败: %{err}"
+  open_terminal_first: 请先打开该会话的终端
+  connect_session_first: 请先连接会话
+  sftp_not_ready: SFTP 未就绪
+  transfer_error: "传输任务异常: %{err}"
+  connect_task_error: "连接任务异常退出: %{err}"
+  connect_timeout: 连接超时

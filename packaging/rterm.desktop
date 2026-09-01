@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=rterm
+GenericName=SSH Client
+Comment=Terminal/SSH client with integrated SFTP
+Exec=rterm
+Icon=rterm
+StartupWMClass=rterm
+Terminal=false
+Categories=Utility;Network;System;
+Keywords=SSH;Terminal;SFTP;
+StartupNotify=true
