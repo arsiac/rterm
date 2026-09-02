@@ -34,6 +34,24 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
     }
 }
 
+/// 处理右键按下：把光标所在的会话 / 文件条目标记为选中，使右键菜单作用于哪一条可见。
+///
+/// 两个列表都派发（经模块自身 `update`），由模块按各自己的悬浮态决定选中谁：
+/// 光标不在其列表项上时为空操作，故右击终端 / 空白处不会误改选中项。
+pub(crate) fn handle_right_press(app: &mut App) -> iced::Task<Message> {
+    let tab_id = app.tabs.active().unwrap_or(0);
+    let sftp = app
+        .sftp
+        .update(sftp::Message::SftpSelectHovered, tab_id)
+        .map(Message::SftpEvent);
+    let ctx = app.session_ctx();
+    let session = app
+        .session
+        .update(session::Message::SessionSelectHovered, &ctx)
+        .map(Message::SessionEvent);
+    Task::batch([sftp, session])
+}
+
 /// 切换中央视图；切到文件管理时若活动标签尚未打开 SFTP 则自动打开。
 pub(crate) fn handle_switch_center(app: &mut App, view: CenterView) -> iced::Task<Message> {
     app.center = view;

@@ -163,6 +163,7 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
     // 地址另起一行：名称选填且保存时默认填 `user@host`，多行后即便两者重合也能区分主机。
     // 悬浮态由 App 记录的 `hovered_session` 决定，与选中态共同驱动行背景。
     let hovered = app.session.hovered_session.as_deref() == Some(s.id.as_str());
+    let selected = app.session.selected_session.as_deref() == Some(s.id.as_str());
     let content = container(
         column![
             text(&s.name).size(14).wrapping(Wrapping::None),
@@ -184,7 +185,7 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
             .width(Length::Fill)
             .style(move |theme| {
                 let mut style = crate::theme::plain_background(crate::theme::list_row_bg(
-                    theme, false, hovered, status,
+                    theme, selected, hovered, status,
                 ));
                 style.border.radius = 6.0.into();
                 style

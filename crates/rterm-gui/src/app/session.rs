@@ -207,6 +207,11 @@ pub struct State {
     pub sessions: Vec<SessionConfig>,
     /// 当前被鼠标悬浮的会话 id（`None` 表示无悬浮），用于渲染会话列表行的悬浮高亮背景。
     pub hovered_session: Option<String>,
+    /// 当前选中的会话 id（`None` 表示无选中），用于渲染会话列表行的选中背景。
+    ///
+    /// 右键唤出某会话的右键菜单时按 [`Message::SessionSelectHovered`] 设置，
+    /// 使菜单作用于哪一条在视觉上可辨。
+    pub selected_session: Option<String>,
     /// 被折叠的分组键集合（空串表示「未分组」区块），点击分组头在集合内增删以切换展开态。
     pub collapsed_groups: HashSet<String>,
     /// 会话编辑器中的草稿（无则未编辑）。
@@ -220,6 +225,7 @@ impl State {
             store,
             sessions,
             hovered_session: None,
+            selected_session: None,
             collapsed_groups: HashSet::new(),
             editor: None,
         }
@@ -294,6 +300,12 @@ pub enum Message {
     SessionEnter(String),
     /// 鼠标离开会话列表某一项（携带会话 id），用于清除悬浮高亮。
     SessionExit(String),
+    /// 右键按下：把光标所在的会话（即当前悬浮项）标记为选中。
+    ///
+    /// 不携带 id——`iced_aw::ContextMenu` 会先捕获右键事件，行内的 `on_right_press`
+    /// 收不到，故改由全局监听（见 `App::subscription`）下发本消息，选中目标在此按
+    /// [`State::hovered_session`] 判定。
+    SessionSelectHovered,
     /// 发起连接（携带会话 id）：经 `Event::Connect` 上行，由父层开标签并连接。
     ConnectSession(String),
     /// 打开某会话的文件管理（携带会话 id），右键菜单「打开文件管理」触发：
@@ -447,6 +459,13 @@ impl State {
                 // 仅当离开的正是当前悬浮项时才清除，避免与相邻项的进入事件竞争。
                 if self.hovered_session.as_deref() == Some(id.as_str()) {
                     self.hovered_session = None;
+                }
+                Task::none()
+            }
+            Message::SessionSelectHovered => {
+                // 悬浮项即光标下的会话；未在列表项上悬浮（右击空白处 / 终端）时保持原选中不变。
+                if let Some(id) = self.hovered_session.clone() {
+                    self.selected_session = Some(id);
                 }
                 Task::none()
             }

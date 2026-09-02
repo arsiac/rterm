@@ -106,6 +106,12 @@ pub enum Message {
     SftpListed(u64, String, Result<Vec<FileEntry>, String>),
     /// 选中 SFTP 列表中的某条目（携带名称）。
     SftpSelect(String),
+    /// 右键按下：把光标所在的文件条目（即当前悬浮项）标记为选中。
+    ///
+    /// 与 [`Message::SftpSelect`] 的差别是不携带名称——`iced_aw::ContextMenu` 会先捕获
+    /// 右键事件，行内的 `on_right_press` 收不到，故改由全局监听（见 `App::subscription`）
+    /// 下发本消息，选中目标在此按 `SftpView::hovered` 判定。
+    SftpSelectHovered,
     /// 鼠标进入 SFTP 列表某条目（携带名称），用于渲染悬浮高亮。
     SftpEntryEnter(String),
     /// 鼠标离开 SFTP 列表某条目（携带名称），用于清除悬浮高亮。
@@ -288,6 +294,15 @@ impl State {
             }
             Message::SftpSelect(name) => {
                 if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+                    tab.selected = Some(name);
+                }
+                Task::none()
+            }
+            Message::SftpSelectHovered => {
+                if let Some(tab) = self.per_tab.get_mut(&active_tab)
+                    && let Some(name) = tab.hovered.clone()
+                {
+                    // 悬浮项即光标下的条目；未在条目上悬浮（右击空白处 / 终端）时保持原选中不变。
                     tab.selected = Some(name);
                 }
                 Task::none()

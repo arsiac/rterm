@@ -99,4 +99,9 @@ pub enum Message {
     UpdatesEvent(updates::Event),
     /// 键盘 Esc 按下：优先回答主机密钥弹窗，其次取消设置弹窗 / 会话编辑器 / SFTP 对话框。
     Escape,
+    /// 鼠标右键按下：把光标所在的会话 / 文件条目标记为选中，使右键菜单作用于哪一条可见。
+    ///
+    /// 由全局监听下发（`App::subscription`）而非行内 `on_right_press`——`iced_aw::ContextMenu`
+    /// 会先捕获右键事件，行内处理收不到；选中谁再由各模块按自身悬浮态判定。
+    RightPress,
 }

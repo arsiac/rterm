@@ -2,7 +2,19 @@
 //!
 //! 本模块负责把 UI 交互消息 [`Message`] 映射到对核心层
 //! [`rterm_core`] 的调用，并通过 [`iced::Task::perform`] 把异步 SSH / SFTP 操作卸载到
-//! tokio 运行时，避免阻塞 GUI 主线程。
+pub(crate) mod hostkey;
+pub(crate) mod masterpw;
+pub(crate) mod misc;
+pub(crate) mod panes;
+pub(crate) mod session;
+pub(crate) mod settings;
+pub(crate) mod sftp;
+pub(crate) mod tabs;
+pub(crate) mod tasks;
+pub(crate) mod transfer;
+pub(crate) mod updates;
+
+use self::tasks::*;
 
 use crate::t;
 
@@ -395,6 +407,8 @@ impl App {
                 }
             },
             Message::Escape => misc::handle_escape(self),
+            // 右键按下：两个列表各自按自己的悬浮态决定选中谁，详见 `misc::handle_right_press`。
+            Message::RightPress => misc::handle_right_press(self),
             // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
             Message::Settings(m) => {
                 let ctx = self.settings_ctx();
@@ -572,6 +586,16 @@ impl App {
             _ => None,
         });
 
+        // 监听鼠标右键按下：把光标下的会话 / 文件条目标记为选中（右键菜单即针对该条目）。
+        // 必须全局监听——`iced_aw::ContextMenu` 在内部处理右键时会 `capture_event()`，
+        // 行内 `mouse_area::on_right_press` 因此收不到该事件；与 F2 同理，只发无状态消息。
+        let right_press = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Right)) => {
+                Some(Message::RightPress)
+            }
+            _ => None,
+        });
+
         // toast 通知的自动消失心跳：每 0.5s 触发一次，由 update 调用 `dismiss_expired` 移除到期项。
         let toast_tick = iced::time::every(Duration::from_millis(500)).map(|_| Message::ToastTick);
 
@@ -580,6 +604,7 @@ impl App {
                 .into_iter()
                 .chain(std::iter::once(resize))
                 .chain(std::iter::once(keys))
+                .chain(std::iter::once(right_press))
                 .chain(std::iter::once(toast_tick))
                 .chain(std::iter::once(self.sftp.subscription().map(Message::Sftp)))
                 .chain(std::iter::once(
@@ -1017,16 +1042,3 @@ impl App {
         Task::none()
     }
 }
-pub(crate) mod hostkey;
-pub(crate) mod masterpw;
-pub(crate) mod misc;
-pub(crate) mod panes;
-pub(crate) mod session;
-pub(crate) mod settings;
-pub(crate) mod sftp;
-pub(crate) mod tabs;
-pub(crate) mod tasks;
-pub(crate) mod transfer;
-pub(crate) mod updates;
-
-use self::tasks::*;
