@@ -1,4 +1,4 @@
-//! rterm 二进制入口：初始化日志系统并启动 GUI 主程序。
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use rterm_config::{AppConfig, LogLevel};
 
