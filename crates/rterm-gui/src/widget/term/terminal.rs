@@ -171,40 +171,34 @@ impl Hash for TerminalSubscriptionData {
 }
 
 /// 订阅流：循环接收后端事件并封装为 [`Event`] 回流到 App。
+///
+/// 流的生命周期由 iced 管理：标签页关闭 / 连接断开时，宿主会丢弃终端部件并取消订阅，
+/// 此时后端事件通道（`Sender`）被丢弃，`recv()` 返回 `None`；或 iced 在拆栈时先丢弃
+/// `output` 使后续 `send` 失败。这两种情况都属于**正常的终端拆栈**，需静默退出流。
 fn terminal_subscription_stream(data: &TerminalSubscriptionData) -> BoxStream<'static, Event> {
     let id = data.id;
     let event_receiver = data.event_receiver.clone();
     iced::stream::channel(1000, async move |mut output| {
-        let mut shutdown = false;
         loop {
             let mut event_receiver = event_receiver.lock().await;
             match event_receiver.recv().await {
                 Some(event) => {
-                    if let AlacrittyEvent::Exit = event {
-                        shutdown = true
-                    };
-
-                    output
+                    // 订阅被 iced 拆栈（标签页已关闭）时 `output` 已失效，`send` 失败属正常，
+                    // 直接退出；否则把后端事件照常回流给 App。
+                    if output
                         .send(Event::BackendCall(
                             id,
                             backend::Command::ProcessAlacrittyEvent(event),
                         ))
                         .await
-                        .unwrap_or_else(|_| {
-                            panic!(
-                                "terminal stream {}: sending BackendCall event is failed",
-                                id
-                            )
-                        });
-                }
-                None => {
-                    if !shutdown {
-                        panic!(
-                            "terminal stream {}: terminal event channel closed unexpected",
-                            id
-                        );
+                        .is_err()
+                    {
+                        break;
                     }
                 }
+                // 后端事件通道关闭：终端部件已销毁（关标签 / 断线），`Sender` 被丢弃。
+                // 这是预期的正常拆栈，退出流交由 iced 回收，不应 panic。
+                None => break,
             }
         }
     })
