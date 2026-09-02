@@ -79,7 +79,7 @@ jobs:
       - name: Package artifact
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME}"
           BINARY="${{ env.BINARY_NAME }}${{ matrix.ext }}"
           if [ "${{ runner.os }}" != "Windows" ]; then
             strip "target/${{ matrix.target }}/release/$BINARY"
@@ -109,7 +109,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $ver = "${{ github.ref_name }}"
           $binPath = "${{ github.workspace }}\target\${{ matrix.target }}\release\rterm.exe"
           if (-not (Test-Path $binPath)) { throw "Built binary not found: $binPath" }
           iscc /DMyAppVersion=$ver /DBinPath=$binPath packaging/windows/rterm.iss
@@ -118,7 +118,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME}"
           cargo install cargo-deb cargo-generate-rpm --locked
           # deb builds the release binary itself; reuse target dir
           cargo deb --target ${{ matrix.target }} --no-strip
