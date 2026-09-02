@@ -144,6 +144,9 @@ sftp:
   prop_type: Type
   prop_size: Size
   prop_modified: Modified
+  prop_permissions: Permissions
+  prop_owner: Owner
+  prop_group: Group
   prop_path: Path
 hostkey:
   unknown_title: Unknown host

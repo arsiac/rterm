@@ -85,6 +85,13 @@ fn properties_dialog<'a>(entry: &'a FileEntry, path: &'a str) -> Element<'a, Mes
         sftp_panel::format_size(entry.size)
     };
     let modified = entry.modified.clone().unwrap_or_else(|| t!("sftp.unknown"));
+    // 服务端未返回权限 / 属主 / 属组时退化为「未知」。
+    let unknown = t!("sftp.unknown");
+    let permissions = entry
+        .permissions
+        .map_or_else(|| unknown.clone(), sftp_panel::format_permissions);
+    let user = entry.user.clone().unwrap_or_else(|| unknown.clone());
+    let group = entry.group.clone().unwrap_or(unknown);
     // 只读信息框：没有可取消的操作，只需居中的单个「关闭」按钮，故左按钮传 None。
     crate::ui::dialog_panel(
         t!("sftp.properties"),
@@ -93,6 +100,9 @@ fn properties_dialog<'a>(entry: &'a FileEntry, path: &'a str) -> Element<'a, Mes
             prop_row(t!("sftp.prop_type"), kind.to_string(), 72.0),
             prop_row(t!("sftp.prop_size"), size, 72.0),
             prop_row(t!("sftp.prop_modified"), modified, 72.0),
+            prop_row(t!("sftp.prop_permissions"), permissions, 72.0),
+            prop_row(t!("sftp.prop_owner"), user, 72.0),
+            prop_row(t!("sftp.prop_group"), group, 72.0),
             prop_row(t!("sftp.prop_path"), path.to_string(), 72.0),
         ]
         .spacing(10),

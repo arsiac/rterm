@@ -144,6 +144,9 @@ sftp:
   prop_type: 类型
   prop_size: 大小
   prop_modified: 修改时间
+  prop_permissions: 权限
+  prop_owner: 所有者
+  prop_group: 所属组
   prop_path: 路径
 hostkey:
   unknown_title: 未知主机

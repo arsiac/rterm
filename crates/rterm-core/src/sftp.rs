@@ -45,10 +45,11 @@ impl SftpClient {
             .map_err(|e| CoreError::sftp("读取目录失败", e))?;
         let mut entries = Vec::new();
         for entry in dir.by_ref() {
+            let meta = entry.metadata();
             let is_dir = entry.file_type().is_dir();
-            let size = entry.metadata().len();
+            let size = meta.len();
             // 将远端返回的 `SystemTime` 格式化为本地可读时间（避免直接 `{:?}` 打印成结构体）。
-            let modified = entry.metadata().modified().ok().map(|t| {
+            let modified = meta.modified().ok().map(|t| {
                 let dt: chrono::DateTime<chrono::Local> = t.into();
                 dt.format("%Y-%m-%d %H:%M:%S").to_string()
             });
@@ -57,6 +58,17 @@ impl SftpClient {
                 is_dir,
                 size,
                 modified,
+                // 服务端（尤其 Windows 上的 SFTP 实现）可能不返回属主 / 属组，
+                // 此时退化为 uid / gid 数字，二者都缺则为 None。
+                permissions: meta.permissions,
+                user: meta
+                    .user
+                    .clone()
+                    .or_else(|| meta.uid.map(|u| u.to_string())),
+                group: meta
+                    .group
+                    .clone()
+                    .or_else(|| meta.gid.map(|g| g.to_string())),
             });
         }
         debug!("目录 {} 共 {} 项", path, entries.len());

@@ -384,3 +384,34 @@ pub(crate) fn format_size(bytes: u64) -> String {
         format!("{size:.1} {}", UNITS[unit])
     }
 }
+
+/// 将 SFTP 返回的原始权限位格式化为 `drwxr-xr-x` 形式，供属性框展示。
+///
+/// 首位为文件类型（目录 / 符号链接 / 常规文件等），其后三组分别为属主、属组、其他的
+/// 读 / 写 / 执行位；未置位以 `-` 填充。
+pub(crate) fn format_permissions(mode: u32) -> String {
+    /// 文件类型位对应的展示字符（取 `mode & 0o170000`）。
+    const TYPE_CHARS: [(u32, char); 6] = [
+        (0o040_000, 'd'), // 目录
+        (0o120_000, 'l'), // 符号链接
+        (0o010_000, 'p'), // 命名管道
+        (0o020_000, 'c'), // 字符设备
+        (0o060_000, 'b'), // 块设备
+        (0o140_000, 's'), // 套接字
+    ];
+    let file_type = mode & 0o170_000;
+    let type_char = TYPE_CHARS
+        .iter()
+        .find(|(bits, _)| *bits == file_type)
+        .map_or('-', |(_, c)| *c);
+
+    let mut out = String::with_capacity(10);
+    out.push(type_char);
+    // 属主 / 属组 / 其他各占 3 位，从高位到低位依次是读 / 写 / 执行。
+    for shift in [6u32, 3, 0] {
+        for (bit, ch) in [(0o4, 'r'), (0o2, 'w'), (0o1, 'x')] {
+            out.push(if (mode >> shift) & bit != 0 { ch } else { '-' });
+        }
+    }
+    out
+}

@@ -27,4 +27,12 @@ pub struct FileEntry {
     pub size: u64,
     /// 最后修改时间（已格式化字符串）；未知时为 `None`。
     pub modified: Option<String>,
+    /// 原始 Unix 权限位（含文件类型位，如 `0o100644`）；服务端未返回时为 `None`。
+    ///
+    /// 由 UI 侧格式化为 `rwxr-xr-x` 形式展示（见属性弹窗）。
+    pub permissions: Option<u32>,
+    /// 属主名；服务端只返回 uid 时为 uid 的十进制字符串，均未返回时为 `None`。
+    pub user: Option<String>,
+    /// 属组名；服务端只返回 gid 时为 gid 的十进制字符串，均未返回时为 `None`。
+    pub group: Option<String>,
 }
