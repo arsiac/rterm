@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
   BINARY_NAME: rterm
@@ -29,12 +29,12 @@ jobs:
             ext: ""
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            artifact_os: macos
+            artifact_os: darwin
             artifact_arch: amd64
             ext: ""
           - os: macos-15
             target: aarch64-apple-darwin
-            artifact_os: macos
+            artifact_os: darwin
             artifact_arch: aarch64
             ext: ""
           - os: windows-latest
@@ -94,6 +94,26 @@ jobs:
           fi
         working-directory: ${{ github.workspace }}
 
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y
+          $dest = Join-Path "${env:ProgramFiles(x86)}" "Inno Setup 6\Languages"
+          if (-not (Test-Path $dest)) { New-Item -Path $dest -ItemType Directory -Force | Out-Null }
+          Invoke-WebRequest -Uri "https://cdn.jsdelivr.net/gh/jrsoftware/issrc@main/Files/Languages/ChineseSimplified.isl" `
+            -OutFile (Join-Path $dest "ChineseSimplified.isl")
+          echo "${env:ProgramFiles(x86)}\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $binPath = "${{ github.workspace }}\target\${{ matrix.target }}\release\rterm.exe"
+          if (-not (Test-Path $binPath)) { throw "Built binary not found: $binPath" }
+          iscc /DMyAppVersion=$ver /DBinPath=$binPath packaging/windows/rterm.iss
+
       - name: Build deb/rpm packages (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -112,6 +132,7 @@ jobs:
         with:
           files: |
             ${{ env.BINARY_NAME }}-*.zip
+            ${{ env.BINARY_NAME }}-*.exe
             ${{ env.BINARY_NAME }}-*.deb
             ${{ env.BINARY_NAME }}-*.rpm
           name: Release ${{ github.ref_name }}

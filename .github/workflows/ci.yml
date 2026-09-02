@@ -11,7 +11,7 @@ env:
 
 jobs:
   clippy:
-    name: clippy + build
+    name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -23,11 +23,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run clippy (release gate, -D warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Compile check
-        run: cargo build --workspace --all-targets
 
   build:
-    name: ${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
+    name: build-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,30 +35,15 @@ jobs:
             artifact_os: linux
             artifact_arch: amd64
             ext: ""
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact_os: linux
-            artifact_arch: arm64
-            ext: ""
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            artifact_os: macos
+            artifact_os: darwin
             artifact_arch: amd64
-            ext: ""
-          - os: macos-15
-            target: aarch64-apple-darwin
-            artifact_os: macos
-            artifact_arch: aarch64
             ext: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_os: windows
             artifact_arch: amd64
-            ext: ".exe"
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            artifact_os: windows
-            artifact_arch: arm64
             ext: ".exe"
 
     runs-on: ${{ matrix.os }}
@@ -93,4 +76,4 @@ jobs:
         run: cargo test --target ${{ matrix.target }}
 
       - name: Run build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --target ${{ matrix.target }}

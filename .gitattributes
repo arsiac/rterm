@@ -3,6 +3,8 @@
 *.rs text eol=lf
 *.toml text eol=lf
 *.json text eol=lf
+*.yml text eol=lf
+*.wxs text eol=lf
 *.md text eol=lf
 
 *.png binary

@@ -1,5 +1,12 @@
 # Build
 /target
+*.msi
+*.wixpdb
+.cab
+cab1.cab
 
 # Editor
 .vscode
+
+# WiX
+.wix/
