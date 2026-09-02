@@ -355,7 +355,23 @@ impl<'a> TerminalView<'a> {
             }
             BindingAction::Paste => {
                 if let Some(data) = clipboard.read(ClipboardKind::Standard) {
-                    let input: Vec<u8> = data.bytes().collect();
+                    let mut input: Vec<u8> = data.bytes().collect();
+                    // 若远端应用已开启 bracketed paste 模式(发送过 \e[?2004h),
+                    // 用 \e[200~ … \e[201~ 包裹粘贴内容,使 vim 等程序能识别为
+                    // “粘贴”而非逐字符输入,从而避免自动缩进叠加。
+                    if self
+                        .term
+                        .backend
+                        .renderable_content()
+                        .terminal_mode
+                        .contains(TermMode::BRACKETED_PASTE)
+                    {
+                        let mut wrapped = Vec::with_capacity(input.len() + 12);
+                        wrapped.extend_from_slice(b"\x1b[200~");
+                        wrapped.append(&mut input);
+                        wrapped.extend_from_slice(b"\x1b[201~");
+                        input = wrapped;
+                    }
                     return Some(Command::Write(input));
                 }
             }
