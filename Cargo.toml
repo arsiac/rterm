@@ -70,6 +70,7 @@ sys-locale = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 toml = "1"
+winresource = "0.1"
 
 [package]
 name = "rterm"
@@ -85,6 +86,9 @@ flexi_logger.workspace = true
 log.workspace = true
 rterm-config.workspace = true
 rterm-gui.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true
 
 [package.metadata.deb]
 maintainer = "arsiac"
@@ -111,7 +115,7 @@ assets = [
         "644",
     ],
     [
-        "crates/rterm-gui/icons/app/app.png",
+        "crates/rterm-gui/icons/app/icon-512.png",
         "usr/share/icons/hicolor/512x512/apps/rterm.png",
         "644",
     ],
@@ -124,7 +128,7 @@ assets = [
     { source = "target/release/rterm", dest = "/usr/bin/rterm", mode = "755" },
     { source = "packaging/rterm.desktop", dest = "/usr/share/applications/rterm.desktop", mode = "644" },
     { source = "crates/rterm-gui/icons/app/icon-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/rterm.png", mode = "644" },
-    { source = "crates/rterm-gui/icons/app/app.png", dest = "/usr/share/icons/hicolor/512x512/apps/rterm.png", mode = "644" },
+    { source = "crates/rterm-gui/icons/app/icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/rterm.png", mode = "644" },
 ]
 
 [profile.release]
