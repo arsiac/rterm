@@ -1,19 +1,4 @@
-//! 主密码设置 / 解锁模块（遵循 State/Message/Event 模块化范式）。
-//!
-//! 首次运行（无加密文件头）实际走**模式 0**：随机生成一个 DEK 存入系统钥匙串并落盘头，
-//! **不弹设主密码框、零配置**（`App::new` 中完成）。本模块处理的是两类显式流程：
-//! - 「设置主密码」（模式 0 → 1，由设置面板触发，弹框让用户设口令）；
-//! - 「解锁」（仅模式 1，启动时用钥匙串 DEK 静默解锁失败才回退到弹窗）。
-//!
-//! 三者分工：
-//! - [`State`]：设置 / 解锁 / 更改流程的全部 UI 状态（从 `App` 搬入，模块私有）。
-//! - [`Message`]：模块内部 UI 意图与自处理的异步结果，由父层经 `Message::MasterPw` 路由进来。
-//! - [`Event`]：仅上行通知（设置 vault / sessions / config / toast），由父层经
-//!   `Message::MasterPwEvent` 收到后修改父状态。**模块绝不写父状态。**
-//!
-//! 两阶段异步（Argon2id 派生 → 重加密落盘）通过 [`Event::Emit`] 自回路驱动：
-//! `Task::perform` 产出 `Event::Emit(Box<Message>)`，父层在 `Message::MasterPwEvent` 分支
-//! 收到后再 `self.masterpw.update` 一次，形成与 sftp 一致的闭环。
+//! 主密码设置 / 解锁模块
 
 use crate::state::ToastKind;
 use crate::t;
@@ -608,6 +593,7 @@ fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::contexts;
     use futures::StreamExt;
     use std::sync::Mutex;
 
@@ -648,7 +634,7 @@ mod tests {
     /// （`SetVault` / `SetSessions` / `SetRemember` / `Toast` 落地到 App），返回遇到的
     /// `Emit` 包裹的内层消息（两阶段异步自回路的下一步），无则 `None`。
     fn step(app: &mut crate::app::App, msg: Message) -> Option<Message> {
-        let ctx = app.masterpw_ctx();
+        let ctx = contexts::masterpw_ctx(app);
         let events = run_events(app.masterpw.update(msg, &ctx));
         let mut emit = None;
         for e in events {
@@ -657,9 +643,9 @@ mod tests {
                 Event::SetSessions(s) => app.session.sessions = s,
                 Event::SetRemember(v) => {
                     app.config.remember_master_key = v;
-                    app.save_config();
+                    contexts::save_config(app);
                 }
-                Event::Toast(kind, msg) => app.set_toast(kind, msg),
+                Event::Toast(kind, msg) => contexts::set_toast(app, kind, msg),
                 Event::Emit(m) => emit = Some(*m),
             }
         }
@@ -1009,7 +995,7 @@ mod tests {
 
         // 关闭开关→删除钥匙串条目；再次重启应回退到弹窗（vault 为 None）。
         app.config.remember_master_key = false;
-        app.save_config();
+        contexts::save_config(&mut app);
         crate::vault_keyring::delete_dek_quietly();
         let (app3, _task3) = crate::app::App::new();
         assert!(

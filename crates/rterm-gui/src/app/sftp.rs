@@ -1,15 +1,4 @@
-//! SFTP 文件管理模块（浏览 / 导航 / 新建 / 重命名 / 删除 / 属性 / 上传下载入口）。
-//!
-//! 自包含 [`State`] / [`Message`] / [`Event`]，符合「模块化消息处理」架构：
-//! - [`State`] 持有每标签的 [`SftpView`](crate::state::SftpView)（原散落在 `TerminalTab.sftp`）。
-//! - [`Message`] 仅模块内部消费（UI 意图 + 模块自处理的异步结果），由父层经
-//!   `Message::Sftp` 路由进来。
-//! - [`Event`] 仅上行通知，由父层经 `Message::SftpEvent` 收到后修改父状态。其中上传 / 下载
-//!   的「队列执行」已拆分为独立的 `crate::app::transfer` 模块：本模块只负责「选择文件 /
-//!   选择目录」等文件管理 UI 意图，经 `Event::StartUpload` / `Event::StartDownload` 上行，
-//!   由父层转发给传输模块，自身绝不持有传输队列。
-//!
-//! 注意：本文件**不要** `use iced::Event`，以免与下方 `pub enum Event` 撞名。
+//! SFTP 文件管理模块（浏览 / 导航 / 新建 / 重命名 / 删除 / 属性 / 上传下载入口）
 use std::collections::HashMap;
 use std::sync::Arc;
 

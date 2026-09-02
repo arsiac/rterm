@@ -1,14 +1,5 @@
-//! 文件传输模块（上传 / 下载队列）。
-//!
-//! 自包含 [`State`] / [`Message`] / [`Event`]，符合「模块化消息处理」架构：
-//! - [`State`] 持有每标签的传输队列、传输任务 id 分配器与取消句柄注册表
-//!   （原内嵌在 `SftpView.transfers` 与 `sftp::State` 的 `next_transfer_id` / `abort_handles`）。
-//! - [`Message`] 仅模块内部消费（UI 意图 + 模块自处理的异步进度 / 完成结果），由父层经
-//!   `Message::Transfer` 路由进来。
-//! - [`Event`] 仅上行通知（toast / 上传完成后刷新目录 / 自回路），由父层经
-//!   `Message::TransferEvent` 收到后修改父状态或转发给其它模块。
-//!
-//! 注意：本文件**不要** `use iced::Event`，以免与下方 `pub enum Event` 撞名。
+//! 文件传输模块（上传 / 下载队列）
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

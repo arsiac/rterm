@@ -1,14 +1,5 @@
 //! 主机密钥确认弹窗模块（窗口级安全模态）。
-//!
-//! 自包含 [`State`] / [`Message`] / [`Event`]，符合「模块化消息处理」架构：
-//! - [`State`] 持有待确认的主机密钥弹窗队列（原散落在 `App::host_key_prompts`）；
-//!   决策发生在 SSH 握手中途（连接尚未建立），故不属于任何标签的 SFTP 视图，而是独立队列。
-//! - [`Message`] 仅模块内部消费：入队请求 / 用户决定 / Esc 取消，由父层经
-//!   `Message::HostKey` 路由进来。
-//! - [`Event`] 当前为空：决定仅回复模块内部持有的 `HostKeyReply` 句柄并出队，不写任何父状态，
-//!   故暂无需上行事件；保留空枚举以对齐「模块上行事件」范式，后续若需 toast / 审计等父层协作再补变体。
-//!
-//! 注意：本文件**不要** `use iced::Event`，以免与下方 `pub enum Event` 撞名。
+
 use crate::state::HostKeyPromptState;
 use iced::{Subscription, Task};
 use rterm_core::{HostKeyPrompt, HostKeyReply};

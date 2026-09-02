@@ -1,18 +1,4 @@
-//! 会话管理模块（遵循 State/Message/Event 模块化范式）。
-//!
-//! - [`State`]：会话列表与编辑器的 UI 私有状态（`store` / `sessions` / `hovered_session` /
-//!   `collapsed_groups` / `editor`），原散落在 `App` 上的会话相关字段统一收归此处。
-//! - [`Message`]：模块内部 UI 意图（新建 / 编辑 / 删除 / 保存 / 刷新 / 编辑字段 / 连接意图 /
-//!   分组折叠 / 悬浮高亮 / 导入导出），由父层经 `Message::Session` 路由进来。
-//! - [`Event`]：仅上行通知（开标签连接 / 关会话标签 / 写状态栏 / 弹 toast），
-//!   由父层经 `Message::SessionEvent` 落地。**模块绝不写父状态。**
-//!
-//! 与 `sftp` / `masterpw` / `settings` 一致：跨层写回一律经 [`Event`]，不直接触碰 `App`；
-//! 文件对话框等异步回程经 `Event::Emit(Box<Message>)` 自回路派发回自身，形成闭环。
-//!
-//! 注意：连接 / 标签生命周期（`ConnectSession` 的真正执行、`SessionConnected`、`CloseTab`、
-//! 终端桥接）不属本模块——本模块只发 [`Event::Connect`] 上行意图，由父层开标签并连接；
-//! `active_session` 等导航态也留在 `App`（被 tabs / sftp 共享）。
+//! 会话管理模块
 
 use crate::state::ToastKind;
 use crate::t;

@@ -1,8 +1,4 @@
-//! 终端标签模块：标签生命周期与标签栏导航（切换 / 关闭 / 列表 dropdown / 窗口焦点）。
-//!
-//! 模块自包含 [`State`]（标签列表与导航态）、[`Message`]（来自 UI 与后台任务的意图）与
-//! [`Event`]（需父层配合的副作用：改导航态、拉起桥接 / 终端组件、开 SFTP、自回路）。
-//! 父层仅经 `Message::Tabs` 路由、经 `Message::TabsEvent` 落地，模块绝不修改 `App`。
+//! 终端标签模块：标签生命周期与标签栏导航（切换 / 关闭 / 列表 dropdown / 窗口焦点）
 
 use crate::app::sftp;
 use crate::message::ResizeSender;

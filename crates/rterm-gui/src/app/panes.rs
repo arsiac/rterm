@@ -1,16 +1,5 @@
-//! 窗口两栏布局模块（`pane_grid` 比例，遵循 State/Message/Event 模块化范式）。
-//!
-//! - [`State`]：中心（左）栏与右侧终端区的 `pane_grid` 布局态（原散落在 `App` 上的
-//!   `pane_grid_state` / `center_pane` / `right_pane` / `split` / `left_pane_width` /
-//!   `window_width`）。
-//! - [`Message`]：拖拽分隔条与窗口缩放，由父层经 `Message::Panes` 路由进来。
-//! - [`Event`]：当前为空——布局比例完全自包含（只影响本模块自己的 pane 几何），
-//!   无需父层配合。保留空枚举以对齐「模块上行事件」范式（同 `super::hostkey`）。
-//!
-//! 左栏按**固定像素宽度**维持：拖拽时记录像素宽，窗口缩放时据此反算 `pane_grid` 比例，
-//! 使左侧栏宽度恒定、仅右侧随窗口变化。
-//!
-//! 注意：本文件**不要** `use iced::Event`，以免与下方 `pub enum Event` 撞名。
+//! 窗口两栏布局模块
+
 use iced::Task;
 use iced::widget::pane_grid;
 

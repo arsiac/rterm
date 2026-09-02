@@ -1,12 +1,4 @@
-//! 应用设置弹窗模块（遵循 State/Message/Event 模块化范式）。
-//!
-//! - [`State`]：设置弹窗的 UI 私有状态（显示开关、当前分类、两个字体下拉框态），
-//!   真正的设置值仍存于 `AppConfig`（由父层持有，模块经 [`Event`] 写回）。
-//! - [`Message`]：模块内部 UI 意图，由父层经 `Message::Settings` 路由进来。
-//! - [`Event`]：仅上行通知（写回某条配置 / 热替换终端外观 / 打开日志目录），
-//!   由父层经 `Message::SettingsEvent` 落地。**模块绝不写父状态。**
-//!
-//! 与 `sftp` / `masterpw` 一致：跨层写回一律经 [`Event`]，不直接触碰 `App`。
+//! 应用设置弹窗模块
 
 use iced::Task;
 use iced::widget::combo_box;

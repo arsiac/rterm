@@ -1,14 +1,4 @@
-//! 更新检查模块（遵循 State/Message/Event 模块化范式）。
-//!
-//! - [`State`]：顶部更新提示横幅（版本号 + 发布页 URL），原散落在 `App::update_banner`。
-//! - [`Message`]：模块内部 UI 意图与自处理的异步检查结果，由父层经 `Message::Updates`
-//!   路由进来。
-//! - [`Event`]：仅上行通知（写回「上次检查时间戳」），由父层经 `Message::UpdatesEvent`
-//!   写回 `AppConfig` 并落盘。**模块绝不写父状态。**
-//!
-//! 检查本身是 best-effort：网络 / 解析失败仅记录日志，不向用户弹错以免打扰；
-//! 24h 节流窗口与「启动是否该自动检查」的判定都在模块内完成，模块经只读 [`Ctx`]
-//! 读 `auto_check_updates` / `last_update_check_unix`，写回一律经 [`Event`]。
+//! 更新检查模块
 
 use iced::Task;
 use log::warn;
