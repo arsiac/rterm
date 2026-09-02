@@ -85,7 +85,8 @@ fn properties_dialog<'a>(entry: &'a FileEntry, path: &'a str) -> Element<'a, Mes
         sftp_panel::format_size(entry.size)
     };
     let modified = entry.modified.clone().unwrap_or_else(|| t!("sftp.unknown"));
-    dialog_panel(
+    // 只读信息框：没有可取消的操作，只需居中的单个「关闭」按钮，故左按钮传 None。
+    crate::ui::dialog_panel(
         t!("sftp.properties"),
         column![
             prop_row(t!("sftp.prop_name"), entry.name.clone(), 72.0),
@@ -95,8 +96,14 @@ fn properties_dialog<'a>(entry: &'a FileEntry, path: &'a str) -> Element<'a, Mes
             prop_row(t!("sftp.prop_path"), path.to_string(), 72.0),
         ]
         .spacing(10),
-        t!("common.close"),
-        false,
+        None,
+        360.0,
+        None,
+        crate::ui::DialogButton {
+            label: t!("common.close"),
+            on_press: Message::SftpDialogConfirm,
+            style: crate::ui::DialogBtnStyle::Emphasis { danger: false },
+        },
     )
 }
 
@@ -140,11 +147,11 @@ fn dialog_panel<'a>(
         body,
         None,
         360.0,
-        crate::ui::DialogButton {
+        Some(crate::ui::DialogButton {
             label: confirm_label.into(),
             on_press: crate::app::sftp::Message::SftpDialogConfirm,
             style: crate::ui::DialogBtnStyle::Emphasis { danger },
-        },
+        }),
         crate::ui::DialogButton {
             label: t!("common.cancel"),
             on_press: crate::app::sftp::Message::SftpCancelDialog,

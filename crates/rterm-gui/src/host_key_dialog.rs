@@ -92,11 +92,11 @@ fn panel<'a>(
         body,
         border,
         PANEL_WIDTH,
-        crate::ui::DialogButton {
+        Some(crate::ui::DialogButton {
             label: secondary_label.into(),
             on_press: secondary_msg,
             style: crate::ui::DialogBtnStyle::Neutral,
-        },
+        }),
         crate::ui::DialogButton {
             label: primary_label.into(),
             on_press: primary_msg,

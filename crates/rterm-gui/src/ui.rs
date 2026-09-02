@@ -6,6 +6,7 @@
 use crate::icons::Icon;
 use crate::sftp_dialogs::{dialog_btn_style, dialog_btn_style_neutral};
 use crate::theme;
+use iced::widget::Row;
 use iced::widget::button;
 use iced::widget::container;
 use iced::widget::svg;
@@ -136,9 +137,10 @@ pub struct DialogButton<M> {
     pub style: DialogBtnStyle,
 }
 
-/// 通用模态弹窗骨架：标题 + 分隔线 + 正文 + 左右两个按钮。
+/// 通用模态弹窗骨架：标题 + 分隔线 + 正文 + 底部按钮行。
 ///
 /// `left` 置于左侧、`right` 置于右侧；二者各自指定 [`DialogBtnStyle`]。
+/// `left` 为 `None` 时只渲染 `right` 一个按钮并居中（只读信息框只需「关闭」）。
 /// `border` 为 `Some(c)` 时以该色加粗描边（指纹变更警告形态）；`width` 指定面板宽度。
 ///
 /// 抽自 `crate::sftp_dialogs::dialog_panel` 与 `host_key_dialog` 的 `panel`：
@@ -148,14 +150,14 @@ pub fn dialog_panel<'a, M: Clone + 'a>(
     body: impl Into<Element<'a, M>>,
     border: Option<Color>,
     width: f32,
-    left: DialogButton<M>,
+    left: Option<DialogButton<M>>,
     right: DialogButton<M>,
 ) -> Element<'a, M> {
-    let panel = iced::widget::column![
-        text(title.into()).size(18),
-        iced::widget::rule::horizontal(1),
-        body.into(),
-        iced::widget::row![
+    let right = button(text(right.label).size(14))
+        .on_press(right.on_press)
+        .style(move |theme, st| dialog_btn_style_for(right.style, theme, st));
+    let actions: Row<'_, M> = match left {
+        Some(left) => iced::widget::row![
             container(
                 button(text(left.label).size(14))
                     .on_press(left.on_press)
@@ -163,11 +165,21 @@ pub fn dialog_panel<'a, M: Clone + 'a>(
             )
             .width(Length::Fill)
             .align_x(iced::alignment::Horizontal::Right),
-            button(text(right.label).size(14))
-                .on_press(right.on_press)
-                .style(move |theme, st| dialog_btn_style_for(right.style, theme, st)),
+            right,
         ]
         .spacing(10),
+        None => iced::widget::row![
+            container(right)
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+        ],
+    };
+
+    let panel = iced::widget::column![
+        text(title.into()).size(18),
+        iced::widget::rule::horizontal(1),
+        body.into(),
+        actions,
     ]
     .spacing(16)
     .padding(20);
