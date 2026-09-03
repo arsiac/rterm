@@ -52,7 +52,7 @@ impl SessionStore {
         fs::create_dir_all(&dir)
             .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
         let path = dir.join("sessions.toml");
-        debug!("会话配置文件路径: {}", path.display());
+        debug!("Session config file path: {}", path.display());
         Ok(Self { path })
     }
 
@@ -80,13 +80,16 @@ impl SessionStore {
     /// 若文件不存在，返回空列表（视为首次运行）。
     pub fn load(&self) -> Result<Vec<SessionConfig>, ConfigError> {
         if !self.path.exists() {
-            debug!("会话文件不存在，返回空列表: {}", self.path.display());
+            debug!(
+                "Session file not found, returning empty list: {}",
+                self.path.display()
+            );
             return Ok(Vec::new());
         }
         let content = fs::read_to_string(&self.path)
             .map_err(|e| ConfigError::Store(format!("读取会话文件失败: {e}")))?;
         let file: SessionsFile = toml::from_str(&content)?;
-        debug!("已加载 {} 个会话配置", file.sessions.len());
+        debug!("Loaded {} session(s)", file.sessions.len());
         Ok(file.sessions)
     }
 
@@ -112,7 +115,7 @@ impl SessionStore {
         fs::set_permissions(&self.path, PermissionsExt::from_mode(0o600))
             .map_err(|e| ConfigError::Store(format!("设置会话文件权限失败: {e}")))?;
         debug!(
-            "已保存 {} 个会话配置到 {}",
+            "Saved {} session(s) to {}",
             sessions.len(),
             self.path.display()
         );
@@ -136,7 +139,7 @@ pub fn export_sessions(path: &Path, sessions: &[SessionConfig]) -> Result<(), Co
     })?;
     fs::write(path, content).map_err(|e| ConfigError::Store(format!("写入导出文件失败: {e}")))?;
     debug!(
-        "已导出 {} 个会话配置（不含凭证）到 {}",
+        "Exported {} session(s) (without credentials) to {}",
         sessions.len(),
         path.display()
     );
@@ -152,9 +155,9 @@ pub fn import_sessions(path: &Path) -> Result<Vec<SessionConfig>, ConfigError> {
         .map_err(|e| ConfigError::Store(format!("读取导入文件失败: {e}")))?;
     let file: SessionsFile = toml::from_str(&content)?;
     debug!(
-        "已从 {} 解析出 {} 个会话配置",
-        path.display(),
-        file.sessions.len()
+        "Parsed {} session(s) from {}",
+        file.sessions.len(),
+        path.display()
     );
     Ok(file.sessions)
 }

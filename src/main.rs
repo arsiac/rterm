@@ -20,7 +20,7 @@ fn main() {
     let cache_dir = rterm_config::log_dir();
 
     flexi_logger::Logger::try_with_str(&directive)
-        .expect("初始化日志器失败")
+        .expect("failed to initialize logger")
         .log_to_file(
             flexi_logger::FileSpec::default()
                 .directory(&cache_dir)
@@ -33,10 +33,10 @@ fn main() {
             flexi_logger::Cleanup::KeepLogFiles(7),
         )
         .start()
-        .expect("启动日志器失败");
+        .expect("failed to start logger");
 
     if let Err(e) = rterm_gui::run() {
-        log::error!("GUI 运行失败: {e}");
+        log::error!("GUI failed: {e}");
         std::process::exit(1);
     }
 }

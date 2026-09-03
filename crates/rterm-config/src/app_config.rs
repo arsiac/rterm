@@ -229,11 +229,11 @@ fn detect_system_is_dark() -> bool {
         Ok(dark_light::Mode::Dark) => true,
         Ok(dark_light::Mode::Light) => false,
         Ok(dark_light::Mode::Unspecified) => {
-            warn!("系统主题未指定，回退深色");
+            warn!("System theme unspecified, falling back to dark");
             true
         }
         Err(e) => {
-            warn!("系统主题无法探测（{e}），回退深色");
+            warn!("System theme detection failed ({e}), falling back to dark");
             true
         }
     }
@@ -286,7 +286,7 @@ impl AppConfig {
         fs::create_dir_all(&dir)
             .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
         let path = dir.join("config.toml");
-        debug!("应用配置文件路径: {}", path.display());
+        debug!("App config file path: {}", path.display());
         if !path.exists() {
             // 首次启动：按系统外观决定默认主题组合，并立即落盘，
             // 使得「配置文件缺失即回退默认」的语义同时完成一次性初始化。
@@ -299,10 +299,10 @@ impl AppConfig {
             };
             // `remember_master_key` 由 `Default::default()` 补为 `true`，与首次启动语义一致。
             if let Err(e) = config.save() {
-                warn!("首次启动默认配置写回失败: {e}");
+                warn!("Failed to write back default config on first launch: {e}");
             } else {
                 info!(
-                    "首次启动：按系统主题选择程序主题 {} / 终端主题 {}",
+                    "First launch: app theme {} / terminal theme {} based on system theme",
                     config.theme, config.terminal_theme
                 );
             }
@@ -316,7 +316,7 @@ impl AppConfig {
         // 否则 `save()` 将向空路径写入而失败，导致配置（含主题）无法持久化。
         config.path = path;
         debug!(
-            "已加载应用配置（超时 {}s，字号 {}）",
+            "App config loaded (timeout {}s, font size {})",
             config.connect_timeout, config.font_size
         );
         Ok(config)
@@ -331,7 +331,7 @@ impl AppConfig {
             .map_err(|e| ConfigError::Store(format!("序列化配置失败: {e}")))?;
         fs::write(&self.path, content)
             .map_err(|e| ConfigError::Store(format!("写入配置文件失败: {e}")))?;
-        debug!("已保存应用配置到 {}", self.path.display());
+        debug!("App config saved to {}", self.path.display());
         Ok(())
     }
 }

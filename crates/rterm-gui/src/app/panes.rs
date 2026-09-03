@@ -32,7 +32,7 @@ impl State {
         let (mut pane_grid_state, center_pane) = pane_grid::State::new(());
         let (right_pane, split) = pane_grid_state
             .split(pane_grid::Axis::Vertical, center_pane, ())
-            .expect("初始 split 必然成功");
+            .expect("initial split must succeed");
         // 比例按「左栏像素宽 / 可用宽度」换算：可用宽度需扣掉固定宽度的活动栏。
         let total = window_width - crate::theme::ACTIVITY_BAR_WIDTH;
         pane_grid_state.resize(split, (left_pane_width / total).clamp(0.1, 0.9));

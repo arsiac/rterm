@@ -273,8 +273,8 @@ impl State {
             .map(|t| t.session_id.clone());
         // 正常退出标签页（用户主动关闭）：记录标签与所属会话，便于排查资源残留 / 连接未释放。
         log::info!(
-            "关闭标签页: 标签 {tab_id} 会话 {}",
-            closed_session.as_deref().unwrap_or("<无>")
+            "Closing tab: tab {tab_id} session {}",
+            closed_session.as_deref().unwrap_or("<none>")
         );
         let mut events = vec![Event::RemoveHostKeyForTab(tab_id)];
         // 置位该标签的桥接断开标志，让核心层 pump 任务尽快退出（释放服务端管道句柄，

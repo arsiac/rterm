@@ -46,8 +46,8 @@ pub(crate) async fn connect_stream_task(
                 };
                 // 记录连接最终结果：成功 / 失败（含超时）均落日志，便于排查连接问题。
                 match &result {
-                    Ok(_) => log::info!("连接成功: 会话 {id} (标签 {tab_id})"),
-                    Err(e) => log::error!("连接失败: 会话 {id} (标签 {tab_id}): {e}"),
+                    Ok(_) => log::info!("Connected: session {id} (tab {tab_id})"),
+                    Err(e) => log::error!("Connection failed: session {id} (tab {tab_id}): {e}"),
                 }
                 let _ = output
                     .send(Message::Tabs(tabs::Message::SessionConnected(
@@ -75,7 +75,7 @@ pub(crate) async fn connect_stream_task(
             // 整段握手（含等待主机密钥确认）超时：中止任务并回报超时错误。
             _ = &mut deadline => {
                 connect.abort();
-                log::error!("连接超时: 会话 {id} (标签 {tab_id})");
+                log::error!("Connection timeout: session {id} (tab {tab_id})");
                 let _ = output
                     .send(Message::Tabs(tabs::Message::SessionConnected(
                         tab_id,

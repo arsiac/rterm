@@ -124,7 +124,7 @@ pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Mess
     };
     let id = id.to_string();
     // 开始建立连接：记录会话与标签，便于追踪连接生命周期与失败排查。
-    log::info!("开始建立连接: 会话 {id} (标签 {tab_id})");
+    log::info!("Establishing connection: session {id} (tab {tab_id})");
     // 连接超时取自应用配置；0 表示不限制。
     // 用 stream 而非 perform：握手可能在主机密钥弹窗处中途暂停，需要向 GUI
     // 发送中途消息后再等用户决定，perform 只有唯一最终输出无法胜任。

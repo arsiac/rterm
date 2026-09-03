@@ -293,7 +293,7 @@ mod win_io {
                                 continue;
                             }
                             Poll::Ready(Err(e)) => {
-                                log::error!("rterm tty 读线程错误: {e}");
+                                log::error!("rterm tty read thread error: {e}");
                                 return;
                             }
                             Poll::Pending => {
@@ -303,7 +303,7 @@ mod win_io {
                         }
                     }
                 })
-                .expect("启动 rterm tty 读线程失败");
+                .expect("failed to start rterm tty read thread");
 
             Self {
                 interest,
@@ -391,14 +391,14 @@ mod win_io {
                                 continue;
                             }
                             Poll::Ready(Err(e)) => {
-                                log::error!("rterm tty 写线程错误: {e}");
+                                log::error!("rterm tty write thread error: {e}");
                                 return;
                             }
                             Poll::Pending => thread::park(),
                         }
                     }
                 })
-                .expect("启动 rterm tty 写线程失败");
+                .expect("failed to start rterm tty write thread");
 
             Self {
                 interest,

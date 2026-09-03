@@ -126,7 +126,7 @@ impl Handler for ClientHandler {
             Ok(status) => status,
             Err(e) => {
                 log::error!(
-                    "读取 known_hosts 失败，拒绝 {host}:{port}: {e}",
+                    "Failed to read known_hosts, rejecting {host}:{port}: {e}",
                     host = self.host,
                     port = self.port
                 );
@@ -150,7 +150,7 @@ impl Handler for ClientHandler {
         let is_mismatch = prompt.mismatch.is_some();
         if self.prompt_tx.send((prompt, reply.clone())).await.is_err() {
             log::warn!(
-                "主机密钥确认通道已关闭，视为拒绝 {host}:{port}",
+                "Host key confirmation channel closed, treating as rejected {host}:{port}",
                 host = self.host,
                 port = self.port
             );
@@ -177,7 +177,7 @@ impl Handler for ClientHandler {
             Ok(()) => Ok(true),
             Err(e) => {
                 log::error!(
-                    "记录已知主机失败，拒绝 {host}:{port}: {e}",
+                    "Failed to record known host, rejecting {host}:{port}: {e}",
                     host = self.host,
                     port = self.port
                 );

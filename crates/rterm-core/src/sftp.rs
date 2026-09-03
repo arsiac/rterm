@@ -26,7 +26,7 @@ impl SftpClient {
     /// `~` 这类客户端侧的展开是否生效完全取决于远端服务器对 REALPATH 的实现；
     /// 传入空串或 “.” 可取回服务端当前工作目录。
     pub async fn resolve_path(&self, path: &str) -> Result<String, CoreError> {
-        debug!("解析远端绝对路径: {path}");
+        debug!("Resolving remote absolute path: {path}");
         self.session
             .canonicalize(path)
             .await
@@ -37,7 +37,7 @@ impl SftpClient {
     ///
     /// 结果按 [`FileEntry`] 返回，便于 UI 直接渲染。
     pub async fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>, CoreError> {
-        debug!("列举目录: {path}");
+        debug!("Listing directory: {path}");
         let mut dir = self
             .session
             .read_dir(path)
@@ -71,7 +71,7 @@ impl SftpClient {
                     .or_else(|| meta.gid.map(|g| g.to_string())),
             });
         }
-        debug!("目录 {} 共 {} 项", path, entries.len());
+        debug!("Directory {} has {} item(s)", path, entries.len());
         // 先按类型（目录在前）排序，再按名称字典序，便于用户浏览。
         entries.sort_by(|a, b| {
             b.is_dir
@@ -86,7 +86,7 @@ impl SftpClient {
     /// 只发一次 `mkdir`、**不会**逐级创建父目录（russh-sftp 无 `mkdir -p` 语义），
     /// 父目录不存在时直接返回错误。
     pub async fn create_dir(&self, path: &str) -> Result<(), CoreError> {
-        debug!("创建目录: {path}");
+        debug!("Creating directory: {path}");
         self.session
             .create_dir(path)
             .await
@@ -95,7 +95,7 @@ impl SftpClient {
 
     /// 删除远端单个文件（无法删除目录）。
     pub async fn remove_file(&self, path: &str) -> Result<(), CoreError> {
-        debug!("删除文件: {path}");
+        debug!("Removing file: {path}");
         self.session
             .remove_file(path)
             .await
@@ -104,7 +104,7 @@ impl SftpClient {
 
     /// 仅能删除空目录。
     pub async fn remove_dir(&self, path: &str) -> Result<(), CoreError> {
-        debug!("删除目录: {path}");
+        debug!("Removing directory: {path}");
         self.session
             .remove_dir(path)
             .await
@@ -113,7 +113,7 @@ impl SftpClient {
 
     /// 重命名 / 移动远端文件或目录（跨目录即移动语义）。
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), CoreError> {
-        debug!("重命名: {from} -> {to}");
+        debug!("Renaming: {from} -> {to}");
         self.session
             .rename(from, to)
             .await
@@ -130,7 +130,7 @@ impl SftpClient {
         remote: &str,
         on_progress: impl FnMut(&str, u64, u64) + Send,
     ) -> Result<(), CoreError> {
-        debug!("上传: {} -> {remote}", local.display());
+        debug!("Uploading: {} -> {remote}", local.display());
         let name = local
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -160,7 +160,7 @@ impl SftpClient {
             .shutdown()
             .await
             .map_err(|e| CoreError::sftp(CoreErrorKind::CloseRemoteFile, e))?;
-        debug!("上传完成: {remote} ({} 字节)", total);
+        debug!("Upload complete: {remote} ({} bytes)", total);
         Ok(())
     }
 
@@ -174,7 +174,7 @@ impl SftpClient {
         local: &Path,
         on_progress: impl FnMut(&str, u64, u64) + Send,
     ) -> Result<(), CoreError> {
-        debug!("下载: {remote} -> {}", local.display());
+        debug!("Downloading: {remote} -> {}", local.display());
         let name = remote
             .rsplit('/')
             .next()
@@ -206,7 +206,7 @@ impl SftpClient {
         )
         .await?;
         local_file.flush().await.map_err(CoreError::Io)?;
-        debug!("下载完成: {} ({} 字节)", local.display(), total);
+        debug!("Download complete: {} ({} bytes)", local.display(), total);
         Ok(())
     }
 }

@@ -566,7 +566,7 @@ fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> S
             password: password.as_ref().map(|env| {
                 let plain = old_vault
                     .decrypt(env)
-                    .expect("重加密时旧信封解密失败（主密码已校验）");
+                    .expect("old envelope decryption failed during reencryption (master password already validated)");
                 new_vault.encrypt(plain.as_str())
             }),
         },
@@ -578,7 +578,7 @@ fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> S
             passphrase: passphrase.as_ref().map(|env| {
                 let plain = old_vault
                     .decrypt(env)
-                    .expect("重加密时旧信封解密失败（主密码已校验）");
+                    .expect("old envelope decryption failed during reencryption (master password already validated)");
                 new_vault.encrypt(plain.as_str())
             }),
         },
@@ -955,7 +955,7 @@ mod tests {
         // 仅当本机钥匙串后端可用时才有意义；无后端（如部分 CI）直接跳过，避免误报。
         // 钥匙串为系统级共享存储，测试前后清理条目，降低与其他测试的相互影响。
         if !crate::vault_keyring::available() {
-            eprintln!("跳过 auto_unlock：本机无可用钥匙串后端");
+            eprintln!("Skipping auto_unlock: no keyring backend available");
             return;
         }
         crate::vault_keyring::delete_dek_quietly();

@@ -62,7 +62,7 @@ pub async fn spawn_terminal_bridge(
     let pump_stop = disconnect.clone();
     tokio::spawn(async move {
         pump(out_stream, in_stream, channel, resize_rx, pump_stop).await;
-        log::debug!("终端桥接任务结束");
+        log::debug!("Terminal bridge task finished");
         // 桥接结束即视为连接断开（远端关闭或本地流 EOF），通知 GUI 更新状态。
         bridge_disconnect.store(true, Ordering::SeqCst);
     });
@@ -94,20 +94,20 @@ async fn pump<W, R>(
     let mut channel_buf = [0u8; 8192];
     let mut total_remote = 0usize;
     let mut total_local = 0usize;
-    log::debug!("终端桥接 pump 启动");
+    log::debug!("Terminal bridge pump started");
 
     loop {
         // 在两次 I/O 等待之间，将积压的窗口尺寸变更下发到远端。
         while let Ok((cols, rows)) = resize_rx.try_recv() {
             if let Err(e) = channel.window_change(cols, rows, 0, 0).await {
-                log::debug!("转发窗口尺寸变更失败: {e}");
+                log::debug!("Failed to forward window size change: {e}");
             }
         }
 
         tokio::select! {
             // 收到断开信号：立即退出，释放服务端管道句柄。
             _ = wait_stop(stop.clone()) => {
-                log::debug!("pump: 收到断开信号，退出");
+                log::debug!("pump: received stop signal, exiting");
                 break;
             }
             // 远端 -> 本地：从通道读取并写入本地 OUT 管道端。
@@ -142,7 +142,7 @@ async fn pump<W, R>(
         }
     }
     log::debug!(
-        "终端桥接 pump 退出（远端→本地 {total_remote} 字节，本地→远端 {total_local} 字节）"
+        "Terminal bridge pump exiting (remote→local {total_remote} bytes, local→remote {total_local} bytes)"
     );
 }
 
@@ -167,11 +167,11 @@ fn create_bridge() -> io::Result<(File, File, impl AsyncWrite + Unpin, impl Asyn
     // socketpair 默认阻塞；同步端交给 polling 前必须非阻塞，异步端交给 tokio 前也必须非阻塞。
     local
         .set_nonblocking(true)
-        .expect("设置 socketpair 同步端为非阻塞失败");
+        .expect("failed to set socketpair sync end to non-blocking");
     let local = unsafe { File::from_raw_fd(local.into_raw_fd()) };
     remote
         .set_nonblocking(true)
-        .expect("设置 socketpair 异步端为非阻塞失败");
+        .expect("failed to set socketpair async end to non-blocking");
     let remote = tokio::net::UnixStream::from_std(remote)?;
     // 同步端克隆两份：conout 读、conin 写（共用同一双向 fd）。
     let conout_file = local.try_clone()?;

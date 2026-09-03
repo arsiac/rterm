@@ -322,21 +322,22 @@ fn derive_dek(
     parallel: u32,
     out: &mut [u8],
 ) {
-    let params = Params::new(mem_kib, ops, parallel, None).expect("Argon2 参数非法");
+    let params = Params::new(mem_kib, ops, parallel, None).expect("invalid Argon2 parameters");
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
     // `hash_password_into` 直接把原始密钥写入 `out`，不走 PHC 字符串编码。
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, out)
-        .expect("Argon2 派生失败");
+        .expect("Argon2 key derivation failed");
 }
 
 /// AES-256-GCM 密封：随机 nonce + 明文 → 密文（含 tag）。
 fn seal(dek: &SecretBox<[u8; DEK_LEN]>, plaintext: &[u8]) -> Envelope {
-    let cipher = Aes256Gcm::new_from_slice(dek.expose_secret()).expect("密钥长度固定为 32 字节");
+    let cipher =
+        Aes256Gcm::new_from_slice(dek.expose_secret()).expect("key length must be 32 bytes");
     let nonce: [u8; NONCE_LEN] = rand::random();
     let ct = cipher
         .encrypt(&Nonce::from(nonce), plaintext)
-        .expect("AES-GCM 加密不应失败（除非 nonce 复用）");
+        .expect("AES-GCM encryption should not fail (unless nonce is reused)");
     Envelope::new(nonce, ct)
 }
 

@@ -62,7 +62,7 @@ pub fn resolve_repo() -> String {
 /// 跳过 `prerelease` / `draft`；仅当远端版本号严格大于当前版本才视为有更新。
 pub async fn check_latest(repo: &str) -> Result<Option<ReleaseInfo>, String> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
-    debug!("检查更新：{url}");
+    debug!("Checking updates: {url}");
 
     let client = reqwest::Client::builder()
         .user_agent(concat!(
@@ -90,7 +90,7 @@ pub async fn check_latest(repo: &str) -> Result<Option<ReleaseInfo>, String> {
         .map_err(|e| format!("解析更新信息失败: {e}"))?;
 
     if release.prerelease || release.draft {
-        debug!("忽略预发布 / 草稿版本 {}", release.tag_name);
+        debug!("Ignoring pre-release / draft release {}", release.tag_name);
         return Ok(None);
     }
 
@@ -103,7 +103,9 @@ pub async fn check_latest(repo: &str) -> Result<Option<ReleaseInfo>, String> {
         (Ok(r), Ok(c)) => r > c,
         // 版本号无法解析时（如非标准 tag）不提示更新，避免误报。
         _ => {
-            warn!("版本号无法解析（远端 {remote} / 当前 {current}），跳过更新提示");
+            warn!(
+                "Failed to parse version (remote {remote} / current {current}), skipping update notification"
+            );
             false
         }
     };
@@ -114,7 +116,7 @@ pub async fn check_latest(repo: &str) -> Result<Option<ReleaseInfo>, String> {
             html_url: release.html_url,
         }))
     } else {
-        debug!("已是最新（远端 {remote} / 当前 {current}）");
+        debug!("Already up-to-date (remote {remote} / current {current})");
         Ok(None)
     }
 }
