@@ -10,6 +10,7 @@ members = [
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
+license = "MIT"
 
 [workspace.lints.rust]
 missing_docs = "deny"
@@ -74,9 +75,9 @@ winresource = "0.1"
 
 [package]
 name = "rterm"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "A terminal/SSH client with integrated SFTP file manager"
 authors = ["rterm"]
 
