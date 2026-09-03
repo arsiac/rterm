@@ -3,7 +3,7 @@
 //! [`SftpClient`] 持有已建立的 [`SftpSession`]，向 GUI 提供目录列表、
 //! 上传 / 下载 / 重命名 / 删除 / 建目录等高层操作。
 
-use crate::{CoreError, FileEntry};
+use crate::{CoreError, CoreErrorKind, FileEntry};
 use log::debug;
 use russh_sftp::client::SftpSession;
 use std::path::Path;
@@ -30,7 +30,7 @@ impl SftpClient {
         self.session
             .canonicalize(path)
             .await
-            .map_err(|e| CoreError::sftp("解析路径失败", e))
+            .map_err(|e| CoreError::sftp(CoreErrorKind::ParsePath, e))
     }
 
     /// 列出远程目录内容。
@@ -42,7 +42,7 @@ impl SftpClient {
             .session
             .read_dir(path)
             .await
-            .map_err(|e| CoreError::sftp("读取目录失败", e))?;
+            .map_err(|e| CoreError::sftp(CoreErrorKind::ReadDir, e))?;
         let mut entries = Vec::new();
         for entry in dir.by_ref() {
             let meta = entry.metadata();
@@ -90,7 +90,7 @@ impl SftpClient {
         self.session
             .create_dir(path)
             .await
-            .map_err(|e| CoreError::sftp("创建目录失败", e))
+            .map_err(|e| CoreError::sftp(CoreErrorKind::CreateDir, e))
     }
 
     /// 删除远端单个文件（无法删除目录）。
@@ -99,7 +99,7 @@ impl SftpClient {
         self.session
             .remove_file(path)
             .await
-            .map_err(|e| CoreError::sftp("删除文件失败", e))
+            .map_err(|e| CoreError::sftp(CoreErrorKind::DeleteFile, e))
     }
 
     /// 仅能删除空目录。
@@ -108,7 +108,7 @@ impl SftpClient {
         self.session
             .remove_dir(path)
             .await
-            .map_err(|e| CoreError::sftp("删除目录失败", e))
+            .map_err(|e| CoreError::sftp(CoreErrorKind::DeleteDir, e))
     }
 
     /// 重命名 / 移动远端文件或目录（跨目录即移动语义）。
@@ -117,7 +117,7 @@ impl SftpClient {
         self.session
             .rename(from, to)
             .await
-            .map_err(|e| CoreError::sftp("重命名失败", e))
+            .map_err(|e| CoreError::sftp(CoreErrorKind::Rename, e))
     }
 
     /// 分块上传本地文件到远端，并通过回调上报进度。
@@ -145,7 +145,7 @@ impl SftpClient {
             .session
             .create(remote)
             .await
-            .map_err(|e| CoreError::sftp("创建远端文件失败", e))?;
+            .map_err(|e| CoreError::sftp(CoreErrorKind::CreateRemoteFile, e))?;
         copy_with_progress(
             &name,
             total,
@@ -153,13 +153,13 @@ impl SftpClient {
             &mut remote_file,
             on_progress,
             CoreError::Io,
-            |e| CoreError::sftp("写入远端失败", e),
+            |e| CoreError::sftp(CoreErrorKind::WriteRemote, e),
         )
         .await?;
         remote_file
             .shutdown()
             .await
-            .map_err(|e| CoreError::sftp("关闭远端文件失败", e))?;
+            .map_err(|e| CoreError::sftp(CoreErrorKind::CloseRemoteFile, e))?;
         debug!("上传完成: {remote} ({} 字节)", total);
         Ok(())
     }
@@ -191,7 +191,7 @@ impl SftpClient {
             .session
             .open(remote)
             .await
-            .map_err(|e| CoreError::sftp("打开远端文件失败", e))?;
+            .map_err(|e| CoreError::sftp(CoreErrorKind::OpenRemoteFile, e))?;
         let mut local_file = tokio::fs::File::create(local)
             .await
             .map_err(CoreError::Io)?;
@@ -201,7 +201,7 @@ impl SftpClient {
             &mut remote_file,
             &mut local_file,
             on_progress,
-            |e| CoreError::sftp("读取远端失败", e),
+            |e| CoreError::sftp(CoreErrorKind::ReadRemote, e),
             CoreError::Io,
         )
         .await?;

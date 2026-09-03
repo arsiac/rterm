@@ -8,6 +8,7 @@ use std::time::Instant;
 use iced::{Subscription, Task};
 
 use crate::app::tasks::join_path;
+use crate::i18n::localize_error;
 use crate::state::{ToastKind, Transfer, TransferDirection, TransferStatus};
 use crate::t;
 use futures::{SinkExt, StreamExt};
@@ -375,7 +376,7 @@ fn run_transfer(
                             client.download_with_progress(&remote, &local, cb).await
                         }
                     };
-                    result.map_err(|e| e.to_string())
+                    result.map_err(|e| localize_error(&e))
                 })
             };
 

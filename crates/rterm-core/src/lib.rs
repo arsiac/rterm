@@ -18,7 +18,7 @@ pub mod sftp;
 pub mod terminal_bridge;
 
 pub use connection::{HostKeyPrompt, HostKeyReply, SessionSecrets, SshConnection};
-pub use error::CoreError;
+pub use error::{CoreError, CoreErrorKind};
 pub use model::{ConnectionStatus, FileEntry};
 pub use sftp::SftpClient;
 pub use terminal_bridge::spawn_terminal_bridge;

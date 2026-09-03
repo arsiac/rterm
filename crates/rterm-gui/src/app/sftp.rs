@@ -5,6 +5,7 @@ use std::sync::Arc;
 use iced::{Subscription, Task};
 
 use crate::app::tasks::{join_path, open_sftp_task, parent_path, resolve_and_list_task};
+use crate::i18n::localize_error;
 use crate::state::{CenterView, SftpDialog, SftpView, ToastKind};
 use crate::t;
 use rterm_core::{FileEntry, SftpClient, SshConnection};
@@ -217,7 +218,7 @@ impl State {
                             Event::Emit(Box::new(Message::SftpReady(
                                 tab_id,
                                 session_id,
-                                res.map_err(|e| e.to_string()),
+                                res.map_err(|e| localize_error(&e)),
                             )))
                         })
                     }
@@ -343,7 +344,7 @@ impl State {
                         client
                             .create_dir(&new_path)
                             .await
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| localize_error(&e))
                     },
                     move |res| match res {
                         Ok(()) => Event::Emit(Box::new(Message::SftpCd(path))),
@@ -392,7 +393,7 @@ impl State {
                         client
                             .rename(&from_path, &to_path)
                             .await
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| localize_error(&e))
                     },
                     move |res| match res {
                         Ok(()) => Event::Emit(Box::new(Message::SftpCd(path))),
@@ -461,7 +462,7 @@ impl State {
                                 } else {
                                     client.remove_file(&full).await
                                 };
-                                res.map_err(|e| e.to_string())
+                                res.map_err(|e| localize_error(&e))
                             },
                             move |res| match res {
                                 Ok(()) => Event::Emit(Box::new(Message::SftpCd(base_path))),
@@ -586,7 +587,7 @@ fn list_task(tab_id: u64, client: Arc<SftpClient>, path: String) -> Task<Event> 
             Err(e) => Event::Emit(Box::new(Message::SftpListed(
                 tab_id,
                 path,
-                Err(e.to_string()),
+                Err(localize_error(&e)),
             ))),
         },
     )

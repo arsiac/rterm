@@ -191,9 +191,7 @@ app:
   session_saved: Session saved
   no_password: Session is missing login password; please fill it in the editor and retry
   tab_closed: "Tab closed, discarding connection result: %{id}"
-  connect_failed: "Connection failed: %{err}"
   conn_established: "Connection established for new tab: %{id}"
-  open_terminal_failed: "Failed to open terminal: %{err}"
   disconnected: "Disconnected: %{id}"
   sftp_open_failed: "Failed to open SFTP: %{err}"
   list_failed: "Failed to list directory: %{err}"
@@ -218,3 +216,37 @@ app:
   transfer_error: "Transfer task error: %{err}"
   connect_task_error: "Connection task exited with error: %{err}"
   connect_timeout: Connection timed out
+errors:
+  io: "I/O error: %{detail}"
+  ssh_connect: "Connection failed: %{detail}"
+  ssh_missing_password: Missing decrypted password
+  ssh_auth_password_request: "Password authentication request failed: %{detail}"
+  ssh_auth_password_rejected: Password authentication was rejected by the server
+  ssh_read_key: "Failed to read private key: %{detail}"
+  ssh_decrypt_key: "Failed to decrypt private key: %{detail}"
+  ssh_auth_pubkey_request: "Public key authentication request failed: %{detail}"
+  ssh_auth_pubkey_rejected: Public key authentication was rejected by the server
+  ssh_agent_connect: "Failed to connect to SSH agent: %{detail}"
+  ssh_agent_connect_pageant: "Failed to connect to SSH agent (Pageant): %{detail}"
+  ssh_agent_identities: "Failed to fetch SSH agent identities: %{detail}"
+  ssh_agent_auth_failed: SSH agent authentication failed or no usable identity
+  ssh_channel_open: "Failed to open channel: %{detail}"
+  ssh_request_pty: "Failed to request PTY: %{detail}"
+  ssh_start_shell: "Failed to start shell: %{detail}"
+  ssh_sftp_channel_open: "Failed to open SFTP channel: %{detail}"
+  ssh_sftp_subsystem: "Failed to request SFTP subsystem: %{detail}"
+  ssh_sftp_init: "Failed to initialize SFTP session: %{detail}"
+  ssh_cache_dir_unknown: Unable to locate cache directory
+  ssh_create_cache_dir: "Failed to create cache directory: %{detail}"
+  ssh_write_known_hosts: "Failed to write known_hosts: %{detail}"
+  sftp_parse_path: "Failed to resolve path: %{detail}"
+  sftp_read_dir: "Failed to read directory: %{detail}"
+  sftp_create_dir: "Failed to create directory: %{detail}"
+  sftp_delete_file: "Failed to delete file: %{detail}"
+  sftp_delete_dir: "Failed to delete directory: %{detail}"
+  sftp_rename: "Failed to rename: %{detail}"
+  sftp_create_remote_file: "Failed to create remote file: %{detail}"
+  sftp_write_remote: "Failed to write remote file: %{detail}"
+  sftp_close_remote_file: "Failed to close remote file: %{detail}"
+  sftp_open_remote_file: "Failed to open remote file: %{detail}"
+  sftp_read_remote: "Failed to read remote file: %{detail}"

@@ -2,6 +2,7 @@
 
 use crate::app::hostkey;
 use crate::app::tabs;
+use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
 use crate::t;
 use futures::SinkExt;
@@ -40,7 +41,7 @@ pub(crate) async fn connect_stream_task(
         tokio::select! {
             res = &mut connect => {
                 let result = match res {
-                    Ok(r) => r.map_err(|e| e.to_string()),
+                    Ok(r) => r.map_err(|e| localize_error(&e)),
                     Err(e) => Err(t!("app.connect_task_error", err => e)),
                 };
                 // 记录连接最终结果：成功 / 失败（含超时）均落日志，便于排查连接问题。

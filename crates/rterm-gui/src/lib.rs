@@ -7,6 +7,7 @@ pub mod activity_bar;
 pub mod app;
 pub mod font;
 pub mod host_key_dialog;
+pub mod i18n;
 pub mod icons;
 pub mod layout;
 pub mod masterpw_change_dialog;

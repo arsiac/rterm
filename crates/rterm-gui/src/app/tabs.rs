@@ -326,10 +326,7 @@ impl State {
                 tab_id, conout, conin, disconnect, resize_tx,
             )),
             Err(e) => {
-                let mut events = vec![Event::SetStatus(t!(
-                    "app.open_terminal_failed",
-                    err => e
-                ))];
+                let mut events = vec![Event::SetStatus(e)];
                 // 终端打开失败时该标签被丢弃；同会话其它标签各自持有自己的连接，不受影响。
                 let closed_session = self
                     .tabs
@@ -378,7 +375,7 @@ impl State {
         if !self.tabs.iter().any(|t| t.id == tab_id) {
             let msg = match &result {
                 Ok(_) => t!("app.tab_closed", id => id),
-                Err(e) => t!("app.connect_failed", err => e),
+                Err(e) => e.clone(),
             };
             return Task::done(Event::SetStatus(msg));
         }
@@ -402,7 +399,7 @@ impl State {
                     tab.status = ConnectionStatus::Error;
                     tab.error = Some(e.clone());
                 }
-                Task::done(Event::SetStatus(t!("app.connect_failed", err => e)))
+                Task::done(Event::SetStatus(e))
             }
         }
     }

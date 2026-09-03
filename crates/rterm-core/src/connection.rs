@@ -4,7 +4,7 @@
 //! 打开多个通道：交互式 shell 通道（供终端标签页桥接）与 sftp 子系统通道
 //! （供文件管理面板使用）。
 
-use crate::{CoreError, host_key};
+use crate::{CoreError, CoreErrorKind, host_key};
 use log::debug;
 use rterm_config::{AuthMethod, SessionConfig};
 use russh::client::{self, Config, Handle, Handler};
@@ -227,7 +227,7 @@ impl SshConnection {
             handler,
         )
         .await
-        .map_err(|e| CoreError::ssh("连接失败", e))?;
+        .map_err(|e| CoreError::ssh(CoreErrorKind::Connect, e))?;
 
         // 认证需要可变句柄。凭据已由调用方用保险库解密为明文（见 `SessionSecrets`）。
         match &config.auth {
@@ -236,13 +236,13 @@ impl SshConnection {
                 let password = secrets
                     .password
                     .as_ref()
-                    .ok_or_else(|| CoreError::ssh_msg("缺少解密后的密码"))?;
+                    .ok_or_else(|| CoreError::ssh_msg(CoreErrorKind::MissingPassword))?;
                 let result = handle
                     .authenticate_password(&config.username, password.as_str())
                     .await
-                    .map_err(|e| CoreError::ssh("密码认证请求失败", e))?;
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::AuthPasswordRequest, e))?;
                 if !result.success() {
-                    return Err(CoreError::ssh_msg("密码认证被服务器拒绝"));
+                    return Err(CoreError::ssh_msg(CoreErrorKind::AuthPasswordRejected));
                 }
             }
             AuthMethod::PublicKey {
@@ -252,20 +252,20 @@ impl SshConnection {
                 debug!("使用公钥认证: {}", key_path.display());
                 let pass = secrets.key_passphrase.as_ref().map(|p| p.as_str());
                 let key = russh::keys::PrivateKey::read_openssh_file(key_path)
-                    .map_err(|e| CoreError::ssh("读取私钥失败", e))?;
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::ReadKey, e))?;
                 let key = match pass {
                     Some(pass) => key
                         .decrypt(pass)
-                        .map_err(|e| CoreError::ssh("解密私钥失败", e))?,
+                        .map_err(|e| CoreError::ssh(CoreErrorKind::DecryptKey, e))?,
                     None => key,
                 };
                 let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
                 let result = handle
                     .authenticate_publickey(&config.username, key)
                     .await
-                    .map_err(|e| CoreError::ssh("公钥认证请求失败", e))?;
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::AuthPublicKeyRequest, e))?;
                 if !result.success() {
-                    return Err(CoreError::ssh_msg("公钥认证被服务器拒绝"));
+                    return Err(CoreError::ssh_msg(CoreErrorKind::AuthPublicKeyRejected));
                 }
             }
             AuthMethod::Agent => {
@@ -273,15 +273,15 @@ impl SshConnection {
                 #[cfg(unix)]
                 let mut agent = russh::keys::agent::client::AgentClient::connect_env()
                     .await
-                    .map_err(|e| CoreError::ssh("连接 SSH agent 失败", e))?;
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::AgentConnect, e))?;
                 #[cfg(windows)]
                 let mut agent = russh::keys::agent::client::AgentClient::connect_pageant()
                     .await
-                    .map_err(|e| CoreError::ssh("连接 SSH agent (Pageant) 失败", e))?;
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::AgentConnectPageant, e))?;
                 let identities = agent
                     .request_identities()
                     .await
-                    .map_err(|e| CoreError::ssh("获取 agent 密钥失败", e))?;
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::AgentIdentities, e))?;
                 let mut authed = false;
                 for id in identities {
                     let pubkey = id.public_key().into_owned();
@@ -295,7 +295,7 @@ impl SshConnection {
                     }
                 }
                 if !authed {
-                    return Err(CoreError::ssh_msg("SSH agent 认证失败或无可用身份"));
+                    return Err(CoreError::ssh_msg(CoreErrorKind::AgentAuthFailed));
                 }
             }
         }
@@ -319,15 +319,15 @@ impl SshConnection {
         let channel = handle
             .channel_open_session()
             .await
-            .map_err(|e| CoreError::ssh("打开通道失败", e))?;
+            .map_err(|e| CoreError::ssh(CoreErrorKind::ChannelOpen, e))?;
         channel
             .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
             .await
-            .map_err(|e| CoreError::ssh("请求 PTY 失败", e))?;
+            .map_err(|e| CoreError::ssh(CoreErrorKind::RequestPty, e))?;
         channel
             .request_shell(true)
             .await
-            .map_err(|e| CoreError::ssh("启动 shell 失败", e))?;
+            .map_err(|e| CoreError::ssh(CoreErrorKind::StartShell, e))?;
         Ok(channel)
     }
 
@@ -338,15 +338,15 @@ impl SshConnection {
         let channel = handle
             .channel_open_session()
             .await
-            .map_err(|e| CoreError::ssh("打开 sftp 通道失败", e))?;
+            .map_err(|e| CoreError::ssh(CoreErrorKind::SftpChannelOpen, e))?;
         channel
             .request_subsystem(true, "sftp")
             .await
-            .map_err(|e| CoreError::ssh("请求 sftp 子系统失败", e))?;
+            .map_err(|e| CoreError::ssh(CoreErrorKind::SftpSubsystem, e))?;
         let stream = channel.into_stream();
         let sftp = russh_sftp::client::SftpSession::new(stream)
             .await
-            .map_err(|e| CoreError::sftp("初始化 sftp 会话失败", e))?;
+            .map_err(|e| CoreError::sftp(CoreErrorKind::SftpInit, e))?;
         Ok(sftp)
     }
 }

@@ -4,6 +4,7 @@ use crate::app::App;
 use crate::app::tabs;
 use crate::app::tasks::open_terminal_task;
 use crate::font;
+use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
 use crate::t;
 use crate::terminal_theme;
@@ -69,7 +70,7 @@ pub(crate) fn open_terminal_bridge(
         move |res| {
             Message::Tabs(tabs::Message::TerminalOpened(
                 tab_id,
-                res.map_err(|e| e.to_string()),
+                res.map_err(|e| localize_error(&e)),
             ))
         },
     );

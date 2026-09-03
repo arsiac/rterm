@@ -190,9 +190,7 @@ app:
     warning: 警告
   session_saved: 会话已保存
   tab_closed: "标签已关闭，丢弃连接结果: %{id}"
-  connect_failed: "连接失败: %{err}"
   conn_established: "已为新标签建立连接: %{id}"
-  open_terminal_failed: "打开终端失败: %{err}"
   disconnected: "连接已断开: %{id}"
   sftp_open_failed: "打开 SFTP 失败: %{err}"
   list_failed: "列举目录失败: %{err}"
@@ -218,3 +216,37 @@ app:
   transfer_error: "传输任务异常: %{err}"
   connect_task_error: "连接任务异常退出: %{err}"
   connect_timeout: 连接超时
+errors:
+  io: "I/O 错误: %{detail}"
+  ssh_connect: "连接失败: %{detail}"
+  ssh_missing_password: 缺少解密后的密码
+  ssh_auth_password_request: "密码认证请求失败: %{detail}"
+  ssh_auth_password_rejected: 密码认证被服务器拒绝
+  ssh_read_key: "读取私钥失败: %{detail}"
+  ssh_decrypt_key: "解密私钥失败: %{detail}"
+  ssh_auth_pubkey_request: "公钥认证请求失败: %{detail}"
+  ssh_auth_pubkey_rejected: 公钥认证被服务器拒绝
+  ssh_agent_connect: "连接 SSH agent 失败: %{detail}"
+  ssh_agent_connect_pageant: "连接 SSH agent (Pageant) 失败: %{detail}"
+  ssh_agent_identities: "获取 agent 密钥失败: %{detail}"
+  ssh_agent_auth_failed: SSH agent 认证失败或无可用身份
+  ssh_channel_open: "打开通道失败: %{detail}"
+  ssh_request_pty: "请求 PTY 失败: %{detail}"
+  ssh_start_shell: "启动 shell 失败: %{detail}"
+  ssh_sftp_channel_open: "打开 sftp 通道失败: %{detail}"
+  ssh_sftp_subsystem: "请求 sftp 子系统失败: %{detail}"
+  ssh_sftp_init: "初始化 sftp 会话失败: %{detail}"
+  ssh_cache_dir_unknown: 无法定位缓存目录
+  ssh_create_cache_dir: "创建缓存目录失败: %{detail}"
+  ssh_write_known_hosts: "写入 known_hosts 失败: %{detail}"
+  sftp_parse_path: "解析路径失败: %{detail}"
+  sftp_read_dir: "读取目录失败: %{detail}"
+  sftp_create_dir: "创建目录失败: %{detail}"
+  sftp_delete_file: "删除文件失败: %{detail}"
+  sftp_delete_dir: "删除目录失败: %{detail}"
+  sftp_rename: "重命名失败: %{detail}"
+  sftp_create_remote_file: "创建远端文件失败: %{detail}"
+  sftp_write_remote: "写入远端失败: %{detail}"
+  sftp_close_remote_file: "关闭远端文件失败: %{detail}"
+  sftp_open_remote_file: "打开远端文件失败: %{detail}"
+  sftp_read_remote: "读取远端失败: %{detail}"

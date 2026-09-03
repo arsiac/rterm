@@ -4,7 +4,7 @@
 //! 用户确认后的落盘能力：指纹以纯文本 `host:port SHA256:xxxx` 逐行存于
 //! `<缓存目录>/rterm/known_hosts`，不依赖额外序列化库。
 
-use crate::CoreError;
+use crate::{CoreError, CoreErrorKind};
 use log::info;
 use russh::keys::PublicKeyOrCertificate;
 use russh::keys::ssh_key::HashAlg;
@@ -37,9 +37,10 @@ pub fn key_type(key: &PublicKeyOrCertificate) -> String {
 
 /// 解析 known_hosts 文件的完整路径：取系统缓存目录下的 `rterm/known_hosts`，必要时创建目录。
 fn path() -> Result<PathBuf, CoreError> {
-    let base = dirs::cache_dir().ok_or_else(|| CoreError::ssh_msg("无法定位缓存目录"))?;
+    let base =
+        dirs::cache_dir().ok_or_else(|| CoreError::ssh_msg(CoreErrorKind::CacheDirUnknown))?;
     let dir = base.join("rterm");
-    fs::create_dir_all(&dir).map_err(|e| CoreError::ssh("创建缓存目录失败", e))?;
+    fs::create_dir_all(&dir).map_err(|e| CoreError::ssh(CoreErrorKind::CreateCacheDir, e))?;
     Ok(dir.join("known_hosts"))
 }
 
@@ -79,7 +80,7 @@ pub fn trust_host_key(host: &str, port: u16, fp: &str) -> Result<(), CoreError> 
         next.push('\n');
     }
     next.push_str(&format!("{host}:{port} {fp}\n"));
-    fs::write(&path, next).map_err(|e| CoreError::ssh("写入 known_hosts 失败", e))?;
+    fs::write(&path, next).map_err(|e| CoreError::ssh(CoreErrorKind::WriteKnownHosts, e))?;
     info!("首次信任主机 {host}:{port}，指纹 {fp}");
     Ok(())
 }
@@ -105,7 +106,7 @@ pub fn replace_host_key(host: &str, port: u16, fp: &str) -> Result<(), CoreError
         }
     }
     next.push_str(&format!("{entry} {fp}\n"));
-    fs::write(&path, next).map_err(|e| CoreError::ssh("写入 known_hosts 失败", e))?;
+    fs::write(&path, next).map_err(|e| CoreError::ssh(CoreErrorKind::WriteKnownHosts, e))?;
     info!("用户确认后覆盖主机 {entry} 的旧指纹，新指纹 {fp}");
     Ok(())
 }
