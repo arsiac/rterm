@@ -220,7 +220,7 @@ impl OnResize for RusshPty {
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
 mod win_io {
-    use std::io::{self, Read, Write};
+    use std::io::{self, Read, Result, Write};
     use std::marker::PhantomData;
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll, Wake, Waker};
