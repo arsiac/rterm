@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use iced::Font;
-use log::debug;
+use log::{debug, error};
 
 use crate::t;
 
@@ -26,10 +26,15 @@ static NAME_CACHE: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::ne
 
 /// 将字体族名提升为 `&'static str`（进程级缓存，同名只泄漏一次，复用不再增长）。
 fn to_static_name(name: &str) -> &'static str {
-    let mut cache = NAME_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .expect("font name cache poisoned");
+    let cache = NAME_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("Font cache lock poisoned, using damaged lock");
+            poisoned.into_inner()
+        }
+    };
     cache
         .entry(name.to_string())
         .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()))

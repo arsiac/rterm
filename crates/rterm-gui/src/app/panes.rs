@@ -2,6 +2,7 @@
 
 use iced::Task;
 use iced::widget::pane_grid;
+use log::error;
 
 /// 初始 / 默认中心（左）栏像素宽度。
 const INITIAL_LEFT_WIDTH: f32 = 320.0;
@@ -19,7 +20,7 @@ pub struct State {
     /// 右侧终端区所在的 `pane` 标识。
     pub right_pane: pane_grid::Pane,
     /// 两栏之间的分隔条标识（用于窗口缩放时重设比例）。
-    pub split: pane_grid::Split,
+    pub split: Option<pane_grid::Split>,
     /// 当前窗口宽度（像素），用于按固定左宽反算比例。
     pub window_width: f32,
 }
@@ -30,12 +31,21 @@ impl State {
         let left_pane_width = INITIAL_LEFT_WIDTH;
         let window_width = INITIAL_WINDOW_WIDTH;
         let (mut pane_grid_state, center_pane) = pane_grid::State::new(());
-        let (right_pane, split) = pane_grid_state
+        let (right_pane, split) = match pane_grid_state
             .split(pane_grid::Axis::Vertical, center_pane, ())
-            .expect("initial split must succeed");
-        // 比例按「左栏像素宽 / 可用宽度」换算：可用宽度需扣掉固定宽度的活动栏。
-        let total = window_width - crate::theme::ACTIVITY_BAR_WIDTH;
-        pane_grid_state.resize(split, (left_pane_width / total).clamp(0.1, 0.9));
+        {
+            Some(result) => {
+                let (right_pane, split) = result;
+                // 比例按「左栏像素宽 / 可用宽度」换算：可用宽度需扣掉固定宽度的活动栏。
+                let total = window_width - crate::theme::ACTIVITY_BAR_WIDTH;
+                pane_grid_state.resize(split, (left_pane_width / total).clamp(0.1, 0.9));
+                (right_pane, Some(split))
+            }
+            None => {
+                error!("Initial layout split failed, using single pane layout");
+                (center_pane, None)
+            }
+        };
         Self {
             left_pane_width,
             pane_grid_state,
@@ -63,9 +73,11 @@ impl State {
                     return Task::none();
                 }
                 self.window_width = width;
-                let total = width - crate::theme::ACTIVITY_BAR_WIDTH;
-                let ratio = (self.left_pane_width / total).clamp(0.1, 0.9);
-                self.pane_grid_state.resize(self.split, ratio);
+                if let Some(split) = self.split {
+                    let total = width - crate::theme::ACTIVITY_BAR_WIDTH;
+                    let ratio = (self.left_pane_width / total).clamp(0.1, 0.9);
+                    self.pane_grid_state.resize(split, ratio);
+                }
                 Task::none()
             }
         }

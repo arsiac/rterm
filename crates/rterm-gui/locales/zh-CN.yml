@@ -210,6 +210,7 @@ app:
   no_password: 会话缺少登录密码，请在编辑中填写后重试
   terminal_ready: 终端已就绪
   terminal_create_failed: "创建终端组件失败: %{err}"
+  pipe_clone_failed: "克隆管道句柄失败: %{err}"
   open_terminal_first: 请先打开该会话的终端
   connect_session_first: 请先连接会话
   sftp_not_ready: SFTP 未就绪

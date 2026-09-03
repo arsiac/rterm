@@ -94,13 +94,27 @@ pub(crate) fn spawn_terminal_widget(
     resize_tx: ResizeSender,
 ) -> Task<Message> {
     // 把本地管道同步端包成 russh 自定义 pty，直接桥接远端 shell 通道。
-    let conout = conout
-        .try_clone()
-        .expect("failed to clone local pipe output handle");
-    let conin = conin
-        .try_clone()
-        .expect("failed to clone local pipe input handle");
-    let russh_pty = RusshPty::new(conout, conin, disconnect.clone(), resize_tx.clone());
+    let conout = match conout.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            app.status = Some(t!("app.pipe_clone_failed", err => e));
+            return Task::none();
+        }
+    };
+    let conin = match conin.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            app.status = Some(t!("app.pipe_clone_failed", err => e));
+            return Task::none();
+        }
+    };
+    let russh_pty = match RusshPty::new(conout, conin, disconnect.clone(), resize_tx.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            app.status = Some(t!("app.pipe_clone_failed", err => e));
+            return Task::none();
+        }
+    };
     let settings = TermSettings {
         backend: Default::default(),
         font: FontSettings {

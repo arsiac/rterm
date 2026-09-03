@@ -62,31 +62,31 @@ impl RusshPty {
         conin: File,
         disconnect: Arc<AtomicBool>,
         resize_tx: mpsc::Sender<(u32, u32)>,
-    ) -> Self {
+    ) -> io::Result<Self> {
         #[cfg(not(windows))]
         {
             // Unix 下 conout 与 conin 克隆自同一 socketpair fd，共用一个 file 即可；
             // 丢弃 conin 克隆不会关闭底层 fd（仍由 conout 持有）。
             let _ = conin;
-            Self {
+            Ok(Self {
                 file: conout,
                 disconnect,
                 resize_tx,
-            }
+            })
         }
         #[cfg(windows)]
         {
             // 后台线程的读写缓冲容量，与桥接侧缓冲区规模一致即可。
             const PIPE_CAPACITY: usize = 8192;
             // OUT/IN 两条独立管道：conout 读 out 管客户端，conin 写 in 管客户端，互不串行化。
-            let conout = win_io::UnblockedReader::new(conout, PIPE_CAPACITY);
-            let conin = win_io::UnblockedWriter::new(conin, PIPE_CAPACITY);
-            Self {
+            let conout = win_io::UnblockedReader::new(conout, PIPE_CAPACITY)?;
+            let conin = win_io::UnblockedWriter::new(conin, PIPE_CAPACITY)?;
+            Ok(Self {
                 conout,
                 conin,
                 disconnect,
                 resize_tx,
-            }
+            })
         }
     }
 }
@@ -267,7 +267,7 @@ mod win_io {
 
     impl<R: Read + Send + 'static> UnblockedReader<R> {
         /// 基于 `source` 启动一个后台读线程。
-        pub fn new(mut source: R, pipe_capacity: usize) -> Self {
+        pub fn new(mut source: R, pipe_capacity: usize) -> Result<Self> {
             let (reader, mut writer) = pipe(pipe_capacity);
             let interest = Arc::new(Registration {
                 interest: Mutex::new(None),
@@ -303,14 +303,14 @@ mod win_io {
                         }
                     }
                 })
-                .expect("failed to start rterm tty read thread");
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create TTY reader thread: {e}")))?;
 
-            Self {
+            Ok(Self {
                 interest,
                 pipe: reader,
                 first_register: true,
                 _reader: PhantomData,
-            }
+            })
         }
 
         /// 向 `poller` 注册可读兴趣；若已有数据或首次注册，立即投递一次事件。
@@ -368,7 +368,7 @@ mod win_io {
 
     impl<W: Write + Send + 'static> UnblockedWriter<W> {
         /// 基于 `sink` 启动一个后台写线程。
-        pub fn new(mut sink: W, pipe_capacity: usize) -> Self {
+        pub fn new(mut sink: W, pipe_capacity: usize) -> Result<Self> {
             let (mut reader, writer) = pipe(pipe_capacity);
             let interest = Arc::new(Registration {
                 interest: Mutex::new(None),
@@ -398,13 +398,13 @@ mod win_io {
                         }
                     }
                 })
-                .expect("failed to start rterm tty write thread");
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create TTY writer thread: {e}")))?;
 
-            Self {
+            Ok(Self {
                 interest,
                 pipe: writer,
                 _writer: PhantomData,
-            }
+            })
         }
 
         /// 向 `poller` 注册可写兴趣；若管道有空位，立即投递一次事件。

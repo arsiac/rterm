@@ -3,7 +3,7 @@
 use crate::state::ToastKind;
 use crate::t;
 use iced::Task;
-use log::error;
+use log::{error, warn};
 use rterm_config::{AuthMethod, SessionConfig, SessionStore};
 use rterm_crypto::Vault;
 use std::sync::Arc;
@@ -562,26 +562,33 @@ fn disable(state: &mut State, ctx: &Ctx) -> Task<Event> {
 /// 无凭据的 `Agent` 认证原样返回。
 fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> SessionConfig {
     let auth = match &cfg.auth {
-        AuthMethod::Password { password } => AuthMethod::Password {
-            password: password.as_ref().map(|env| {
-                let plain = old_vault
-                    .decrypt(env)
-                    .expect("old envelope decryption failed during reencryption (master password already validated)");
-                new_vault.encrypt(plain.as_str())
-            }),
-        },
-        AuthMethod::PublicKey {
-            key_path,
-            passphrase,
-        } => AuthMethod::PublicKey {
-            key_path: key_path.clone(),
-            passphrase: passphrase.as_ref().map(|env| {
-                let plain = old_vault
-                    .decrypt(env)
-                    .expect("old envelope decryption failed during reencryption (master password already validated)");
-                new_vault.encrypt(plain.as_str())
-            }),
-        },
+        AuthMethod::Password { password } => {
+            let new_env = password.as_ref().and_then(|env| {
+                match old_vault.decrypt(env) {
+                    Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
+                    Err(e) => {
+                        warn!("Failed to reencrypt password credential (session {}): {e}", cfg.id);
+                        None
+                    }
+                }
+            });
+            AuthMethod::Password { password: new_env }
+        }
+        AuthMethod::PublicKey { key_path, passphrase } => {
+            let new_env = passphrase.as_ref().and_then(|env| {
+                match old_vault.decrypt(env) {
+                    Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
+                    Err(e) => {
+                        warn!("Failed to reencrypt public key passphrase (session {}): {e}", cfg.id);
+                        None
+                    }
+                }
+            });
+            AuthMethod::PublicKey {
+                key_path: key_path.clone(),
+                passphrase: new_env,
+            }
+        }
         AuthMethod::Agent => cfg.auth.clone(),
     };
     SessionConfig {

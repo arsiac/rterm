@@ -15,6 +15,7 @@ use alacritty_terminal::tty::EventedPty;
 use alacritty_terminal::{Grid, tty};
 use iced::keyboard::Modifiers;
 use iced_core::Size;
+use log::warn;
 use std::borrow::Cow;
 use std::cmp::min;
 use std::io::Result;
@@ -346,9 +347,9 @@ impl Backend {
                 }
             }
 
-            open::that(url).unwrap_or_else(|_| {
-                panic!("link opening is failed");
-            })
+            if let Err(e) = open::that(&url) {
+                warn!("Failed to open hyperlink: {e}");
+            }
         }
     }
 

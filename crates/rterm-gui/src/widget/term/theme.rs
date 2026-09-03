@@ -1,6 +1,7 @@
 use crate::widget::term::settings::ThemeSettings;
 use alacritty_terminal::vte::ansi::{self, NamedColor};
 use iced::{Color, widget::container};
+use log::warn;
 use std::collections::HashMap;
 
 /// 终端样式接口：为容器提供背景等 iced 样式。
@@ -165,8 +166,11 @@ impl Theme {
                         _ => &self.palette.background,
                     };
 
-                    return hex_to_color(color)
-                        .unwrap_or_else(|_| panic!("invalid color {}", color));
+                return hex_to_color(color)
+                    .unwrap_or_else(|e| {
+                        warn!("Invalid color config '{color}': {e}, falling back to black");
+                        Color::from_rgb8(0, 0, 0)
+                    });
                 }
 
                 // 其他颜色
@@ -214,7 +218,10 @@ impl Theme {
                     _ => &self.palette.background,
                 };
 
-                hex_to_color(color).unwrap_or_else(|_| panic!("invalid color {}", color))
+                hex_to_color(color).unwrap_or_else(|e| {
+                    warn!("Invalid color config '{color}': {e}, falling back to black");
+                    Color::from_rgb8(0, 0, 0)
+                })
             }
         }
     }
@@ -267,8 +274,9 @@ impl TerminalStyle for Theme {
         container::Style {
             background: Some(
                 hex_to_color(&self.palette.background)
-                    .unwrap_or_else(|_| {
-                        panic!("invalid background color {}", self.palette.background)
+                    .unwrap_or_else(|e| {
+                        warn!("Invalid background color config '{}': {e}, falling back to black", self.palette.background);
+                        Color::from_rgb8(0, 0, 0)
                     })
                     .into(),
             ),

@@ -167,11 +167,11 @@ fn create_bridge() -> io::Result<(File, File, impl AsyncWrite + Unpin, impl Asyn
     // socketpair 默认阻塞；同步端交给 polling 前必须非阻塞，异步端交给 tokio 前也必须非阻塞。
     local
         .set_nonblocking(true)
-        .expect("failed to set socketpair sync end to non-blocking");
+        .map_err(|e| io::Error::new(e.kind(), format!("Failed to set socketpair sync end to non-blocking: {e}")))?;
     let local = unsafe { File::from_raw_fd(local.into_raw_fd()) };
     remote
         .set_nonblocking(true)
-        .expect("failed to set socketpair async end to non-blocking");
+        .map_err(|e| io::Error::new(e.kind(), format!("Failed to set socketpair async end to non-blocking: {e}")))?;
     let remote = tokio::net::UnixStream::from_std(remote)?;
     // 同步端克隆两份：conout 读、conin 写（共用同一双向 fd）。
     let conout_file = local.try_clone()?;
