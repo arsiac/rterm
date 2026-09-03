@@ -112,7 +112,7 @@ jobs:
           $ver = "${{ github.ref_name }}"
           $binPath = "${{ github.workspace }}\target\${{ matrix.target }}\release\rterm.exe"
           if (-not (Test-Path $binPath)) { throw "Built binary not found: $binPath" }
-          iscc /DMyAppVersion=$ver /DBinPath=$binPath /DOs=windows /DArch=$({{ matrix.artifact_arch }}) packaging/windows/rterm.iss
+          iscc /DMyAppVersion=$ver /DBinPath=$binPath /DOs=windows /DArch=${{ matrix.artifact_arch }} packaging/windows/rterm.iss
 
       - name: Build deb/rpm packages (Linux)
         if: runner.os == 'Linux'
