@@ -250,6 +250,11 @@ pub(crate) fn apply_updates_event(app: &mut App, e: updates::Event) -> Task<Mess
             let ctx = contexts::updates_ctx(app);
             app.updates.update(*m, &ctx).map(Message::UpdatesEvent)
         }
+        // 弹出 toast 通知。
+        updates::Event::Toast(kind, msg) => {
+            contexts::set_toast(app, kind, msg);
+            Task::none()
+        }
     }
 }
 

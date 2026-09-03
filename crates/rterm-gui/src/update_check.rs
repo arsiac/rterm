@@ -65,7 +65,11 @@ pub async fn check_latest(repo: &str) -> Result<Option<ReleaseInfo>, String> {
     debug!("检查更新：{url}");
 
     let client = reqwest::Client::builder()
-        .user_agent("rterm-update-check")
+        .user_agent(concat!(
+            "rterm/",
+            env!("CARGO_PKG_VERSION"),
+            " (+https://github.com/arsiac/rterm)"
+        ))
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败: {e}"))?;
 

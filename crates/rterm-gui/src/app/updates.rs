@@ -4,6 +4,9 @@ use iced::Task;
 use log::warn;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::state::ToastKind;
+use crate::update_check::ReleaseInfo;
+
 /// 更新检查节流间隔（24 小时），避免每次启动都请求网络。
 const THROTTLE_SECS: i64 = 24 * 3600;
 
@@ -51,9 +54,8 @@ impl State {
                     Task::none()
                 }
                 Err(e) => {
-                    // 尽力而为：网络 / 状态 / 解析失败仅记录，不向用户弹错以免打扰。
                     warn!("更新检查失败: {e}");
-                    Task::none()
+                    Task::done(Event::Toast(ToastKind::Error, e))
                 }
             },
             Message::OpenReleasePage(url) => {
@@ -81,7 +83,7 @@ pub enum Message {
     /// 立即检查一次（设置页「检查更新」按钮，忽略节流）。
     CheckNow,
     /// 检查完成（有更新为 `ReleaseInfo`，无更新为 `Ok(None)`，出错为 `Err`）。
-    CheckResult(Result<Option<crate::update_check::ReleaseInfo>, String>),
+    CheckResult(Result<Option<ReleaseInfo>, String>),
     /// 在浏览器 / 系统默认处理器中打开发布页（携带 URL）。
     OpenReleasePage(String),
     /// 关闭顶部更新提示横幅（仅隐藏，下次检查仍可能重新出现）。
@@ -101,6 +103,8 @@ pub enum Event {
     /// 不能写父态；故把内部消息装进 `Emit` 上行，父层在 `Message::UpdatesEvent` 分支收到后再
     /// `self.updates.update` 一次，形成自回路。
     Emit(Box<Message>),
+    /// 请求父层弹出 toast 通知（携带类型与文案）。
+    Toast(ToastKind, String),
 }
 
 /// 父层只读上下文：自动检查开关与上次检查时间戳，供模块判定节流，不写回。
@@ -236,7 +240,10 @@ mod tests {
 
         s.banner = Some(("9.9.9".to_string(), "https://example.com".to_string()));
         let events = run_events(s.update(Message::CheckResult(Err("网络不可用".into())), &ctx()));
-        assert!(events.is_empty(), "出错不应写时间戳");
+        assert!(
+            matches!(events.as_slice(), [Event::Toast(ToastKind::Error, _)]),
+            "出错应弹 toast"
+        );
         assert!(s.banner.is_some(), "出错不应改动已有横幅");
     }
 
