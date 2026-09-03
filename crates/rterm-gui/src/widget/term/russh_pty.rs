@@ -303,7 +303,9 @@ mod win_io {
                         }
                     }
                 })
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create TTY reader thread: {e}")))?;
+                .map_err(|e| {
+                    io::Error::other(format!("Failed to create TTY reader thread: {e}"))
+                })?;
 
             Ok(Self {
                 interest,
@@ -398,7 +400,9 @@ mod win_io {
                         }
                     }
                 })
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create TTY writer thread: {e}")))?;
+                .map_err(|e| {
+                    io::Error::other(format!("Failed to create TTY writer thread: {e}"))
+                })?;
 
             Ok(Self {
                 interest,
