@@ -282,6 +282,8 @@ pub enum Message {
     KeyFilePicked(Option<String>),
     /// 折叠 / 展开某分组（携带分组键：空串表示「未分组」区块）。
     ToggleGroup(String),
+    /// 左键按下选中会话（携带会话 id）。
+    SessionSelect(String),
     /// 鼠标进入会话列表某一项（携带会话 id），用于渲染悬浮高亮。
     SessionEnter(String),
     /// 鼠标离开会话列表某一项（携带会话 id），用于清除悬浮高亮。
@@ -432,6 +434,10 @@ impl State {
                 if !self.collapsed_groups.remove(&key) {
                     self.collapsed_groups.insert(key);
                 }
+                Task::none()
+            }
+            Message::SessionSelect(id) => {
+                self.selected_session = Some(id);
                 Task::none()
             }
             Message::SessionEnter(id) => {

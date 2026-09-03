@@ -191,6 +191,7 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
                 style
             }),
     )
+    .on_press(Message::SessionSelect(s.id.clone()))
     .on_enter(Message::SessionEnter(s.id.clone()))
     .on_exit(Message::SessionExit(s.id.clone()))
     .on_double_click(Message::ConnectSession(s.id.clone()))
