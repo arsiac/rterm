@@ -120,6 +120,7 @@ sftp:
   new_dir: New folder
   new_dir_name: New folder
   upload: Upload
+  upload_folder: Upload folder
   go_path_placeholder: Type a path and press Enter to navigate…
   enter: Enter
   download: Download
@@ -143,6 +144,7 @@ sftp:
   download_failed: Failed to download
   transfer_lost: Transfer task terminated unexpectedly
   upload_title: Select files to upload
+  upload_folder_title: Select folders to upload
   download_title: Select download folder
   prop_name: Name
   prop_type: Type

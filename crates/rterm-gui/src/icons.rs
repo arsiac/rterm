@@ -44,12 +44,16 @@ pub enum Icon {
     /// 目录条目标记（与「折叠 / 展开」无关，后者用 `ChevronCircleRight` / `ChevronCircleDown`）；
     /// 也用作设置面板中「打开日志目录」等目录类按钮图标。
     Folder,
+    /// 上传文件夹（文件夹 + 向上箭头，文件夹上传按钮专用）。
+    FolderArrowUp,
     /// 普通文件条目标记。
     Document,
     /// 新建 / 添加。
     Add,
     /// 上传文件。
     CloudArrowUp,
+    /// 上传文件（文档 + 向上箭头，文件上传按钮专用）。
+    DocumentArrowUp,
     /// 下载文件。
     CloudArrowDown,
     /// 新建目录。
@@ -94,9 +98,11 @@ impl Icon {
             Icon::FolderMultiple => svg_bytes!("folder-multiple-16-filled"),
             Icon::FolderJunk => svg_bytes!("folder-junk-24-filled"),
             Icon::Folder => svg_bytes!("folder-16-filled"),
+            Icon::FolderArrowUp => svg_bytes!("folder-arrow-up-16-filled"),
             Icon::Document => svg_bytes!("document-16-filled"),
             Icon::Add => svg_bytes!("add-16-filled"),
             Icon::CloudArrowUp => svg_bytes!("cloud-arrow-up-16-filled"),
+            Icon::DocumentArrowUp => svg_bytes!("document-arrow-up-16-filled"),
             Icon::CloudArrowDown => svg_bytes!("cloud-arrow-down-16-filled"),
             Icon::FolderAdd => svg_bytes!("folder-add-16-filled"),
             Icon::ArrowReply => svg_bytes!("arrow-reply-16-filled"),

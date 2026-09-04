@@ -9,6 +9,7 @@ use futures::SinkExt;
 use rterm_config::SessionConfig;
 use rterm_core::{CoreError, FileEntry, SessionSecrets, SftpClient, SshConnection};
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,5 +196,150 @@ pub(crate) fn parent_path(path: &str) -> String {
         Some(0) => "/".to_string(),
         Some(i) => trimmed[..i].to_string(),
         None => ".".to_string(),
+    }
+}
+
+/// 把本地路径（文件或目录）展开为可上传项列表，保留目录层级。
+///
+/// - 传入文件：返回单一项，远端相对路径即文件名（平铺到远端当前目录）。
+/// - 传入目录：递归收集其下所有文件，远端相对路径以该目录名为顶层前缀
+///   （如拖入 `foo/`，内部 `foo/a/b.txt` 对应远端相对路径 `foo/a/b.txt`），
+///   从而还原本地目录树；目录本身不计入，由传输模块在执行时按需创建远端父目录。
+///
+/// 返回 `(本地绝对路径, 远端相对路径)` 列表，供 `transfer::Message::Upload` 使用。
+pub(crate) fn collect_upload_items(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut items = Vec::new();
+    let Ok(meta) = std::fs::metadata(root) else {
+        return items;
+    };
+    if meta.is_file() {
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        items.push((root.to_path_buf(), name));
+        return items;
+    }
+    // 目录：以目录自身名称为顶层前缀，递归收集子项。每个子项的 `rel_prefix` 需是包含其自身
+    // 名称的完整相对路径，故在此拼好 `base/子项名` 再下传（递归内文件分支直接采用该前缀）。
+    let base = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Ok(read) = std::fs::read_dir(root) {
+        for entry in read.flatten() {
+            let child = entry.path();
+            let child_name = child
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let child_rel = if base.is_empty() {
+                child_name.clone()
+            } else {
+                format!("{base}/{child_name}")
+            };
+            collect_upload_items_recursive(&child, &child_rel, &mut items);
+        }
+    }
+    items
+}
+
+/// `collect_upload_items` 的递归 worker：把 `path` 下所有文件收集进 `items`，
+/// 每个文件的远端相对路径以 `rel_prefix` 为前缀（目录层级由此还原）。
+fn collect_upload_items_recursive(
+    path: &Path,
+    rel_prefix: &str,
+    items: &mut Vec<(PathBuf, String)>,
+) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.is_file() {
+        // `rel_prefix` 已是包含本文件名的完整远端相对路径，直接采用，避免再追加文件名造成重复。
+        items.push((path.to_path_buf(), rel_prefix.to_string()));
+        return;
+    }
+    if meta.is_dir()
+        && let Ok(read) = std::fs::read_dir(path)
+    {
+        for entry in read.flatten() {
+            let child = entry.path();
+            let child_name = child
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let child_rel = if rel_prefix.is_empty() {
+                child_name.clone()
+            } else {
+                format!("{rel_prefix}/{child_name}")
+            };
+            collect_upload_items_recursive(&child, &child_rel, items);
+        }
+    }
+}
+
+/// 递归确保远端目录存在（文件夹上传时还原本地目录树所需）。
+///
+/// 先算出从最外层到 `dir` 的各级目录链（如 `["/", "/a", "/a/b"]`），再逐级创建缺失的目录；
+/// 已存在（`list_dir` 成功）或创建失败但实已存在（并发 / 竞态）的视为 OK，避免误报错。
+/// 采用迭代而非 async 递归，规避「递归 async fn 需 Box 间接」的编译限制。
+pub(crate) async fn ensure_remote_dir(client: &SftpClient, dir: &str) -> Result<(), CoreError> {
+    // 收集 dir 及其全部祖先目录（从最内层到最外层）。
+    let mut chain = Vec::new();
+    let mut cur = dir.to_string();
+    loop {
+        chain.push(cur.clone());
+        let parent = parent_path(&cur);
+        if parent.is_empty() || parent == cur {
+            break;
+        }
+        cur = parent;
+    }
+    chain.reverse(); // 反转后最外层在前，确保先建父目录再建子目录。
+    for d in chain {
+        // 已存在则跳过；否则创建，创建失败但实已存在（竞态）也跳过。
+        if client.list_dir(&d).await.is_ok() {
+            continue;
+        }
+        if let Err(e) = client.create_dir(&d).await {
+            if client.list_dir(&d).await.is_ok() {
+                continue;
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn collect_upload_items_flattens_preserving_hierarchy() {
+        let tmp = std::env::temp_dir().join(format!("rterm_up_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("foo/bar")).unwrap();
+        fs::write(tmp.join("foo/a.txt"), b"a").unwrap();
+        fs::write(tmp.join("foo/bar/b.txt"), b"b").unwrap();
+
+        // 单文件：远端相对路径即文件名（平铺）。
+        let items = collect_upload_items(&tmp.join("foo/a.txt"));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].1, "a.txt");
+
+        // 目录：顶层以目录名 "foo" 为前缀，保留内部层级。
+        let mut rels: Vec<String> = collect_upload_items(&tmp.join("foo"))
+            .into_iter()
+            .map(|i| i.1)
+            .collect();
+        rels.sort();
+        assert_eq!(
+            rels,
+            vec!["foo/a.txt".to_string(), "foo/bar/b.txt".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -120,6 +120,7 @@ sftp:
   new_dir: 新建目录
   new_dir_name: 新建文件夹
   upload: 上传
+  upload_folder: 上传文件夹
   go_path_placeholder: 输入路径后回车跳转…
   enter: 进入
   download: 下载
@@ -142,6 +143,7 @@ sftp:
   download_failed: 下载失败
   transfer_lost: 传输任务异常终止
   upload_title: 选择要上传的文件
+  upload_folder_title: 选择要上传的文件夹
   download_title: 选择下载目录
   unknown: 未知
   prop_name: 名称

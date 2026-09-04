@@ -7,12 +7,13 @@ use std::time::Instant;
 
 use iced::{Subscription, Task};
 
-use crate::app::tasks::join_path;
+use crate::app::tasks::{ensure_remote_dir, join_path, parent_path};
 use crate::i18n::localize_error;
 use crate::state::{ToastKind, Transfer, TransferDirection, TransferStatus};
 use crate::t;
 use futures::{SinkExt, StreamExt};
 use rterm_core::SftpClient;
+use std::path::Path;
 use tokio::task::AbortHandle;
 
 /// 传输模块只读上下文：父层在路由每条消息前构造，模块据此读取当前标签的 SFTP 客户端与
@@ -72,28 +73,29 @@ impl State {
     /// 标签」的变体定位 / 取客户端；模块据此执行但不写父态。
     pub fn update(&mut self, msg: Message, ctx: &Ctx) -> Task<Event> {
         match msg {
-            Message::Upload(tab_id, paths) => {
-                if paths.is_empty() {
+            Message::Upload(tab_id, items) => {
+                if items.is_empty() {
                     return Task::none();
                 }
                 let Some(client) = ctx.client.clone() else {
                     return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
                 };
-                for path in paths {
-                    let name = match path.file_name() {
+                for (local, rel) in items {
+                    let name = match Path::new(&local).file_name() {
                         Some(n) => n.to_string_lossy().to_string(),
                         None => continue,
                     };
                     if name.is_empty() {
                         continue;
                     }
-                    let remote = join_path(&ctx.remote_dir, &name);
+                    // 远端相对路径保留目录层级（文件夹上传），再拼到当前远端目录下。
+                    let remote = join_path(&ctx.remote_dir, &rel);
                     let tid = self.next_transfer_id();
                     let transfer = Transfer {
                         id: tid,
                         direction: TransferDirection::Upload,
                         name,
-                        local: path,
+                        local,
                         remote,
                         transferred: 0,
                         total: 0,
@@ -279,8 +281,9 @@ impl State {
 // 变体统一带 `Transfer` 语义前缀：与父层 `Message::Transfer` 路由命名一致，属刻意约定，故抑制此 lint。
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
-    /// 上传本地文件（携带标签 id + 所选本地文件路径列表，写入当前远端目录）。
-    Upload(u64, Vec<PathBuf>),
+    /// 上传本地文件 / 文件夹（携带标签 id + 上传项列表，每项为 `(本地路径, 远端相对路径)`；
+    /// 文件夹上传时远端相对路径保留目录层级，由本模块在执行时按需创建远端父目录）。
+    Upload(u64, Vec<(PathBuf, String)>),
     /// 下载远端文件（携带标签 id + 远端名称 + 本地目标路径，已由 SFTP 侧拼为完整路径）。
     Download(u64, String, PathBuf),
     /// 传输进度（携带标签 id + 传输任务 id + 已传字节 + 总字节 + 瞬时速度字节/秒）。
@@ -370,6 +373,16 @@ fn run_transfer(
                 tokio::spawn(async move {
                     let result = match direction {
                         TransferDirection::Upload => {
+                            // 文件夹上传时 `remote` 含子目录层级，先递归确保远端父目录存在，
+                            // 否则 `upload_with_progress` 会因目标目录不存在而失败。
+                            let parent = parent_path(&remote);
+                            if !parent.is_empty()
+                                && parent != remote
+                                && let Err(e) = ensure_remote_dir(&client, &parent).await
+                            {
+                                return Err(format!("{}: {e}", t!("sftp.mkdir_failed")));
+                            }
+
                             client.upload_with_progress(&local, &remote, cb).await
                         }
                         TransferDirection::Download => {
@@ -480,7 +493,7 @@ mod tests {
     fn upload_without_client_emits_error_toast_and_enqueues_nothing() {
         let mut s = State::new();
         let events = run_events(s.update(
-            Message::Upload(7, vec![PathBuf::from("/tmp/a.txt")]),
+            Message::Upload(7, vec![(PathBuf::from("/tmp/a.txt"), "a.txt".to_string())]),
             &no_client_ctx(7),
         ));
         assert_eq!(events.len(), 1, "缺少客户端应只产出一个错误 toast");

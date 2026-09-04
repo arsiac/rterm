@@ -136,10 +136,17 @@ fn panel(app: &App) -> Element<'_, Message> {
             Position::Bottom
         ),
         icon_button(
-            Icon::CloudArrowUp,
+            Icon::DocumentArrowUp,
             ACTION_ICON_SIZE,
             t!("sftp.upload"),
             crate::app::sftp::Message::SftpPickUpload,
+            Position::Bottom,
+        ),
+        icon_button(
+            Icon::FolderArrowUp,
+            ACTION_ICON_SIZE,
+            t!("sftp.upload_folder"),
+            crate::app::sftp::Message::SftpPickUploadFolder,
             Position::Bottom,
         ),
     ]

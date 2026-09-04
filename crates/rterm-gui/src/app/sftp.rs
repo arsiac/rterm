@@ -108,6 +108,8 @@ pub enum Message {
     SftpEntryExit(String),
     /// 打开系统文件选择器以选择要上传的本地文件（可多选）。
     SftpPickUpload,
+    /// 打开系统文件夹选择器以选择要上传的本地文件夹（可多选），保留目录层级上传。
+    SftpPickUploadFolder,
     /// 打开系统文件夹选择器以选择下载目标目录（携带远端文件名）。
     SftpPickDownload(String),
     /// 下载远端文件（携带远端名称与本地目标目录），经覆盖检查后上行给传输模块。
@@ -151,11 +153,12 @@ pub enum Event {
     Toast(ToastKind, String),
     /// 请求父层切换中心视图（携带目标视图）。
     NavigateTo(CenterView),
-    /// 上行请求启动一个上传传输（携带所选本地文件列表），由父层转发给传输模块。
+    /// 上行请求启动一个上传传输（携带所选本地文件列表，元素为 `(本地路径, 远端相对路径)`，
+    /// 远端相对路径用于保留文件夹上传时的目录层级），由父层转发给传输模块。
     ///
     /// 文件选择器属于「文件管理」交互，故留在 SFTP 模块；但队列执行属传输模块，
     /// 此处只上行意图，绝不直接创建传输。
-    StartUpload(Vec<std::path::PathBuf>),
+    StartUpload(Vec<(std::path::PathBuf, String)>),
     /// 上行请求启动一个下载传输（携带远端名称与本地目标路径），由父层转发给传输模块。
     StartDownload(String, std::path::PathBuf),
     /// 请求父层把键盘焦点交还终端。
@@ -518,12 +521,38 @@ impl State {
                         .map(|files| {
                             files
                                 .into_iter()
-                                .map(|f| f.path().to_path_buf())
-                                .collect::<Vec<std::path::PathBuf>>()
+                                .map(|f| {
+                                    let p = f.path().to_path_buf();
+                                    let rel = p
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_default();
+                                    (p, rel)
+                                })
+                                .collect::<Vec<(std::path::PathBuf, String)>>()
                         })
                 },
-                |paths| match paths {
-                    Some(paths) => Event::StartUpload(paths),
+                |items| match items {
+                    Some(items) => Event::StartUpload(items),
+                    None => Event::Emit(Box::new(Message::SftpNoop)),
+                },
+            ),
+            // 文件夹上传：选一个或多个本地文件夹，递归展平为带层级相对路径的上传项后上行。
+            Message::SftpPickUploadFolder => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title(t!("sftp.upload_folder_title"))
+                        .pick_folders()
+                        .await
+                        .map(|folders| {
+                            folders
+                                .into_iter()
+                                .flat_map(|f| crate::app::tasks::collect_upload_items(f.path()))
+                                .collect::<Vec<(std::path::PathBuf, String)>>()
+                        })
+                },
+                |items| match items {
+                    Some(items) => Event::StartUpload(items),
                     None => Event::Emit(Box::new(Message::SftpNoop)),
                 },
             ),
