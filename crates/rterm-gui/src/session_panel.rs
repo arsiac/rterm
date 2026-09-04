@@ -184,9 +184,7 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
             .padding([6u16, 8u16])
             .width(Length::Fill)
             .style(move |theme| {
-                let mut style = crate::theme::plain_background(crate::theme::list_row_bg(
-                    theme, selected, hovered, status,
-                ));
+                let mut style = crate::theme::list_row_bg(theme, selected, hovered, status);
                 style.border.radius = 6.0.into();
                 style
             }),

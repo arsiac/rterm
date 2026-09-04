@@ -76,13 +76,12 @@ fn parent_entry(path: &str, selected: bool, hovered: bool) -> Element<'static, M
             .padding([6u16, 8u16])
             .width(Length::Fill)
             .style(move |theme| {
-                let bg = crate::theme::list_row_bg(
+                let mut style = crate::theme::list_row_bg(
                     theme,
                     selected,
                     hovered,
                     ConnectionStatus::Disconnected,
                 );
-                let mut style = crate::theme::plain_background(bg);
                 style.border.radius = 6.0.into();
                 style
             }),
@@ -248,13 +247,12 @@ fn panel(app: &App) -> Element<'_, Message> {
                     .padding([6u16, 8u16])
                     .width(Length::Fill)
                     .style(move |theme| {
-                        let bg = crate::theme::list_row_bg(
+                        let mut style = crate::theme::list_row_bg(
                             theme,
                             selected,
                             hovered,
                             ConnectionStatus::Disconnected,
                         );
-                        let mut style = crate::theme::plain_background(bg);
                         style.border.radius = 6.0.into();
                         style
                     }),

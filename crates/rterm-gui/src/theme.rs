@@ -250,23 +250,26 @@ fn row_base_bg(theme: &Theme, status: ConnectionStatus) -> Color {
     }
 }
 
-/// 列表行背景颜色：选中优先（强调色），其次悬浮高亮，否则取按连接状态的常态底色。
+/// 列表行样式：选中优先（主题强调色淡底），其次悬浮高亮，否则取按连接状态的常态底色。
 ///
 /// `theme` 为当前主题，用于派生语义色；`selected` 为是否当前选中项；`hovered` 为是否鼠标
 /// 悬浮；`status` 用于错误态底色。会话列表无选中概念时传 `selected = false`，SFTP 无连接
 /// 错误态时传 [`ConnectionStatus::Disconnected`]。
+///
+/// 选中态背景取 [`primary_active_bg`]（当前主题强调色以 0.28 不透明度叠加），与设置弹窗选中
+/// 分类一致、淡而克制；文本色沿用主题默认文本色，确保淡底上文字清晰可读。
 pub fn list_row_bg(
     theme: &Theme,
     selected: bool,
     hovered: bool,
     status: ConnectionStatus,
-) -> Color {
+) -> iced::widget::container::Style {
     if selected {
-        ACCENT
+        plain_background(primary_active_bg(theme))
     } else if hovered {
-        custom_palette(theme).hover
+        plain_background(custom_palette(theme).hover)
     } else {
-        row_base_bg(theme, status)
+        plain_background(row_base_bg(theme, status))
     }
 }
 
