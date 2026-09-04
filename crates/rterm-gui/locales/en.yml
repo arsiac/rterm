@@ -224,6 +224,7 @@ app:
   terminal_ready: Terminal ready
   terminal_create_failed: "Failed to create terminal widget: %{err}"
   pipe_clone_failed: "Failed to clone pipe handle: %{err}"
+  config_save_failed: "Failed to save config: %{err}"
   open_terminal_first: Open this session's terminal first
   connect_session_first: Connect to a session first
   sftp_not_ready: SFTP not ready

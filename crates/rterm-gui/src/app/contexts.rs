@@ -47,10 +47,15 @@ pub(crate) fn session_ctx(app: &App) -> session::Ctx {
     }
 }
 
-/// 持久化应用级偏好配置（忽略失败并记录日志）。
+/// 持久化应用级偏好配置（失败则记日志并弹 toast 提示用户）。
 pub(crate) fn save_config(app: &mut App) {
     if let Err(e) = app.config.save() {
         error!("failed to save app config: {e}");
+        set_toast(
+            app,
+            ToastKind::Error,
+            t!("app.config_save_failed", err => e.to_string()),
+        );
     }
 }
 
