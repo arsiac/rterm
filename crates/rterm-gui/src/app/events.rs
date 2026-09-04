@@ -183,6 +183,12 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::Scrollback(v) => {
+            // 仅对新建终端标签生效（alacritty `scrolling_history` 为构造期参数，无法热替换）。
+            app.config.scrollback = v;
+            contexts::save_config(app);
+            Task::none()
+        }
         settings::Event::FontSize(v) => {
             app.config.font_size = v;
             contexts::save_config(app);

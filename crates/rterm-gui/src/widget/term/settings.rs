@@ -35,16 +35,19 @@ pub struct BackendSettings {
     pub env: HashMap<String, String>,
     /// 起始工作目录（`None` 表示沿用当前目录）。
     pub working_directory: Option<PathBuf>,
+    /// 历史缓冲行数（透传给 alacritty `scrolling_history`），0 表示不保留历史。
+    pub scrollback: usize,
 }
 
 impl Default for BackendSettings {
-    /// 以 `DEFAULT_SHELL` 作为默认程序，参数为空、无环境变量、无起始目录。
+    /// 以 `DEFAULT_SHELL` 作为默认程序，参数为空、无环境变量、无起始目录、默认 10000 行历史。
     fn default() -> Self {
         Self {
             program: DEFAULT_SHELL.to_string(),
             args: vec![],
             env: HashMap::new(),
             working_directory: None,
+            scrollback: 10000,
         }
     }
 }

@@ -206,6 +206,9 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     let timeout_input = text_input("30", &app.config.connect_timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
         .style(crate::ui::text_input_style);
+    let scrollback_input = text_input("10000", &app.config.scrollback.to_string())
+        .on_input(|s| Message::Settings(settings::Message::Scrollback(s)))
+        .style(crate::ui::text_input_style);
     let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.log_level), |lv| {
         Message::Settings(settings::Message::LogLevel(lv))
     })
@@ -222,6 +225,13 @@ fn general_pane(app: &App) -> Element<'_, Message> {
         pane_title(t!("settings.general")),
         section_label(t!("settings.connect_timeout")),
         timeout_input,
+        section_label(t!("settings.scrollback")),
+        scrollback_input,
+        text(t!("settings.scrollback_note"))
+            .size(12)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.extended_palette().background.weak.text),
+            }),
         section_label(t!("settings.log_level")),
         row![
             log_level_picker,

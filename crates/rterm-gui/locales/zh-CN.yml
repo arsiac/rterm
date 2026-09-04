@@ -10,6 +10,8 @@ settings:
   appearance: 外观
   about: 关于
   connect_timeout: 连接超时（秒，0 表示不限制）
+  scrollback: 历史缓冲行数（0 表示不保留历史）
+  scrollback_note: 仅对新建的终端标签生效。
   log_level: 日志级别
   open_log_folder: 打开日志所在文件夹
   restart_note: 修改后重启程序方可生效；第三方库日志会被抑制以降低噪声。

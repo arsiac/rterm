@@ -211,7 +211,7 @@ impl Backend {
         };
 
         let pty = tty::new(&pty_config, TerminalSize::default().into(), id)?;
-        Self::from_pty(id, pty_event_proxy_sender, pty)
+        Self::from_pty(id, pty_event_proxy_sender, pty, settings.scrollback)
     }
 
     /// SSH 场景：直接桥接 russh shell 通道，不经过本地 PTY 子进程。
@@ -219,8 +219,9 @@ impl Backend {
         id: u64,
         pty_event_proxy_sender: mpsc::Sender<Event>,
         pty: RusshPty,
+        scrollback: usize,
     ) -> Result<Self> {
-        Self::from_pty(id, pty_event_proxy_sender, pty)
+        Self::from_pty(id, pty_event_proxy_sender, pty, scrollback)
     }
 
     /// 以给定 PTY 构造后端，初始化 alacritty 终端与 event loop。
@@ -228,11 +229,15 @@ impl Backend {
         _id: u64,
         pty_event_proxy_sender: mpsc::Sender<Event>,
         pty: Pty,
+        scrollback: usize,
     ) -> Result<Self>
     where
         Pty: EventedPty + OnResize + Send + 'static,
     {
-        let config = term::Config::default();
+        let config = term::Config {
+            scrolling_history: scrollback,
+            ..Default::default()
+        };
         let terminal_size = TerminalSize::default();
 
         let event_proxy = EventProxy(pty_event_proxy_sender);

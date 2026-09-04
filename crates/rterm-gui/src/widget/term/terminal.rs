@@ -88,7 +88,12 @@ impl Terminal {
             theme,
             bindings: BindingsLayout::default(),
             cache: Cache::default(),
-            backend: backend::Backend::new_with_pty(id, backend_event_tx, pty)?,
+            backend: backend::Backend::new_with_pty(
+                id,
+                backend_event_tx,
+                pty,
+                settings.backend.scrollback,
+            )?,
             backend_event_rx: Arc::new(Mutex::new(backend_event_rx)),
         })
     }

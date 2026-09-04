@@ -10,6 +10,8 @@ settings:
   about: About
   masterpw: Master Password
   connect_timeout: Connect timeout (seconds, 0 = no limit)
+  scrollback: Scrollback lines (0 = none)
+  scrollback_note: Applies only to newly opened terminal tabs.
   log_level: Log level
   open_log_folder: Open log folder
   restart_note: Takes effect after restart; third-party library logs are suppressed to reduce noise.

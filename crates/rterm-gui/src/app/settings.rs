@@ -59,6 +59,8 @@ pub enum Message {
     CategorySelected(SettingsCategory),
     /// 修改“连接超时”设置（携带输入框最新文本，解析失败则忽略）。
     ConnectTimeout(String),
+    /// 修改“历史缓冲行数”设置（携带输入框最新文本，解析失败则忽略）。
+    Scrollback(String),
     /// 修改“终端字号”设置（携带滑块最新值）。
     FontSize(f32),
     /// 修改“程序主题”设置（携带主题标识，如 `dark` / `light`）。
@@ -86,6 +88,8 @@ pub enum Message {
 pub enum Event {
     /// 写回“连接超时”配置（携带解析后的秒数）。
     ConnectTimeout(u64),
+    /// 写回“历史缓冲行数”配置（携带解析后的行数）。
+    Scrollback(usize),
     /// 写回“终端字号”配置（携带滑块值），并热替换到所有已打开的终端标签。
     FontSize(f32),
     /// 写回“程序主题”配置（携带主题标识）。
@@ -130,6 +134,11 @@ impl State {
             // 0 表示不限制超时；仅可解析为非负整数时才上行写回。
             Message::ConnectTimeout(text) => match text.parse::<u64>() {
                 Ok(timeout) => Task::done(Event::ConnectTimeout(timeout)),
+                Err(_) => Task::none(),
+            },
+            // 仅可解析为非负整数时才上行写回；0 表示不保留历史。
+            Message::Scrollback(text) => match text.parse::<usize>() {
+                Ok(scrollback) => Task::done(Event::Scrollback(scrollback)),
                 Err(_) => Task::none(),
             },
             Message::FontSize(size) => Task::done(Event::FontSize(size)),

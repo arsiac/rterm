@@ -8,7 +8,9 @@ use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
 use crate::t;
 use crate::terminal_theme;
-use crate::widget::term::settings::{FontSettings, Settings as TermSettings, ThemeSettings};
+use crate::widget::term::settings::{
+    BackendSettings, FontSettings, Settings as TermSettings, ThemeSettings,
+};
 use crate::widget::term::{
     BackendCommand, Command as TermCommand, Event as TermEvent, RusshPty, Terminal,
 };
@@ -124,7 +126,10 @@ pub(crate) fn spawn_terminal_widget(
         }
     };
     let settings = TermSettings {
-        backend: Default::default(),
+        backend: BackendSettings {
+            scrollback: app.config.scrollback,
+            ..Default::default()
+        },
         font: FontSettings {
             size: app.config.font_size,
             scale_factor: 1.3,

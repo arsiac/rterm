@@ -174,6 +174,9 @@ pub struct AppConfig {
     /// 设置面板切换，实时生效；默认跟随系统区域。
     #[serde(default)]
     pub language: Language,
+    /// 终端历史缓冲行数（滚动回看上限）；0 表示不保留历史。仅对新建终端标签生效。
+    #[serde(default = "default_scrollback")]
+    pub scrollback: usize,
     /// 启动时是否自动检查更新。
     #[serde(default = "default_auto_check_updates")]
     pub auto_check_updates: bool,
@@ -220,6 +223,11 @@ fn default_true() -> bool {
     true
 }
 
+/// 终端历史缓冲行数默认值：10000（与 alacritty 默认 `scrolling_history` 一致）。
+fn default_scrollback() -> usize {
+    10000
+}
+
 /// 探测系统当前是否处于深色外观。
 ///
 /// 3.x 在 Linux 上统一走 XDG Desktop Portal 的 `color-scheme`，即 GNOME/KDE 各自的权威来源，
@@ -264,6 +272,7 @@ impl Default for AppConfig {
             terminal_theme: default_terminal_theme(),
             log_level: LogLevel::default(),
             language: Language::default(),
+            scrollback: default_scrollback(),
             auto_check_updates: default_auto_check_updates(),
             last_update_check_unix: None,
             // `remember_master_key` 默认开启（提供免输入体验）：这里走 `default_true()` 而非
