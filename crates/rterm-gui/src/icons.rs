@@ -18,8 +18,6 @@ pub const ICON_SIZE: f32 = 20.0;
 pub const ICON_BUTTON_DEFAULT_PADDING: Padding = Padding::new(5f32);
 
 /// 应用窗口图标（512×512 PNG），用于运行期窗口与任务栏显示。
-///
-/// 由 `icons/app/icon.svg` 派生（见 `icons/app/`），运行期无文件依赖。
 pub const WINDOW_ICON: &[u8] = include_bytes!("../icons/app/icon-512.png");
 
 /// 将图标文件名拼接为指向 `icons/` 目录的内嵌字节宏。
