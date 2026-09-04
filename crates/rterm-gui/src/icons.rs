@@ -80,6 +80,10 @@ pub enum Icon {
     Checkmark,
     /// 传输失败。
     Warning,
+    /// 活动栏顶部「收起中间面板」（面板在左侧，箭头向左收拢）。
+    PanelLeftContract,
+    /// 活动栏顶部「展开中间面板」（收起态时显示，箭头向左展开）。
+    PanelLeftExpand,
 }
 
 impl Icon {
@@ -108,6 +112,8 @@ impl Icon {
             Icon::ArrowSort => svg_bytes!("arrow-sort-16-filled"),
             Icon::Checkmark => svg_bytes!("checkmark-16-filled"),
             Icon::Warning => svg_bytes!("warning-16-filled"),
+            Icon::PanelLeftContract => svg_bytes!("panel-left-contract-16-filled"),
+            Icon::PanelLeftExpand => svg_bytes!("panel-left-expand-16-filled"),
         }
     }
 

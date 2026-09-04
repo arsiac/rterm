@@ -7,6 +7,7 @@
 use crate::t;
 
 use crate::App;
+use crate::app::panes;
 use crate::icons::Icon;
 use crate::message::Message;
 use crate::state::CenterView;
@@ -61,7 +62,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // 设置按钮固定在活动栏最底部：用可拉伸空白把上方按钮与设置按钮分隔开。
     let settings_btn = settings_button(app.settings.show_settings);
 
+    // 收起 / 展开中间面板的开关按钮：固定在活动栏最上方，按当前收起态切换图标与提示。
+    let collapse_btn = collapse_toggle_button(app.panes.center_collapsed);
+
     let content = column![
+        collapse_btn,
         sessions_btn,
         files_btn,
         transfer_btn,
@@ -75,6 +80,28 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill)
         .style(|theme| theme::plain_background(crate::theme::custom_palette(theme).surface))
         .padding(6)
+        .into()
+}
+
+/// 活动栏最上方的收起 / 展开按钮。
+///
+/// 中间面板（会话 / 文件 / 传输列表所在的中心 pane）展开时显示「收起」图标
+/// （[`Icon::PanelLeftContract`]，箭头向左收拢），点击收起；收起时显示「展开」图标
+/// （[`Icon::PanelLeftExpand`]，箭头向左展开），点击恢复。仅通过图标切换表达状态，
+/// 不改动按钮背景（收起态不置高亮），避免与活动栏中表示「当前选中视图」的高亮语义混淆。
+fn collapse_toggle_button(collapsed: bool) -> Element<'static, Message> {
+    let (icon, label) = if collapsed {
+        (Icon::PanelLeftExpand, t!("activity.expand_sidebar"))
+    } else {
+        (Icon::PanelLeftContract, t!("activity.collapse_sidebar"))
+    };
+    let btn = button(icon.svg(ACTIVITY_ICON_SIZE))
+        .on_press(Message::Panes(panes::Message::ToggleCenter))
+        .width(Length::Fill)
+        .style(move |theme, status| theme::icon_button_style(theme, status, false));
+    tooltip(btn, text(label), Position::Right)
+        .delay(iced::time::Duration::from_millis(theme::TOOLTIP_DELAY_MS))
+        .style(theme::tooltip_style)
         .into()
 }
 

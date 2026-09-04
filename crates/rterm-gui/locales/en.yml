@@ -187,6 +187,8 @@ activity:
   sessions: Sessions
   files: Files
   transfers: Transfers
+  collapse_sidebar: Collapse sidebar
+  expand_sidebar: Expand sidebar
 app:
   toast:
     success: Success

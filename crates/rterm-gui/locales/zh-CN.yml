@@ -187,6 +187,8 @@ activity:
   sessions: 会话
   files: 文件
   transfers: 传输
+  collapse_sidebar: 收起侧边栏
+  expand_sidebar: 展开侧边栏
 app:
   toast:
     success: 成功

@@ -23,6 +23,10 @@ pub struct State {
     pub split: Option<pane_grid::Split>,
     /// 当前窗口宽度（像素），用于按固定左宽反算比例。
     pub window_width: f32,
+    /// 中间面板（会话 / 文件 / 传输列表所在的中心 pane）是否已收起：
+    /// 收起后布局只渲染右侧终端区，中心 pane 不显示，但 `pane_grid_state` 保留，
+    /// 重新展开时恢复用户之前的分隔比例。
+    pub center_collapsed: bool,
 }
 
 impl State {
@@ -52,12 +56,19 @@ impl State {
             right_pane,
             split,
             window_width,
+            center_collapsed: false,
         }
     }
 
     /// 模块更新：只改自身 `State`；布局比例自包含，无需上行任何事件。
     pub fn update(&mut self, msg: Message) -> Task<Event> {
         match msg {
+            // 收起 / 展开中间面板：仅翻转标志，布局据此在 `layout::view` 切换渲染；
+            // `pane_grid_state` 不动，重新展开后恢复用户之前的分隔比例。
+            Message::ToggleCenter => {
+                self.center_collapsed = !self.center_collapsed;
+                Task::none()
+            }
             // 用户拖拽分隔条：按新比例换算并记录左栏像素宽度（受区间约束）。
             Message::Resized(event) => {
                 self.pane_grid_state.resize(event.split, event.ratio);
@@ -94,6 +105,8 @@ impl Default for State {
 /// 由父层经 `Message::Panes` 路由进来；模块 `update` 自行消费，不外泄。
 #[derive(Clone)]
 pub enum Message {
+    /// 收起 / 展开中间面板（会话 / 文件 / 传输列表所在的中心 pane）。
+    ToggleCenter,
     /// 用户拖拽分隔条改变两栏比例。
     Resized(pane_grid::ResizeEvent),
     /// 窗口宽度变化（携带新宽度，用于按固定左宽重算比例）。

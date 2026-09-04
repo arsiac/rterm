@@ -57,11 +57,19 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .on_resize(4.0, |e| Message::Panes(panes::Message::Resized(e)))
     .style(theme::pane_grid_style);
 
+    // 中间面板（会话 / 文件 / 传输列表所在的中心 pane）收起时，跳过 `pane_grid` 直接渲染
+    // 右侧终端区并占满剩余宽度；`pane_grid_state` 保留不销毁，重新展开后恢复用户之前的分隔比例。
+    let center_area: Element<'_, Message> = if app.panes.center_collapsed {
+        terminal_pane::view(app)
+    } else {
+        grid.into()
+    };
+
     let main: Element<'_, Message> = row![
         container(activity)
             .width(Length::Fixed(theme::ACTIVITY_BAR_WIDTH))
             .height(Length::Fill),
-        grid,
+        center_area,
     ]
     .height(Length::Fill)
     .into();
