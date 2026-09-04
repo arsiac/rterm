@@ -17,14 +17,14 @@ use std::sync::Arc;
 /// 应用启动：加载会话存储与配置，返回初始状态与任务。
 pub(crate) fn new() -> (App, Task<Message>) {
     let store = SessionStore::new()
-        .map_err(|e| error!("初始化会话存储失败: {e}"))
+        .map_err(|e| error!("failed to initialize session store: {e}"))
         .ok();
     // 读取加密文件头（含模式标志），判断首启动 / 解锁 / 自动解锁。
     let header = store.as_ref().and_then(|s| s.load_crypto_header().ok());
 
     // 加载应用级偏好配置；失败则回退到默认值（path 为空，后续保存会被跳过并记录日志）。
     let config = AppConfig::new()
-        .map_err(|e| error!("初始化应用配置失败: {e}"))
+        .map_err(|e| error!("failed to initialize app config: {e}"))
         .unwrap_or_default();
 
     // 解析首启动 / 自动解锁，得到初始保险库与会话列表：
@@ -39,9 +39,9 @@ pub(crate) fn new() -> (App, Task<Message>) {
             if let Some(store) = store.as_ref()
                 && let Err(e) = store.save(&[], vault.header())
             {
-                error!("写入初始加密文件头失败: {e}");
+                error!("failed to write initial encrypted header: {e}");
             }
-            debug!("首次运行：生成随机密钥（模式 0），已存入系统钥匙串");
+            debug!("first run: generated random key (mode 0), stored in system keyring");
             (Some(vault), Vec::new())
         }
         Some(h) => {
@@ -63,14 +63,16 @@ pub(crate) fn new() -> (App, Task<Message>) {
                 None
             };
             if vault.is_some() {
-                debug!("系统钥匙串自动解锁成功，跳过主密码弹窗");
+                debug!("auto-unlocked via system keyring, skipping master password prompt");
             } else if h.master_password_set {
-                debug!("钥匙串无缓存或校验失败，将弹解锁框");
+                debug!("no keyring cache or verification failed, will show unlock prompt");
             } else {
                 // 模式 0 钥匙串取不到随机密钥（被清空 / 钥匙串异常）。模式 0 本无主密码，
                 // 绝不该弹「解锁」框把用户卡死：就地重生本机随机密钥让应用可用，并提示
                 // 既有凭据可能失效（旧密钥不可恢复）。
-                error!("模式 0 钥匙串中无随机密钥，重生本机密钥（既有凭据可能失效）");
+                error!(
+                    "mode 0: no random key in keyring, regenerated local key (existing credentials may be invalid)"
+                );
                 let recovered = Vault::create_random();
                 vault_keyring::store_dek_quietly(&recovered.dek_bytes());
                 keyring_warning = true;

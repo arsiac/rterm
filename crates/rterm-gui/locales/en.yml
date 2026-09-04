@@ -208,6 +208,7 @@ app:
   transfer_partial: Some transfers failed
   transfer_done: Transfers complete
   canceled: Canceled
+  transfer_canceled: "Transfer canceled: %{err}"
   op_success: Operation succeeded
   op_failed: "Operation failed: %{err}"
   exported: Exported %{count} sessions to %{path}

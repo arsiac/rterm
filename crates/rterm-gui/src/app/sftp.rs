@@ -511,7 +511,7 @@ impl State {
                 // 文档约定：把完整路径写入系统剪贴板，并提示成功。
                 Task::batch([
                     iced::clipboard::write::<Event>(path),
-                    Task::done(Event::Toast(ToastKind::Success, "已复制路径".to_string())),
+                    Task::done(Event::Toast(ToastKind::Success, t!("app.copied_path"))),
                 ])
             }
             Message::SftpNoop => Task::none(),

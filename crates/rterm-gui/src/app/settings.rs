@@ -153,7 +153,7 @@ impl State {
                 // 确保目录存在，避免文件管理器打开空路径失败；失败仅记录，不影响程序。
                 let dir = rterm_config::log_dir();
                 if let Err(e) = std::fs::create_dir_all(&dir) {
-                    error!("创建日志目录失败: {e}");
+                    error!("failed to create log directory: {e}");
                 }
                 let mut cmd = match std::env::consts::OS {
                     "windows" => std::process::Command::new("explorer"),
@@ -161,7 +161,7 @@ impl State {
                     _ => std::process::Command::new("xdg-open"),
                 };
                 if let Err(e) = cmd.arg(&dir).spawn() {
-                    error!("打开日志目录失败: {e}");
+                    error!("failed to open log directory: {e}");
                 }
                 Task::none()
             }

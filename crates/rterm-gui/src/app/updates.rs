@@ -92,7 +92,7 @@ impl State {
                     Task::none()
                 }
                 Err(e) => {
-                    warn!("更新检查失败: {e}");
+                    warn!("update check failed: {e}");
                     if source == CheckSource::Manual {
                         // 手动检查失败：在设置弹窗就地反馈（弹窗打开时右下角 toast 不可见）。
                         self.manual_status = Some(CheckStatus::Error(e));
@@ -103,7 +103,7 @@ impl State {
             },
             Message::OpenReleasePage(url) => {
                 if let Err(e) = open::that(&url) {
-                    warn!("打开发布页失败: {e}");
+                    warn!("failed to open release page: {e}");
                 }
                 Task::none()
             }

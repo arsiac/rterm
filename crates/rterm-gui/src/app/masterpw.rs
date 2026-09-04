@@ -301,7 +301,7 @@ fn setup_derive(state: &mut State, new_vault: Arc<Vault>, ctx: &Ctx) -> Task<Eve
                 store
                     .save(&new_sessions, &header)
                     .map(|_| (new_vault, new_sessions))
-                    .map_err(|e| format!("写入加密文件失败: {e}"))
+                    .map_err(|e| format!("failed to write encrypted file: {e}"))
             })
             .await
             .unwrap()
@@ -475,7 +475,7 @@ fn change_derive(
                 store
                     .save(&new_sessions, new_vault.header())
                     .map(|_| (new_vault, new_sessions))
-                    .map_err(|e| format!("写入加密文件失败: {e}"))
+                    .map_err(|e| format!("failed to write encrypted file: {e}"))
             })
             .await
             .unwrap()
@@ -538,12 +538,12 @@ fn disable(state: &mut State, ctx: &Ctx) -> Task<Event> {
         .collect();
 
     let Some(store) = ctx.store.clone() else {
-        error!("会话存储不可用，无法写入加密文件头");
+        error!("session store unavailable, cannot write encrypted header");
         state.error = Some(t!("masterpw.no_store"));
         return Task::none();
     };
     if let Err(e) = store.save(&new_sessions, &header) {
-        error!("关闭主密码时写入文件失败: {e}");
+        error!("failed to write file when disabling master password: {e}");
         state.error = Some(t!("masterpw.write_failed", err => e));
         return Task::none();
     }

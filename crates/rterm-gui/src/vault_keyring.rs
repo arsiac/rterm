@@ -84,13 +84,15 @@ pub fn available() -> bool {
 /// 静默写入 DEK，失败仅记录（用于「设置/解锁/更改」成功后的缓存落盘）。
 pub fn store_dek_quietly(dek: &[u8; DEK_LEN]) {
     if let Err(e) = store_dek(dek) {
-        error!("写入钥匙串主密钥失败（将回退到每次输入主密码）: {e}");
+        error!(
+            "failed to store master key in keyring (will fall back to entering master password each time): {e}"
+        );
     }
 }
 
 /// 静默删除 DEK，失败仅记录（用于关闭「本机记住」开关）。
 pub fn delete_dek_quietly() {
     if let Err(e) = delete_dek() {
-        error!("删除钥匙串主密钥失败: {e}");
+        error!("failed to delete master key from keyring: {e}");
     }
 }

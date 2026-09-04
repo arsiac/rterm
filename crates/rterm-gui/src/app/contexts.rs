@@ -50,7 +50,7 @@ pub(crate) fn session_ctx(app: &App) -> session::Ctx {
 /// 持久化应用级偏好配置（忽略失败并记录日志）。
 pub(crate) fn save_config(app: &mut App) {
     if let Err(e) = app.config.save() {
-        error!("保存应用配置失败: {e}");
+        error!("failed to save app config: {e}");
     }
 }
 

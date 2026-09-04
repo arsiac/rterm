@@ -165,7 +165,7 @@ impl State {
                     && let Some(t) = tab.iter_mut().find(|t| t.id == id)
                 {
                     t.status = TransferStatus::Error;
-                    t.error = Some("已取消".to_string());
+                    t.error = Some(t!("app.canceled"));
                 }
                 Task::none()
             }
@@ -418,7 +418,7 @@ fn run_transfer(
             // 等 worker 得出终态；取消亦视为失败。
             let result = worker
                 .await
-                .unwrap_or_else(|e| Err(format!("传输任务被取消: {e}")));
+                .unwrap_or_else(|e| Err(t!("app.transfer_canceled", err => e)));
 
             let _ = output
                 .send(Event::Emit(Box::new(Message::TransferDone(
@@ -530,7 +530,11 @@ mod tests {
             .find(|t| t.id == 1)
             .unwrap();
         assert_eq!(t.status, TransferStatus::Error, "取消应置为失败态");
-        assert_eq!(t.error.as_deref(), Some("已取消"), "取消应带取消原因");
+        assert_eq!(
+            t.error.as_deref(),
+            Some(t!("app.canceled").as_str()),
+            "取消应带取消原因"
+        );
     }
 
     #[test]

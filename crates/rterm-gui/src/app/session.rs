@@ -222,14 +222,14 @@ impl State {
     fn save(&mut self, ctx: &Ctx) -> Option<String> {
         let store = self.store.as_ref()?;
         let Some(vault) = ctx.vault.as_ref() else {
-            error!("保险库未就绪，无法保存会话");
+            error!("vault not ready, cannot save session");
             return Some(t!("app.vault_locked"));
         };
         let header = vault.header();
         match store.save(&self.sessions, header) {
             Ok(()) => None,
             Err(e) => {
-                error!("保存会话失败: {e}");
+                error!("failed to save session: {e}");
                 Some(t!("app.save_failed", err => e))
             }
         }
@@ -399,7 +399,7 @@ impl State {
                 // 重新从存储加载会话列表；存储不可用则仅保留当前内存列表。
                 if let Some(store) = self.store.as_ref() {
                     self.sessions = store.load().unwrap_or_else(|e| {
-                        error!("重新加载会话失败: {e}");
+                        error!("failed to reload sessions: {e}");
                         self.sessions.clone()
                     });
                 }
