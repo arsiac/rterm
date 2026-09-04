@@ -109,6 +109,7 @@ pub(crate) async fn open_terminal_task(
     cols: u32,
     rows: u32,
     disconnect_tx: mpsc::Sender<()>,
+    cwd: crate::state::TerminalTabCwd,
 ) -> Result<
     (
         std::sync::Arc<std::fs::File>,
@@ -119,7 +120,7 @@ pub(crate) async fn open_terminal_task(
     CoreError,
 > {
     let (conout, conin, disconnect, resize_tx) =
-        rterm_core::spawn_terminal_bridge(&conn, cols, rows).await?;
+        rterm_core::spawn_terminal_bridge(&conn, cols, rows, cwd).await?;
 
     let disc = disconnect.clone();
     let watcher_tx = disconnect_tx;

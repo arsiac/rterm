@@ -8,6 +8,7 @@ use rterm_core::{
     ConnectionStatus, FileEntry, HostKeyPrompt, HostKeyReply, SftpClient, SshConnection,
 };
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 
 /// 中心面板可显示的内容类型（由最左侧活动栏切换）。
@@ -20,6 +21,10 @@ pub enum CenterView {
     /// 传输队列视图（上传 / 下载，聚合所有标签），与 Sessions / Files 并列由活动栏切换。
     Transfers,
 }
+
+/// 终端当前目录（cwd）共享容器别名，与 `rterm_core::terminal_bridge::CwdTracker` 同构，
+/// 供 GUI 侧按标签持有并在桥接创建时传给核心层。
+pub type TerminalTabCwd = Option<Arc<Mutex<Option<String>>>>;
 
 /// 终端标签页。
 ///
@@ -44,6 +49,10 @@ pub struct TerminalTab {
     /// 桥接断开标志：关标签 / 关窗口时置位，通知核心层 pump 任务尽快退出，
     /// 释放服务端管道句柄（否则后台线程与进程残留）。
     pub disconnect: Option<Arc<AtomicBool>>,
+    /// 终端当前工作目录（cwd）：由核心层桥接 pump 扫描 OSC 7 序列实时写入，
+    /// 文件管理「进入终端目录」按钮读取它跳转到对应远端目录。多标签各自独立，
+    /// 故按标签持有（同一会话开多标签时各标签 cwd 互不串）。
+    pub cwd: Arc<Mutex<Option<String>>>,
     /// 标签标题（默认取会话名）。
     pub title: String,
 }

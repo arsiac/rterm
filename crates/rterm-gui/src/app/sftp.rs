@@ -122,6 +122,9 @@ pub enum Message {
     SftpShowProperties(String),
     /// 复制远端条目的完整路径到系统剪贴板（携带完整路径）。
     SftpCopyPath(String),
+    /// 跳转到终端当前所在目录（由路由层读取活动终端 cwd 后转 [`SftpCd`] 处理，
+    /// 模块自身不持有终端访问权，故此处仅作占位、不在此分支消费）。
+    SftpGotoTerminalDir,
     /// 模块内部无操作占位（如文件选择器被取消，避免父层需要一个无意义的事件）。
     SftpNoop,
     /// 请求在文件列表内联进入“新建文件夹”输入态（默认名称 “New Folder”）。
@@ -512,6 +515,8 @@ impl State {
                 ])
             }
             Message::SftpNoop => Task::none(),
+            // 占位：实际跳转由路由层读取活动终端 cwd 后转 `SftpCd` 完成，模块不消费。
+            Message::SftpGotoTerminalDir => Task::none(),
             Message::SftpPickUpload => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()

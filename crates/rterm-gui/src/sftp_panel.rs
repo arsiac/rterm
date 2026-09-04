@@ -122,6 +122,13 @@ fn panel(app: &App) -> Element<'_, Message> {
             Position::Bottom,
         ),
         icon_button(
+            Icon::ArrowEnter,
+            ACTION_ICON_SIZE,
+            t!("sftp.goto_terminal"),
+            crate::app::sftp::Message::SftpGotoTerminalDir,
+            Position::Bottom,
+        ),
+        icon_button(
             Icon::ArrowClockwise,
             ACTION_ICON_SIZE,
             t!("sftp.refresh"),

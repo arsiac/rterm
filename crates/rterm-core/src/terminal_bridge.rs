@@ -18,10 +18,26 @@ use crate::connection::SshConnection;
 use russh::client::Msg;
 use std::fs::File;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
+
+/// 终端当前目录（cwd）共享容器：核心层桥接 pump 扫描 OSC 7 序列后写入，
+/// GUI 侧在「进入终端目录」按钮点击时读取。按标签独立持有（见 `TerminalTab::cwd`）。
+///
+/// 用 `Option` 包裹以便「不追踪 cwd」的场景（如本地 PTY 或调用方未提供）直接传 `None`，
+/// 此时 pump 跳过 OSC 7 扫描且不向 shell 注入任何内容。
+pub type CwdTracker = Option<Arc<Mutex<Option<String>>>>;
+
+/// 连接建立后向远端 shell 注入的 prompt 钩子：让 shell 在每个提示符输出 OSC 7
+/// 序列（`ESC ]7;file://<pwd> ESC \`），从而把当前工作目录上报给本桥接。
+///
+/// 兼容 bash 与 zsh：分别挂到 `PROMPT_COMMAND` / `precmd_functions`，且用
+/// `BASH_VERSION` / `ZSH_VERSION` 守卫，非对应 shell 时静默跳过、绝不报错。
+/// 末尾 `:` 为无害空命令，确保整段以换行执行；`$PWD` 本身以 `/` 开头，故
+/// 输出形如 `file:///home/user`，桥接侧按 `file://` 后内容解析即可。
+const CWD_BOOTSTRAP: &[u8] = b"__rterm_cwd(){ printf '\\033]7;file://%s\\033\\\\' \"$PWD\"; }; case \"$BASH_VERSION\" in ?*) PROMPT_COMMAND=\"__rterm_cwd${PROMPT_COMMAND:+;${PROMPT_COMMAND}}\" ;; esac; case \"$ZSH_VERSION\" in ?*) precmd_functions+=(__rterm_cwd) ;; esac; :\n";
 
 /// 创建终端桥接所需的一切，返回供 GUI 直接消费的对象。
 ///
@@ -44,6 +60,7 @@ pub async fn spawn_terminal_bridge(
     conn: &SshConnection,
     cols: u32,
     rows: u32,
+    cwd: CwdTracker,
 ) -> Result<(File, File, Arc<AtomicBool>, mpsc::Sender<(u32, u32)>), CoreError> {
     // 进程内管道：拆成 OUT（远端→本地输出）与 IN（本地→远端输入）两条独立管道。
     // 同步端（conout 读端 / conin 写端）交 GUI，异步端（out_stream / in_stream）在此泵接 russh 通道。
@@ -54,6 +71,17 @@ pub async fn spawn_terminal_bridge(
     // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
     let channel = conn.open_shell_channel(cols, rows).await?;
 
+    // 仅在需要追踪 cwd 时，向 shell 注入 prompt 钩子，使其持续上报 OSC 7。
+    // 钩子在 shell 读就绪后自动执行，无需等待 pump 启动。
+    if cwd.is_some() {
+        {
+            let mut writer = channel.make_writer();
+            if let Err(e) = writer.write_all(CWD_BOOTSTRAP).await {
+                log::debug!("Failed to inject cwd bootstrap: {e}");
+            }
+        }
+    }
+
     // 尺寸变更通道：容量 8，GUI 侧 resize 突发时丢弃最旧也不阻塞渲染。
     let (resize_tx, resize_rx) = mpsc::channel(8);
 
@@ -61,7 +89,7 @@ pub async fn spawn_terminal_bridge(
     // 泵接监听的断开标志需独立克隆：关标签 / 关窗口时由 GUI 置位使其尽快退出。
     let pump_stop = disconnect.clone();
     tokio::spawn(async move {
-        pump(out_stream, in_stream, channel, resize_rx, pump_stop).await;
+        pump(out_stream, in_stream, channel, resize_rx, pump_stop, cwd).await;
         log::debug!("Terminal bridge task finished");
         // 桥接结束即视为连接断开（远端关闭或本地流 EOF），通知 GUI 更新状态。
         bridge_disconnect.store(true, Ordering::SeqCst);
@@ -85,6 +113,7 @@ async fn pump<W, R>(
     mut channel: russh::Channel<Msg>,
     mut resize_rx: mpsc::Receiver<(u32, u32)>,
     stop: Arc<AtomicBool>,
+    cwd: CwdTracker,
 ) where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
@@ -92,6 +121,9 @@ async fn pump<W, R>(
     // 复用的收发缓冲区（8 KiB 已满足交互式终端吞吐）。
     let mut socket_buf = [0u8; 8192];
     let mut channel_buf = [0u8; 8192];
+    // OSC 7 序列可能被 8 KiB 缓冲边界切断，故跨读保留未终结的序列尾部，
+    // 与下一读拼接后再解析（见 `scan_osc7_cwd`）。
+    let mut osc_carry = Vec::new();
     let mut total_remote = 0usize;
     let mut total_local = 0usize;
     log::debug!("Terminal bridge pump started");
@@ -118,6 +150,10 @@ async fn pump<W, R>(
                 match n {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        // 在写往本地前先扫描 OSC 7 序列，提取终端 cwd。
+                        if let Some(cwd) = &cwd {
+                            scan_osc7_cwd(&mut osc_carry, &channel_buf[..n], cwd);
+                        }
                         if out_stream.write_all(&channel_buf[..n]).await.is_err() {
                             break;
                         }
@@ -150,6 +186,65 @@ async fn pump<W, R>(
 async fn wait_stop(stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
         tokio::task::yield_now().await;
+    }
+}
+
+/// 扫描字节流中的 OSC 7 序列（`ESC ]7;file://<path> BEL|ST`），提取路径写入 `cwd`。
+///
+/// OSC 7 序列可能跨多次 `read` 被截断，故用 `carry` 保留「已出现 `ESC ]7;` 起始、
+/// 但尚未遇到终结符」的尾部，与下一读拼接后继续解析。`carry` 长度设上限，
+/// 长时间找不到终结符时清空，避免异常输出持续堆积。
+///
+/// 只认标准 `file://` 前缀：钩子输出形如 `file:///home/user`，故取 `file://` 之后
+/// 的内容即为绝对路径（含开头 `/`）。其他内容（如 `file://host/path`）会被忽略，
+/// 以免误取 host 段。
+fn scan_osc7_cwd(carry: &mut Vec<u8>, chunk: &[u8], cwd: &Arc<Mutex<Option<String>>>) {
+    carry.extend_from_slice(chunk);
+    // OSC 序列起始标记：ESC ] 7 ;
+    const MARK: [u8; 4] = [0x1b, 0x5d, 0x37, 0x3b];
+    let mut i = 0;
+    while i + MARK.len() <= carry.len() {
+        if carry[i..i + MARK.len()] != MARK {
+            i += 1;
+            continue;
+        }
+        // 从标记后寻找终结符：BEL(0x07) 或 ST(ESC \) 。
+        let mut end = None;
+        let mut j = i + MARK.len();
+        while j < carry.len() {
+            if carry[j] == 0x07 || (carry[j] == 0x1b && j + 1 < carry.len() && carry[j + 1] == 0x5c)
+            {
+                end = Some(j);
+                break;
+            }
+            j += 1;
+        }
+        let Some(end) = end else {
+            // 起始标记后无终结符：序列可能被截断，保留其后内容待下一读拼接。
+            break;
+        };
+        let payload = &carry[i + MARK.len()..end];
+        if let Some(rest) = payload.strip_prefix(b"file://") {
+            let path = String::from_utf8_lossy(rest);
+            if !path.is_empty()
+                && let Ok(mut g) = cwd.lock()
+            {
+                // 仅当目录真正变化时才写入并输出 debug 日志，避免每个提示符
+                // 都重复打印（OSC 7 在每个 prompt 都会上报，cwd 通常不变）。
+                if g.as_deref() != Some(path.as_ref()) {
+                    log::debug!("terminal cwd changed: {:?}", path);
+                    *g = Some(path.into_owned());
+                }
+            }
+        }
+        // 跳过已消费序列（含终结符；ST 占两字节）。
+        i = if carry[end] == 0x1b { end + 2 } else { end + 1 };
+    }
+    // 仅保留未处理尾部；无进展且超长则清空（防异常输出堆积）。
+    if i > 0 {
+        *carry = carry.split_off(i);
+    } else if carry.len() > 4096 {
+        carry.clear();
     }
 }
 

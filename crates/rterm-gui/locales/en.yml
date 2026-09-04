@@ -121,6 +121,8 @@ sftp:
   new_dir_name: New folder
   upload: Upload
   upload_folder: Upload folder
+  goto_terminal: Enter terminal directory
+  cwd_unavailable: Cannot determine the terminal's current directory. Connect first and cd into the target directory in the terminal.
   go_path_placeholder: Type a path and press Enter to navigate…
   enter: Enter
   download: Download

@@ -88,6 +88,8 @@ pub enum Icon {
     PanelLeftContract,
     /// 活动栏顶部「展开中间面板」（收起态时显示，箭头向左展开）。
     PanelLeftExpand,
+    /// 文件管理「进入终端目录」：点击后跳转到终端当前所在目录。
+    ArrowEnter,
 }
 
 impl Icon {
@@ -120,6 +122,7 @@ impl Icon {
             Icon::Warning => svg_bytes!("warning-16-filled"),
             Icon::PanelLeftContract => svg_bytes!("panel-left-contract-16-filled"),
             Icon::PanelLeftExpand => svg_bytes!("panel-left-expand-16-filled"),
+            Icon::ArrowEnter => svg_bytes!("arrow-enter-16-filled"),
         }
     }
 

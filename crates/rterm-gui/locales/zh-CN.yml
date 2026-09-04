@@ -121,6 +121,8 @@ sftp:
   new_dir_name: 新建文件夹
   upload: 上传
   upload_folder: 上传文件夹
+  goto_terminal: 进入终端目录
+  cwd_unavailable: 无法获取终端当前目录，请先连接并在终端中进入目标目录
   go_path_placeholder: 输入路径后回车跳转…
   enter: 进入
   download: 下载

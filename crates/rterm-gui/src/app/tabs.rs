@@ -10,6 +10,7 @@ use iced::Task;
 use iced::widget::Id;
 use rterm_core::{ConnectionStatus, SshConnection};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 终端桥接就绪后回传的结果：conout 读端、conin 写端、断开标志与尺寸发送端。
@@ -164,6 +165,18 @@ impl State {
         &mut self.tabs
     }
 
+    /// 取某标签终端当前工作目录（cwd）的快照（按需加锁克隆，不持有锁跨调用）。
+    ///
+    /// 由核心层桥接 pump 扫描 OSC 7 序列实时写入 `TerminalTab::cwd`；文件管理
+    /// 「进入终端目录」按钮经此读取。尚未捕获到任何 OSC 7（如远端 shell 未输出
+    /// 提示符、或不支持注入）时返回 `None`，调用方应回退为提示用户。
+    pub(crate) fn terminal_cwd(&self, id: u64) -> Option<String> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.cwd.lock().ok().and_then(|g| g.clone()))
+    }
+
     /// 新建标签：自增 id、置连接中、追加到列表并设为活动标签；返回新标签 id。
     ///
     /// SFTP 视图随标签创建（由父层调用 `sftp.ensure` 完成，模块不持有 SFTP 态）。
@@ -179,6 +192,7 @@ impl State {
             terminal: None,
             resize_tx: None,
             disconnect: None,
+            cwd: std::sync::Arc::new(Mutex::new(None)),
             title,
         });
         self.active_tab = Some(tab_id);

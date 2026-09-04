@@ -60,12 +60,20 @@ pub(crate) fn open_terminal_bridge(
     // 桥接结束（断线）时经 `disconnect_rx` 回发 `TerminalDisconnected(tab_id)`，
     // 按标签（而非按会话）把状态置为 `Error`。
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
+    // 取出本标签的 cwd 共享容器，随桥接传给核心层（pump 扫描 OSC 7 写入）。
+    let cwd = app
+        .tabs
+        .list()
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.cwd.clone());
     let bridge = Task::perform(
         open_terminal_task(
             conn,
             super::DEFAULT_COLS,
             super::DEFAULT_ROWS,
             disconnect_tx,
+            cwd,
         ),
         move |res| {
             Message::Tabs(tabs::Message::TerminalOpened(

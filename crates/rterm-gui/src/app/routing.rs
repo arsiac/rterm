@@ -5,7 +5,8 @@ use crate::app::connect;
 use crate::app::contexts;
 use crate::app::{events, hostkey, session, settings, sftp};
 use crate::message::Message;
-use crate::state::CenterView;
+use crate::state::{CenterView, ToastKind};
+use crate::t;
 use iced::Task;
 use rterm_core::ConnectionStatus;
 
@@ -47,10 +48,31 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         // 两栏布局比例：路由进 panes 模块（其上行事件为空，纯自包含几何）。
         Message::Panes(m) => app.panes.update(m).map(Message::PanesEvent),
         Message::PanesEvent(_e) => Task::none(),
-        Message::Sftp(m) => app
-            .sftp
-            .update(m, app.tabs.active().unwrap_or(0))
-            .map(Message::SftpEvent),
+        Message::Sftp(m) => {
+            // 「进入终端目录」按钮：SFTP 模块无终端访问权，需在此读取活动终端的 cwd
+            // 后转交既有的 `SftpCd` 完成跳转；尚未捕获到 cwd（远端未输出提示符 / 不支持
+            // 注入）时以 toast 提示，而非静默无反应。
+            if let sftp::Message::SftpGotoTerminalDir = &m {
+                let active = app.tabs.active().unwrap_or(0);
+                match app.tabs.terminal_cwd(active) {
+                    Some(cwd) => {
+                        return app
+                            .sftp
+                            .update(sftp::Message::SftpCd(cwd), active)
+                            .map(Message::SftpEvent);
+                    }
+                    None => {
+                        return Task::done(Message::SftpEvent(sftp::Event::Toast(
+                            ToastKind::Error,
+                            t!("sftp.cwd_unavailable"),
+                        )));
+                    }
+                }
+            }
+            app.sftp
+                .update(m, app.tabs.active().unwrap_or(0))
+                .map(Message::SftpEvent)
+        }
         Message::SftpEvent(e) => events::apply_sftp_event(app, e),
         Message::Transfer(m) => {
             let ctx = contexts::transfer_ctx(app);
