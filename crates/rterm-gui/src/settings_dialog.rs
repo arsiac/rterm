@@ -284,7 +284,47 @@ fn updates_pane(app: &App) -> Element<'_, Message> {
         actions.push(b.into());
     }
 
-    column![
+    // 「立即检查」的就地反馈：手动检查结果直接显示在弹窗内（弹窗打开时右下角 toast 不可见）。
+    // 自动检查失败仅记日志、不在此呈现，故 `manual_status` 仅由手动检查维护。
+    let status: Option<Element<'_, Message>> = match &app.updates.manual_status {
+        Some(updates::CheckStatus::Checking) => Some(
+            text(t!("settings.checking"))
+                .size(13)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(theme.extended_palette().background.weak.text),
+                })
+                .into(),
+        ),
+        Some(updates::CheckStatus::UpToDate) => Some(
+            text(t!("settings.up_to_date"))
+                .size(13)
+                .style(|theme: &Theme| text::Style {
+                    // 用强调色本身而非 `*.base.text`（`*.base.text` 是配在彩色背景上的文字色，
+                    // 作前景叠在面板中性底色上会在暗/亮主题下都看不清）。
+                    color: Some(theme.extended_palette().success.strong.color),
+                })
+                .into(),
+        ),
+        Some(updates::CheckStatus::Found(v)) => Some(
+            text(format!("{} v{v}", t!("settings.found_update")))
+                .size(13)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(theme.extended_palette().success.strong.color),
+                })
+                .into(),
+        ),
+        Some(updates::CheckStatus::Error(e)) => Some(
+            text(format!("{}: {e}", t!("settings.check_failed")))
+                .size(13)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(theme.extended_palette().danger.base.color),
+                })
+                .into(),
+        ),
+        None => None,
+    };
+
+    let mut col = column![
         pane_title(t!("settings.updates")),
         section_label(t!("settings.auto_check_updates")),
         auto_check,
@@ -298,8 +338,12 @@ fn updates_pane(app: &App) -> Element<'_, Message> {
             .align_y(iced::alignment::Vertical::Center),
     ]
     .spacing(10)
-    .padding(20)
-    .into()
+    .padding(20);
+    // 仅在有手动检查结果时追加反馈行（弹窗打开时右下角 toast 不可见）。
+    if let Some(s) = status {
+        col = col.push(iced::widget::Space::new().height(6.0)).push(s);
+    }
+    col.into()
 }
 
 /// “关于”分类：版本与简介（只读信息）。

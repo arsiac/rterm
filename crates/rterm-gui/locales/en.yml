@@ -39,6 +39,10 @@ settings:
   latest_version: Latest version
   update_unknown: Unknown (not checked or check failed)
   view_release: View release
+  checking: Checking for updates…
+  up_to_date: Up to date
+  found_update: Update available
+  check_failed: Check failed
   update_banner: "Update available: v%{version}"
 session:
   new: New session

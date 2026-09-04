@@ -31,21 +31,20 @@ impl State {
         let left_pane_width = INITIAL_LEFT_WIDTH;
         let window_width = INITIAL_WINDOW_WIDTH;
         let (mut pane_grid_state, center_pane) = pane_grid::State::new(());
-        let (right_pane, split) = match pane_grid_state
-            .split(pane_grid::Axis::Vertical, center_pane, ())
-        {
-            Some(result) => {
-                let (right_pane, split) = result;
-                // 比例按「左栏像素宽 / 可用宽度」换算：可用宽度需扣掉固定宽度的活动栏。
-                let total = window_width - crate::theme::ACTIVITY_BAR_WIDTH;
-                pane_grid_state.resize(split, (left_pane_width / total).clamp(0.1, 0.9));
-                (right_pane, Some(split))
-            }
-            None => {
-                error!("Initial layout split failed, using single pane layout");
-                (center_pane, None)
-            }
-        };
+        let (right_pane, split) =
+            match pane_grid_state.split(pane_grid::Axis::Vertical, center_pane, ()) {
+                Some(result) => {
+                    let (right_pane, split) = result;
+                    // 比例按「左栏像素宽 / 可用宽度」换算：可用宽度需扣掉固定宽度的活动栏。
+                    let total = window_width - crate::theme::ACTIVITY_BAR_WIDTH;
+                    pane_grid_state.resize(split, (left_pane_width / total).clamp(0.1, 0.9));
+                    (right_pane, Some(split))
+                }
+                None => {
+                    error!("Initial layout split failed, using single pane layout");
+                    (center_pane, None)
+                }
+            };
         Self {
             left_pane_width,
             pane_grid_state,

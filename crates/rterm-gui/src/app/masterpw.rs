@@ -563,27 +563,36 @@ fn disable(state: &mut State, ctx: &Ctx) -> Task<Event> {
 fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> SessionConfig {
     let auth = match &cfg.auth {
         AuthMethod::Password { password } => {
-            let new_env = password.as_ref().and_then(|env| {
-                match old_vault.decrypt(env) {
+            let new_env = password
+                .as_ref()
+                .and_then(|env| match old_vault.decrypt(env) {
                     Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
                     Err(e) => {
-                        warn!("Failed to reencrypt password credential (session {}): {e}", cfg.id);
+                        warn!(
+                            "Failed to reencrypt password credential (session {}): {e}",
+                            cfg.id
+                        );
                         None
                     }
-                }
-            });
+                });
             AuthMethod::Password { password: new_env }
         }
-        AuthMethod::PublicKey { key_path, passphrase } => {
-            let new_env = passphrase.as_ref().and_then(|env| {
-                match old_vault.decrypt(env) {
+        AuthMethod::PublicKey {
+            key_path,
+            passphrase,
+        } => {
+            let new_env = passphrase
+                .as_ref()
+                .and_then(|env| match old_vault.decrypt(env) {
                     Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
                     Err(e) => {
-                        warn!("Failed to reencrypt public key passphrase (session {}): {e}", cfg.id);
+                        warn!(
+                            "Failed to reencrypt public key passphrase (session {}): {e}",
+                            cfg.id
+                        );
                         None
                     }
-                }
-            });
+                });
             AuthMethod::PublicKey {
                 key_path: key_path.clone(),
                 passphrase: new_env,

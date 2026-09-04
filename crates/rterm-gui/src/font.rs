@@ -26,8 +26,7 @@ static NAME_CACHE: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::ne
 
 /// 将字体族名提升为 `&'static str`（进程级缓存，同名只泄漏一次，复用不再增长）。
 fn to_static_name(name: &str) -> &'static str {
-    let cache = NAME_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = match cache.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {

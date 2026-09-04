@@ -4,8 +4,33 @@ use iced::Task;
 use log::warn;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::state::ToastKind;
 use crate::update_check::ReleaseInfo;
+
+/// 检查来源：手动（设置页「立即检查」）或自动（启动时空转判定后发起）。
+///
+/// 决定检查结果如何呈现——手动检查结果在设置弹窗就地反馈；自动检查失败仅记日志。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CheckSource {
+    /// 设置弹窗「立即检查」按钮触发的显式检查。
+    Manual,
+    /// 启动时空转判定通过后自动发起的检查。
+    Auto,
+}
+
+/// 「立即检查」的就地反馈状态，渲染于设置弹窗更新面板。
+///
+/// 与自动检查的横幅 / 日志互补：手动检查因弹窗覆盖右下角 toast，结果须直接显示在弹窗内。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CheckStatus {
+    /// 正在检查（点击「立即检查」后、结果未回前）。
+    Checking,
+    /// 已是最新版本。
+    UpToDate,
+    /// 发现新版本（持有版本号）。
+    Found(String),
+    /// 检查失败（持有错误文案）。
+    Error(String),
+}
 
 /// 更新检查节流间隔（24 小时），避免每次启动都请求网络。
 const THROTTLE_SECS: i64 = 24 * 3600;
@@ -15,6 +40,9 @@ const THROTTLE_SECS: i64 = 24 * 3600;
 pub struct State {
     /// 顶部更新提示横幅：发现新版本时持有（版本号 + 发布页 URL），关闭后置 `None`。
     pub banner: Option<(String, String)>,
+    /// 「立即检查」的就地反馈：显示在设置弹窗更新面板，与全局横幅 / 日志互补。
+    /// `None` 表示尚无手动检查结果（未检查、或结果已隐含于横幅）。
+    pub manual_status: Option<CheckStatus>,
 }
 
 impl State {
@@ -37,25 +65,40 @@ impl State {
                 // 立即写回时间戳以确立节流窗口（无论本次成败，24h 内不再重复）。
                 Task::batch([
                     Task::done(Event::SetLastCheck(Some(now_unix()))),
-                    check_task(),
+                    check_task(CheckSource::Auto),
                 ])
             }
-            // 手动检查：忽略节流（用户显式点了「检查更新」）。
-            Message::CheckNow => check_task(),
-            Message::CheckResult(result) => match result {
+            // 手动检查：忽略节流（用户显式点了「检查更新」），并就地反馈检查状态。
+            Message::CheckNow => {
+                self.manual_status = Some(CheckStatus::Checking);
+                check_task(CheckSource::Manual)
+            }
+            Message::CheckResult(result, source) => match result {
                 Ok(Some(info)) => {
-                    self.banner = Some((info.version, info.html_url));
                     // 写回时间戳以维持节流窗口（无更新 / 出错则不写，故失败不会阻断后续自动检查）。
+                    let version = info.version.clone();
+                    self.banner = Some((info.version, info.html_url));
+                    if source == CheckSource::Manual {
+                        self.manual_status = Some(CheckStatus::Found(version));
+                    }
                     Task::done(Event::SetLastCheck(Some(now_unix())))
                 }
                 // 无更新或版本无法判定：清除可能残留的横幅。
                 Ok(None) => {
                     self.banner = None;
+                    if source == CheckSource::Manual {
+                        self.manual_status = Some(CheckStatus::UpToDate);
+                    }
                     Task::none()
                 }
                 Err(e) => {
                     warn!("更新检查失败: {e}");
-                    Task::done(Event::Toast(ToastKind::Error, e))
+                    if source == CheckSource::Manual {
+                        // 手动检查失败：在设置弹窗就地反馈（弹窗打开时右下角 toast 不可见）。
+                        self.manual_status = Some(CheckStatus::Error(e));
+                    }
+                    // 自动检查失败：仅记日志，不在界面上提示。
+                    Task::none()
                 }
             },
             Message::OpenReleasePage(url) => {
@@ -82,8 +125,8 @@ pub enum Message {
     CheckOnStartup,
     /// 立即检查一次（设置页「检查更新」按钮，忽略节流）。
     CheckNow,
-    /// 检查完成（有更新为 `ReleaseInfo`，无更新为 `Ok(None)`，出错为 `Err`）。
-    CheckResult(Result<Option<ReleaseInfo>, String>),
+    /// 检查完成（有更新为 `ReleaseInfo`，无更新为 `Ok(None)`，出错为 `Err`）；携带检查来源以决定呈现方式。
+    CheckResult(Result<Option<ReleaseInfo>, String>, CheckSource),
     /// 在浏览器 / 系统默认处理器中打开发布页（携带 URL）。
     OpenReleasePage(String),
     /// 关闭顶部更新提示横幅（仅隐藏，下次检查仍可能重新出现）。
@@ -103,8 +146,6 @@ pub enum Event {
     /// 不能写父态；故把内部消息装进 `Emit` 上行，父层在 `Message::UpdatesEvent` 分支收到后再
     /// `self.updates.update` 一次，形成自回路。
     Emit(Box<Message>),
-    /// 请求父层弹出 toast 通知（携带类型与文案）。
-    Toast(ToastKind, String),
 }
 
 /// 父层只读上下文：自动检查开关与上次检查时间戳，供模块判定节流，不写回。
@@ -115,12 +156,12 @@ pub struct Ctx {
     pub last_check_unix: Option<i64>,
 }
 
-/// 发起一次 GitHub Releases 查询，结果经 [`Message::CheckResult`] 回流（自回路）。
-fn check_task() -> Task<Event> {
+/// 发起一次 GitHub Releases 查询，结果经 [`Message::CheckResult`] 回流（自回路），并携带检查来源。
+fn check_task(source: CheckSource) -> Task<Event> {
     let repo = crate::update_check::resolve_repo();
     Task::perform(
         async move { crate::update_check::check_latest(&repo).await },
-        |res| Event::Emit(Box::new(Message::CheckResult(res))),
+        move |res| Event::Emit(Box::new(Message::CheckResult(res, source))),
     )
 }
 
@@ -212,15 +253,23 @@ mod tests {
         );
     }
 
-    /// 发现更新：持有横幅并上行写回时间戳（节流窗口由成功检查确立）。
+    /// 发现更新：持有横幅并上行写回时间戳（节流窗口由成功检查确立）；手动检查另置「发现」状态。
     #[test]
     fn found_release_sets_banner_and_writes_timestamp() {
         let mut s = State::new();
-        let events = run_events(s.update(Message::CheckResult(Ok(Some(release()))), &ctx()));
+        let events = run_events(s.update(
+            Message::CheckResult(Ok(Some(release())), CheckSource::Manual),
+            &ctx(),
+        ));
         assert_eq!(
             s.banner.as_ref().map(|(v, _)| v.as_str()),
             Some("9.9.9"),
             "发现更新应持有横幅"
+        );
+        assert_eq!(
+            s.manual_status,
+            Some(CheckStatus::Found("9.9.9".to_string())),
+            "手动检查发现更新应置「发现」状态"
         );
         assert!(
             matches!(events.as_slice(), [Event::SetLastCheck(Some(_))]),
@@ -228,30 +277,64 @@ mod tests {
         );
     }
 
-    /// 无更新 / 出错：不写时间戳（失败不会吃掉后续自动检查），无更新时清除残留横幅。
+    /// 手动检查：无更新 / 出错均在弹窗就地反馈，不再弹 toast、不阻断后续自动检查。
     #[test]
-    fn no_release_or_error_keeps_throttle_window_open() {
+    fn manual_check_shows_status_in_dialog_and_no_toast() {
         let mut s = State::new();
         s.banner = Some(("9.9.9".to_string(), "https://example.com".to_string()));
 
-        let events = run_events(s.update(Message::CheckResult(Ok(None)), &ctx()));
+        let events =
+            run_events(s.update(Message::CheckResult(Ok(None), CheckSource::Manual), &ctx()));
         assert!(events.is_empty(), "无更新不应写时间戳");
         assert!(s.banner.is_none(), "无更新应清除残留横幅");
+        assert_eq!(
+            s.manual_status,
+            Some(CheckStatus::UpToDate),
+            "手动检查无更新应置「已是最新」"
+        );
 
         s.banner = Some(("9.9.9".to_string(), "https://example.com".to_string()));
-        let events = run_events(s.update(Message::CheckResult(Err("网络不可用".into())), &ctx()));
-        assert!(
-            matches!(events.as_slice(), [Event::Toast(ToastKind::Error, _)]),
-            "出错应弹 toast"
+        let events = run_events(s.update(
+            Message::CheckResult(Err("网络不可用".into()), CheckSource::Manual),
+            &ctx(),
+        ));
+        assert!(events.is_empty(), "手动检查出错不应弹 toast 或写时间戳");
+        assert!(s.banner.is_some(), "手动检查出错不应改动已有横幅");
+        assert_eq!(
+            s.manual_status,
+            Some(CheckStatus::Error("网络不可用".to_string())),
+            "手动检查出错应置「错误」状态"
         );
-        assert!(s.banner.is_some(), "出错不应改动已有横幅");
+    }
+
+    /// 自动检查：失败仅记日志，不弹 toast、不写时间戳、不改动设置弹窗的 `manual_status`。
+    #[test]
+    fn auto_check_failure_only_logs() {
+        let mut s = State::new();
+        s.banner = Some(("9.9.9".to_string(), "https://example.com".to_string()));
+        s.manual_status = Some(CheckStatus::UpToDate);
+        let events = run_events(s.update(
+            Message::CheckResult(Err("网络不可用".into()), CheckSource::Auto),
+            &ctx(),
+        ));
+        assert!(events.is_empty(), "自动检查出错应静默（仅日志）");
+        assert!(s.banner.is_some(), "自动检查出错不应改动已有横幅");
+        // `manual_status` 仅由手动检查维护，自动检查失败不得覆盖它。
+        assert_eq!(
+            s.manual_status,
+            Some(CheckStatus::UpToDate),
+            "自动检查不应改动 manual_status"
+        );
     }
 
     /// 关闭横幅：仅隐藏，不影响后续检查。
     #[test]
     fn dismiss_clears_banner_only() {
         let mut s = State::new();
-        let _ = run_events(s.update(Message::CheckResult(Ok(Some(release()))), &ctx()));
+        let _ = run_events(s.update(
+            Message::CheckResult(Ok(Some(release())), CheckSource::Manual),
+            &ctx(),
+        ));
         let _ = run_events(s.update(Message::DismissBanner, &ctx()));
         assert!(s.banner.is_none(), "关闭后应清除横幅");
     }

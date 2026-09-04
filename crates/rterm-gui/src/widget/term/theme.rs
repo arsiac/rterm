@@ -166,8 +166,7 @@ impl Theme {
                         _ => &self.palette.background,
                     };
 
-                return hex_to_color(color)
-                    .unwrap_or_else(|e| {
+                    return hex_to_color(color).unwrap_or_else(|e| {
                         warn!("Invalid color config '{color}': {e}, falling back to black");
                         Color::from_rgb8(0, 0, 0)
                     });
@@ -275,7 +274,10 @@ impl TerminalStyle for Theme {
             background: Some(
                 hex_to_color(&self.palette.background)
                     .unwrap_or_else(|e| {
-                        warn!("Invalid background color config '{}': {e}, falling back to black", self.palette.background);
+                        warn!(
+                            "Invalid background color config '{}': {e}, falling back to black",
+                            self.palette.background
+                        );
                         Color::from_rgb8(0, 0, 0)
                     })
                     .into(),
