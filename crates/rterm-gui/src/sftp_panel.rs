@@ -113,52 +113,54 @@ fn panel(app: &App) -> Element<'_, Message> {
 
     // 工具栏：一排操作按钮（返回上级、刷新、新建目录、上传），当前路径输入框独立显示在下方，
     // 全部复用 icon_button 的带延迟 tooltip。
-    let actions = row![
-        icon_button(
-            Icon::ArrowReply,
-            ACTION_ICON_SIZE,
-            t!("sftp.up_dir"),
-            crate::app::sftp::Message::SftpParent,
-            Position::Bottom,
-        ),
-        icon_button(
+    // 当 CWD_BOOTSTRAP 关闭时，「进入终端目录」按钮不显示（无 cwd 追踪能力）。
+    let mut btns: Vec<Element<'_, Message>> = vec![icon_button(
+        Icon::ArrowReply,
+        ACTION_ICON_SIZE,
+        t!("sftp.up_dir"),
+        crate::app::sftp::Message::SftpParent,
+        Position::Bottom,
+    )];
+    if app.config.cwd_bootstrap {
+        btns.push(icon_button(
             Icon::ArrowEnter,
             ACTION_ICON_SIZE,
             t!("sftp.goto_terminal"),
             crate::app::sftp::Message::SftpGotoTerminalDir,
             Position::Bottom,
-        ),
-        icon_button(
-            Icon::ArrowClockwise,
-            ACTION_ICON_SIZE,
-            t!("sftp.refresh"),
-            crate::app::sftp::Message::SftpCd(sftp.path.clone()),
-            Position::Bottom,
-        ),
-        icon_button(
-            Icon::FolderAdd,
-            ACTION_ICON_SIZE,
-            t!("sftp.new_dir"),
-            crate::app::sftp::Message::SftpNewDirConfirm,
-            Position::Bottom
-        ),
-        icon_button(
-            Icon::DocumentArrowUp,
-            ACTION_ICON_SIZE,
-            t!("sftp.upload"),
-            crate::app::sftp::Message::SftpPickUpload,
-            Position::Bottom,
-        ),
-        icon_button(
-            Icon::FolderArrowUp,
-            ACTION_ICON_SIZE,
-            t!("sftp.upload_folder"),
-            crate::app::sftp::Message::SftpPickUploadFolder,
-            Position::Bottom,
-        ),
-    ]
-    .spacing(6)
-    .align_y(iced::alignment::Vertical::Center);
+        ));
+    }
+    btns.push(icon_button(
+        Icon::ArrowClockwise,
+        ACTION_ICON_SIZE,
+        t!("sftp.refresh"),
+        crate::app::sftp::Message::SftpCd(sftp.path.clone()),
+        Position::Bottom,
+    ));
+    btns.push(icon_button(
+        Icon::FolderAdd,
+        ACTION_ICON_SIZE,
+        t!("sftp.new_dir"),
+        crate::app::sftp::Message::SftpNewDirConfirm,
+        Position::Bottom,
+    ));
+    btns.push(icon_button(
+        Icon::DocumentArrowUp,
+        ACTION_ICON_SIZE,
+        t!("sftp.upload"),
+        crate::app::sftp::Message::SftpPickUpload,
+        Position::Bottom,
+    ));
+    btns.push(icon_button(
+        Icon::FolderArrowUp,
+        ACTION_ICON_SIZE,
+        t!("sftp.upload_folder"),
+        crate::app::sftp::Message::SftpPickUploadFolder,
+        Position::Bottom,
+    ));
+    let actions = row(btns)
+        .spacing(6)
+        .align_y(iced::alignment::Vertical::Center);
 
     // 工具栏：容器宽度填满并将内部按钮整体右对齐。
     let toolbar = container(actions)

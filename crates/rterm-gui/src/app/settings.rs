@@ -79,6 +79,8 @@ pub enum Message {
     OpenLogFolder,
     /// 修改「自动检查更新」设置（携带开关状态，即时持久化）。
     AutoCheckUpdates(bool),
+    /// 修改「自动追踪终端目录」设置（携带开关状态，即时持久化）。
+    CwdBootstrap(bool),
 }
 
 /// 上行事件：仅通知父层，由父层 `Message::SettingsEvent` 分支修改父状态并落盘。
@@ -108,6 +110,8 @@ pub enum Event {
     OpenLogFolder,
     /// 写回“自动检查更新”配置（携带开关状态）。
     AutoCheckUpdates(bool),
+    /// 写回“自动追踪终端目录”配置（携带开关状态）。
+    CwdBootstrap(bool),
 }
 
 /// 父层只读上下文：当前 `AppConfig`，供模块构建下拉框选项等读取，不写回。
@@ -175,6 +179,7 @@ impl State {
                 Task::none()
             }
             Message::AutoCheckUpdates(enabled) => Task::done(Event::AutoCheckUpdates(enabled)),
+            Message::CwdBootstrap(v) => Task::done(Event::CwdBootstrap(v)),
         }
     }
 }

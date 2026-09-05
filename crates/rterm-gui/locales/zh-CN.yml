@@ -34,6 +34,8 @@ settings:
   language_system: 跟随系统
   language_zh_cn: 简体中文
   language_en: English
+  cwd_bootstrap: 自动追踪终端目录
+  cwd_bootstrap_hint: 开启后控制台将自动执行脚本以获取当前工作目录，方便 SFTP 面板「进入终端目录」。
   updates: 更新
   auto_check_updates: 启动时自动检查更新
   check_now: 立即检查

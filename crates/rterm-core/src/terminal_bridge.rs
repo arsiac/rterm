@@ -61,6 +61,7 @@ pub async fn spawn_terminal_bridge(
     cols: u32,
     rows: u32,
     cwd: CwdTracker,
+    cwd_bootstrap: bool,
 ) -> Result<(File, File, Arc<AtomicBool>, mpsc::Sender<(u32, u32)>), CoreError> {
     // 进程内管道：拆成 OUT（远端→本地输出）与 IN（本地→远端输入）两条独立管道。
     // 同步端（conout 读端 / conin 写端）交 GUI，异步端（out_stream / in_stream）在此泵接 russh 通道。
@@ -71,9 +72,9 @@ pub async fn spawn_terminal_bridge(
     // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
     let channel = conn.open_shell_channel(cols, rows).await?;
 
-    // 仅在需要追踪 cwd 时，向 shell 注入 prompt 钩子，使其持续上报 OSC 7。
+    // 仅在需要追踪 cwd 且开启了 CWD_BOOTSTRAP 时，向 shell 注入 prompt 钩子，使其持续上报 OSC 7。
     // 钩子在 shell 读就绪后自动执行，无需等待 pump 启动。
-    if cwd.is_some() {
+    if cwd.is_some() && cwd_bootstrap {
         {
             let mut writer = channel.make_writer();
             if let Err(e) = writer.write_all(CWD_BOOTSTRAP).await {

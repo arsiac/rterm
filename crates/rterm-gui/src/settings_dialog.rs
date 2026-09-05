@@ -246,9 +246,18 @@ fn general_pane(app: &App) -> Element<'_, Message> {
         ]
         .align_y(iced::alignment::Vertical::Center)
         .spacing(8),
+        text(t!("settings.restart_note"))
+            .size(12)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.extended_palette().background.weak.text),
+            }),
         section_label(t!("settings.language")),
         language_picker,
-        text(t!("settings.restart_note"))
+        checkbox(app.config.cwd_bootstrap)
+            .label(t!("settings.cwd_bootstrap"))
+            .on_toggle(|v| Message::Settings(settings::Message::CwdBootstrap(v)))
+            .spacing(8),
+        text(t!("settings.cwd_bootstrap_hint"))
             .size(12)
             .style(|theme: &Theme| iced::widget::text::Style {
                 color: Some(theme.extended_palette().background.weak.text),

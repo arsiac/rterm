@@ -191,6 +191,13 @@ pub struct AppConfig {
     /// （视为不支持，GUI 不展示该开关）。
     #[serde(default = "default_true")]
     pub remember_master_key: bool,
+    /// 是否在终端连接时向远端 shell 注入 CWD 上报钩子（OSC 7 序列）。
+    ///
+    /// 开启时每个新终端标签连接后会自动向 shell 注入一段 prompt 钩子，使 shell 在每个
+    /// 提示符处输出当前工作目录（`ESC ]7;file://<pwd> BEL`），供 SFTP 面板「进入终端目录」
+    /// 按钮使用。关闭后不注入钩子，SFTP 面板中该按钮也将隐藏。默认开启。
+    #[serde(default = "default_true")]
+    pub cwd_bootstrap: bool,
 }
 
 /// 连接超时默认值（秒）：30 秒（0 表示不限制）。
@@ -278,6 +285,7 @@ impl Default for AppConfig {
             // `remember_master_key` 默认开启（提供免输入体验）：这里走 `default_true()` 而非
             // 直接写字面量，是为了让 serde 的字段缺省值也保持 `true`（bool 默认是 `false`）。
             remember_master_key: default_true(),
+            cwd_bootstrap: default_true(),
         }
     }
 }

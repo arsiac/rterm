@@ -239,6 +239,11 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::CwdBootstrap(v) => {
+            app.config.cwd_bootstrap = v;
+            contexts::save_config(app);
+            Task::none()
+        }
     }
 }
 

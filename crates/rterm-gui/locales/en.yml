@@ -34,6 +34,8 @@ settings:
   language_system: Follow system
   language_zh_cn: Simplified Chinese
   language_en: English
+  cwd_bootstrap: Auto-track terminal directory
+  cwd_bootstrap_hint: When enabled, a script is automatically executed in the terminal to report the current working directory for the SFTP Enter terminal directory button.
   updates: Updates
   auto_check_updates: Automatically check for updates on startup
   check_now: Check now
