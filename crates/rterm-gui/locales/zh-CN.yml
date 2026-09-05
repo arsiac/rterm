@@ -36,6 +36,8 @@ settings:
   language_en: English
   cwd_bootstrap: 自动追踪终端目录
   cwd_bootstrap_hint: 开启后控制台将自动执行脚本以获取当前工作目录，方便 SFTP 面板「进入终端目录」。
+  trim_trailing_whitespace: 复制时去除行尾空格
+  trim_trailing_whitespace_hint: 开启后每次复制多行文本时自动去除每行末尾的多余空白字符。
   updates: 更新
   auto_check_updates: 启动时自动检查更新
   check_now: 立即检查

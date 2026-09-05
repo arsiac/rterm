@@ -129,6 +129,7 @@ pub(crate) fn spawn_terminal_widget(
     let settings = TermSettings {
         backend: BackendSettings {
             scrollback: app.config.scrollback,
+            trim_trailing_whitespace: app.config.trim_trailing_whitespace,
             ..Default::default()
         },
         font: FontSettings {

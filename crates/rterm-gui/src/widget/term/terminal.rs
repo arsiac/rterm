@@ -93,6 +93,7 @@ impl Terminal {
                 backend_event_tx,
                 pty,
                 settings.backend.scrollback,
+                settings.backend.trim_trailing_whitespace,
             )?,
             backend_event_rx: Arc::new(Mutex::new(backend_event_rx)),
         })

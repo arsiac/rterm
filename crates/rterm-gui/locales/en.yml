@@ -36,6 +36,8 @@ settings:
   language_en: English
   cwd_bootstrap: Auto-track terminal directory
   cwd_bootstrap_hint: When enabled, a script is automatically executed in the terminal to report the current working directory for the SFTP Enter terminal directory button.
+  trim_trailing_whitespace: Trim trailing whitespace on copy
+  trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
   updates: Updates
   auto_check_updates: Automatically check for updates on startup
   check_now: Check now

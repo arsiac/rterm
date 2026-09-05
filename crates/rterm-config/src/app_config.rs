@@ -191,6 +191,9 @@ pub struct AppConfig {
     /// （视为不支持，GUI 不展示该开关）。
     #[serde(default = "default_true")]
     pub remember_master_key: bool,
+    /// 是否在复制时将选中区域各行的尾部空格去除，默认开启。
+    #[serde(default = "default_true")]
+    pub trim_trailing_whitespace: bool,
     /// 是否在终端连接时向远端 shell 注入 CWD 上报钩子（OSC 7 序列）。
     ///
     /// 开启时每个新终端标签连接后会自动向 shell 注入一段 prompt 钩子，使 shell 在每个
@@ -286,6 +289,7 @@ impl Default for AppConfig {
             // 直接写字面量，是为了让 serde 的字段缺省值也保持 `true`（bool 默认是 `false`）。
             remember_master_key: default_true(),
             cwd_bootstrap: default_true(),
+            trim_trailing_whitespace: default_true(),
         }
     }
 }

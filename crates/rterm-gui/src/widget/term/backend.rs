@@ -190,6 +190,8 @@ pub struct Backend {
     last_content: RenderableContent,
     /// 用于识别超链接的 URL 正则（crate 内可见）。
     pub(crate) url_regex: RegexSearch,
+    /// 复制时是否去除每行尾部空格。
+    trim_trailing_whitespace: bool,
 }
 
 impl Backend {
@@ -211,7 +213,7 @@ impl Backend {
         };
 
         let pty = tty::new(&pty_config, TerminalSize::default().into(), id)?;
-        Self::from_pty(id, pty_event_proxy_sender, pty, settings.scrollback)
+        Self::from_pty(id, pty_event_proxy_sender, pty, settings.scrollback, settings.trim_trailing_whitespace)
     }
 
     /// SSH 场景：直接桥接 russh shell 通道，不经过本地 PTY 子进程。
@@ -220,8 +222,9 @@ impl Backend {
         pty_event_proxy_sender: mpsc::Sender<Event>,
         pty: RusshPty,
         scrollback: usize,
+        trim_trailing_whitespace: bool,
     ) -> Result<Self> {
-        Self::from_pty(id, pty_event_proxy_sender, pty, scrollback)
+        Self::from_pty(id, pty_event_proxy_sender, pty, scrollback, trim_trailing_whitespace)
     }
 
     /// 以给定 PTY 构造后端，初始化 alacritty 终端与 event loop。
@@ -230,6 +233,7 @@ impl Backend {
         pty_event_proxy_sender: mpsc::Sender<Event>,
         pty: Pty,
         scrollback: usize,
+        trim_trailing_whitespace: bool,
     ) -> Result<Self>
     where
         Pty: EventedPty + OnResize + Send + 'static,
@@ -269,6 +273,7 @@ impl Backend {
             notifier,
             last_content: initial_content,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
+            trim_trailing_whitespace,
         })
     }
 
@@ -550,6 +555,7 @@ impl Backend {
     }
 
     /// 返回当前选中范围内的纯文本（去除网格控制字符）。
+    /// 若 `trim_trailing_whitespace` 开启，各行的尾部空格与制表符将被去除。
     pub fn selectable_content(&self) -> String {
         let content = self.renderable_content();
         let mut result = String::new();
@@ -568,7 +574,11 @@ impl Backend {
                 }
             }
         }
-        result
+        if self.trim_trailing_whitespace {
+            result.lines().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n")
+        } else {
+            result
+        }
     }
 
     /// 将 alacritty 终端最新状态同步到可渲染内容快照。

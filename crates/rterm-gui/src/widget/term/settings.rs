@@ -37,6 +37,8 @@ pub struct BackendSettings {
     pub working_directory: Option<PathBuf>,
     /// 历史缓冲行数（透传给 alacritty `scrolling_history`），0 表示不保留历史。
     pub scrollback: usize,
+    /// 复制时是否去除每行尾部空格。
+    pub trim_trailing_whitespace: bool,
 }
 
 impl Default for BackendSettings {
@@ -48,6 +50,7 @@ impl Default for BackendSettings {
             env: HashMap::new(),
             working_directory: None,
             scrollback: 10000,
+            trim_trailing_whitespace: true,
         }
     }
 }
