@@ -554,8 +554,16 @@ impl Backend {
         let content = self.renderable_content();
         let mut result = String::new();
         if let Some(range) = content.selectable_range {
+            let mut last_line: i32 = i32::MIN;
             for indexed in content.grid.display_iter() {
                 if range.contains(indexed.point) {
+                    // 换行时插入 \n
+                    if indexed.point.line.0 != last_line {
+                        if !result.is_empty() {
+                            result.push('\n');
+                        }
+                        last_line = indexed.point.line.0;
+                    }
                     result.push(indexed.c);
                 }
             }
