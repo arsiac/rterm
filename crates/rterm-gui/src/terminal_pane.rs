@@ -280,13 +280,19 @@ pub fn view(app: &App) -> Element<'_, Message> {
                         let close = button(text(t!("common.close")).size(13))
                             .on_press(Message::Tabs(tabs::Message::CloseTab(tab.id)))
                             .padding([6, 16])
-                            .style(crate::theme::tab_close_style);
+                            .style(crate::theme::error_close_style);
                         container(
                             column![
-                                text(t!("terminal.error_status"))
-                                    .size(15)
-                                    .color(Color::from_rgb(0.95, 0.45, 0.45)),
-                                text(err).size(13).color(Color::from_rgb(0.85, 0.7, 0.7)),
+                                text(t!("terminal.error_status")).size(15).style(
+                                    |theme: &iced::Theme| iced::widget::text::Style {
+                                        color: Some(crate::theme::error_title_color(theme)),
+                                    }
+                                ),
+                                text(err).size(13).style(|theme: &iced::Theme| {
+                                    iced::widget::text::Style {
+                                        color: Some(crate::theme::error_detail_color(theme)),
+                                    }
+                                }),
                                 row![retry, close].spacing(10),
                             ]
                             .spacing(10)

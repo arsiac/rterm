@@ -465,6 +465,45 @@ pub fn tab_close_style(_theme: &Theme, status: button::Status) -> iced::widget::
     }
 }
 
+/// 错误面板中"关闭"按钮样式：透明底、随主题文字色，悬停时显示红色背景。
+pub fn error_close_style(theme: &Theme, status: button::Status) -> iced::widget::button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => Some(TAB_CLOSE_HOVER.into()),
+        _ => None,
+    };
+    iced::widget::button::Style {
+        background,
+        text_color: theme.palette().text,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// 错误面板标题颜色：深色主题用亮红，浅色主题用标准红。
+pub fn error_title_color(theme: &Theme) -> Color {
+    let bg = theme.palette().background;
+    let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    if luminance > 0.5 {
+        Color::from_rgb(0.8, 0.2, 0.2)
+    } else {
+        Color::from_rgb(0.95, 0.45, 0.45)
+    }
+}
+
+/// 错误详情文字颜色：深色主题用浅红，浅色主题用深红。
+pub fn error_detail_color(theme: &Theme) -> Color {
+    let bg = theme.palette().background;
+    let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    if luminance > 0.5 {
+        Color::from_rgb(0.55, 0.35, 0.35)
+    } else {
+        Color::from_rgb(0.85, 0.7, 0.7)
+    }
+}
+
 /// 标签栏水平滚动条样式：无轨道底色、细圆角滑块，默认态低调、悬停 / 拖拽时加深。
 pub fn tab_scrollable_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
     let p = custom_palette(theme);
