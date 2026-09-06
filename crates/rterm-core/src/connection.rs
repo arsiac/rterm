@@ -314,6 +314,7 @@ impl SshConnection {
         &self,
         cols: u32,
         rows: u32,
+        cwd_bootstrap: bool,
         suppress_bootstrap_echo: bool,
     ) -> Result<russh::Channel<client::Msg>, CoreError> {
         debug!("打开 shell 通道 ({}x{})", cols, rows);
@@ -322,7 +323,7 @@ impl SshConnection {
             .channel_open_session()
             .await
             .map_err(|e| CoreError::ssh(CoreErrorKind::ChannelOpen, e))?;
-        let terminal_modes: &[(Pty, u32)] = if suppress_bootstrap_echo {
+        let terminal_modes: &[(Pty, u32)] = if cwd_bootstrap && suppress_bootstrap_echo {
             &[(Pty::ECHO, 0)]
         } else {
             &[]

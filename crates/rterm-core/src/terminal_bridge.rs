@@ -37,7 +37,17 @@ pub type CwdTracker = Option<Arc<Mutex<Option<String>>>>;
 /// `BASH_VERSION` / `ZSH_VERSION` 守卫，非对应 shell 时静默跳过、绝不报错。
 /// 末尾 `:` 为无害空命令，确保整段以换行执行；`$PWD` 本身以 `/` 开头，故
 /// 输出形如 `file:///home/user`，桥接侧按 `file://` 后内容解析即可。
-const CWD_BOOTSTRAP: &[u8] = b"__rterm_cwd(){ printf '\\033]7;file://%s\\033\\\\' \"$PWD\"; }; case \"$BASH_VERSION\" in ?*) PROMPT_COMMAND=\"__rterm_cwd${PROMPT_COMMAND:+;${PROMPT_COMMAND}}\" ;; esac; case \"$ZSH_VERSION\" in ?*) precmd_functions+=(__rterm_cwd) ;; esac; :\n";
+const CWD_BOOTSTRAP: &[u8] = b"\
+    __rterm_cwd(){ \
+        printf '\\033]7;file://%s\\033\\\\' \"$PWD\"; \
+    }; \
+    case \"$BASH_VERSION\" in \
+        ?*) PROMPT_COMMAND=\"__rterm_cwd${PROMPT_COMMAND:+;${PROMPT_COMMAND}}\" ;; \
+    esac; \
+    case \"$ZSH_VERSION\" in \
+        ?*) precmd_functions+=(__rterm_cwd) ;; \
+    esac; \
+    :\n";
 
 /// 创建终端桥接所需的一切，返回供 GUI 直接消费的对象。
 ///
@@ -72,14 +82,22 @@ pub async fn spawn_terminal_bridge(
 
     // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
     let channel = conn
-        .open_shell_channel(cols, rows, suppress_bootstrap_echo)
+        .open_shell_channel(cols, rows, cwd_bootstrap, suppress_bootstrap_echo)
         .await?;
 
     // 仅在需要追踪 cwd 且开启了 CWD_BOOTSTRAP 时，向 shell 注入 prompt 钩子，使其持续上报 OSC 7。
     // 钩子在 shell 读就绪后自动执行，无需等待 pump 启动。
+    // 若同时启用了 suppress_bootstrap_echo，在脚本末尾拼接 stty echo 以恢复回显。
     if cwd.is_some() && cwd_bootstrap {
         let mut writer = channel.make_writer();
-        if let Err(e) = writer.write_all(CWD_BOOTSTRAP).await {
+        let cmd = if suppress_bootstrap_echo {
+            let mut buf = CWD_BOOTSTRAP[..CWD_BOOTSTRAP.len() - 2].to_vec();
+            buf.extend_from_slice(b"stty echo\n");
+            buf
+        } else {
+            CWD_BOOTSTRAP.to_vec()
+        };
+        if let Err(e) = writer.write_all(&cmd).await {
             log::debug!("Failed to inject cwd bootstrap: {e}");
         }
     }
