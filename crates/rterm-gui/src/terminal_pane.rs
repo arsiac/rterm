@@ -245,7 +245,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             Some(term) => {
                 let terminal_elem: Element<'_, TerminalEvent> =
                     TerminalView::show(term, app.terminal_focused)
-                        .padding(8.0)
+                        .padding(4.0)
                         .into();
                 let terminal_elem =
                     terminal_elem.map(|e| Message::Tabs(tabs::Message::Terminal(e)));

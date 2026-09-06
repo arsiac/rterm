@@ -83,7 +83,11 @@ impl<'a> TerminalView<'a> {
         let layout_size = layout.bounds().size();
         if state.size != layout_size {
             state.size = layout_size;
-            let cmd = Command::Resize(Some(layout_size), Some(self.term.font.measure));
+            let content_size = Size::new(
+                layout_size.width - self.padding * 2.0,
+                layout_size.height - self.padding * 2.0,
+            );
+            let cmd = Command::Resize(Some(content_size), Some(self.term.font.measure));
             shell.publish(Event::BackendCall(self.term.id, cmd));
         }
     }
