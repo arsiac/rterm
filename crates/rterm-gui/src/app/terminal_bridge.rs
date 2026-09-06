@@ -77,6 +77,7 @@ pub(crate) fn open_terminal_bridge(
             disconnect_tx,
             cwd,
             app.config.cwd_bootstrap,
+            app.config.suppress_bootstrap_echo,
         ),
         move |res| {
             Message::Tabs(tabs::Message::TerminalOpened(

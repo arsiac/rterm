@@ -36,6 +36,8 @@ settings:
   language_en: English
   cwd_bootstrap: Auto-track terminal directory
   cwd_bootstrap_hint: When enabled, a script is automatically executed in the terminal to report the current working directory for the SFTP Enter terminal directory button.
+  suppress_bootstrap_echo: Suppress terminal echo during script injection
+  suppress_bootstrap_echo_hint: When enabled, the PTY is configured with ECHO=0 during script injection to prevent the script text from appearing on screen. When disabled, the script will be echoed normally.
   trim_trailing_whitespace: Trim trailing whitespace on copy
   trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
   updates: Updates

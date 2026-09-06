@@ -7,6 +7,7 @@
 use crate::{CoreError, CoreErrorKind, host_key};
 use log::debug;
 use rterm_config::{AuthMethod, SessionConfig};
+use russh::Pty;
 use russh::client::{self, Config, Handle, Handler};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use std::sync::{Arc, Mutex};
@@ -313,6 +314,7 @@ impl SshConnection {
         &self,
         cols: u32,
         rows: u32,
+        suppress_bootstrap_echo: bool,
     ) -> Result<russh::Channel<client::Msg>, CoreError> {
         debug!("打开 shell 通道 ({}x{})", cols, rows);
         let handle = self.handle.lock().await;
@@ -320,8 +322,13 @@ impl SshConnection {
             .channel_open_session()
             .await
             .map_err(|e| CoreError::ssh(CoreErrorKind::ChannelOpen, e))?;
+        let terminal_modes: &[(Pty, u32)] = if suppress_bootstrap_echo {
+            &[(Pty::ECHO, 0)]
+        } else {
+            &[]
+        };
         channel
-            .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
+            .request_pty(true, "xterm-256color", cols, rows, 0, 0, terminal_modes)
             .await
             .map_err(|e| CoreError::ssh(CoreErrorKind::RequestPty, e))?;
         channel

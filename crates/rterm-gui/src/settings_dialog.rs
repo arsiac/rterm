@@ -262,6 +262,15 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .style(|theme: &Theme| iced::widget::text::Style {
                 color: Some(theme.extended_palette().background.weak.text),
             }),
+        checkbox(app.config.suppress_bootstrap_echo)
+            .label(t!("settings.suppress_bootstrap_echo"))
+            .on_toggle(|v| Message::Settings(settings::Message::SuppressBootstrapEcho(v)))
+            .spacing(8),
+        text(t!("settings.suppress_bootstrap_echo_hint"))
+            .size(12)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.extended_palette().background.weak.text),
+            }),
         checkbox(app.config.trim_trailing_whitespace)
             .label(t!("settings.trim_trailing_whitespace"))
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))

@@ -201,6 +201,12 @@ pub struct AppConfig {
     /// 按钮使用。关闭后不注入钩子，SFTP 面板中该按钮也将隐藏。默认开启。
     #[serde(default = "default_true")]
     pub cwd_bootstrap: bool,
+    /// 注入 CWD 钩子时是否通过 `request_pty` 关闭远端回显（ECHO=0）。
+    ///
+    /// 开启后 `request_pty` 会传 `ECHO=0`，避免远端 PTY 回显钩子脚本文本。
+    /// 仅在 `cwd_bootstrap` 开启时生效。默认开启。
+    #[serde(default = "default_true")]
+    pub suppress_bootstrap_echo: bool,
 }
 
 /// 连接超时默认值（秒）：30 秒（0 表示不限制）。
@@ -289,6 +295,7 @@ impl Default for AppConfig {
             // 直接写字面量，是为了让 serde 的字段缺省值也保持 `true`（bool 默认是 `false`）。
             remember_master_key: default_true(),
             cwd_bootstrap: default_true(),
+            suppress_bootstrap_echo: default_true(),
             trim_trailing_whitespace: default_true(),
         }
     }

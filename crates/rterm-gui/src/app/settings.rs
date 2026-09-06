@@ -81,6 +81,8 @@ pub enum Message {
     AutoCheckUpdates(bool),
     /// 修改「自动追踪终端目录」设置（携带开关状态，即时持久化）。
     CwdBootstrap(bool),
+    /// 修改「注入脚本时抑制终端回显」设置（携带开关状态，即时持久化）。
+    SuppressBootstrapEcho(bool),
     /// 修改「复制时去除行尾空格」设置（携带开关状态，即时持久化）。
     TrimTrailingWhitespace(bool),
 }
@@ -114,6 +116,8 @@ pub enum Event {
     AutoCheckUpdates(bool),
     /// 写回“自动追踪终端目录”配置（携带开关状态）。
     CwdBootstrap(bool),
+    /// 写回"注入脚本时抑制终端回显"配置（携带开关状态）。
+    SuppressBootstrapEcho(bool),
     /// 写回"复制时去除行尾空格"配置（携带开关状态）。
     TrimTrailingWhitespace(bool),
 }
@@ -184,6 +188,7 @@ impl State {
             }
             Message::AutoCheckUpdates(enabled) => Task::done(Event::AutoCheckUpdates(enabled)),
             Message::CwdBootstrap(v) => Task::done(Event::CwdBootstrap(v)),
+            Message::SuppressBootstrapEcho(v) => Task::done(Event::SuppressBootstrapEcho(v)),
             Message::TrimTrailingWhitespace(v) => Task::done(Event::TrimTrailingWhitespace(v)),
         }
     }
