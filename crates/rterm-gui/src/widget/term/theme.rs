@@ -1,14 +1,8 @@
 use crate::widget::term::settings::ThemeSettings;
 use alacritty_terminal::vte::ansi::{self, NamedColor};
-use iced::{Color, widget::container};
+use iced::Color;
 use log::warn;
 use std::collections::HashMap;
-
-/// 终端样式接口：为容器提供背景等 iced 样式。
-pub(crate) trait TerminalStyle {
-    /// 返回该主题的容器样式（背景色等）。
-    fn container_style(&self) -> container::Style;
-}
 
 #[derive(Debug, Clone)]
 /// 终端配色板：命名颜色的十六进制字符串（`#RRGGBB`）。
@@ -265,26 +259,6 @@ fn hex_to_color(hex: &str) -> anyhow::Result<Color> {
     let b = u8::from_str_radix(&hex[5..7], 16)?;
 
     Ok(Color::from_rgb8(r, g, b))
-}
-
-impl TerminalStyle for Theme {
-    /// 以主题背景色构造容器样式。
-    fn container_style(&self) -> container::Style {
-        container::Style {
-            background: Some(
-                hex_to_color(&self.palette.background)
-                    .unwrap_or_else(|e| {
-                        warn!(
-                            "Invalid background color config '{}': {e}, falling back to black",
-                            self.palette.background
-                        );
-                        Color::from_rgb8(0, 0, 0)
-                    })
-                    .into(),
-            ),
-            ..container::Style::default()
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,6 @@
 use crate::widget::term::backend::{Backend, Command, LinkAction, MouseButton, RenderableContent};
 use crate::widget::term::bindings::{BindingAction, BindingsLayout, InputKind};
 use crate::widget::term::terminal::{Event, Terminal};
-use crate::widget::term::theme::TerminalStyle;
 use alacritty_terminal::index::Point as TerminalGridPoint;
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::{TermMode, cell};
@@ -10,7 +9,6 @@ use iced::alignment::Vertical;
 use iced::font::{Style as FontStyle, Weight as FontWeight};
 use iced::mouse::{Cursor, ScrollDelta};
 use iced::widget::canvas::{Path, Text};
-use iced::widget::container;
 use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_core::clipboard::Kind as ClipboardKind;
 use iced_core::keyboard::{Key, Modifiers, key::Named};
@@ -28,16 +26,25 @@ pub struct TerminalView<'a> {
     term: &'a Terminal,
     /// 来自 app 的「终端是否持有键盘焦点」，用于绘制实心/空心光标与门控输入。
     focused: bool,
+    /// 终端内容与外层容器边框之间的内边距（像素）。
+    /// 由 widget 自行在绘制与事件坐标中偏移，外层容器不再设 padding。
+    padding: f32,
 }
 
 impl<'a> TerminalView<'a> {
     /// 以给定终端与焦点态构造可装箱的终端视图元素。
-    pub fn show(term: &'a Terminal, focused: bool) -> Element<'a, Event> {
-        container(Self { term, focused })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| term.theme.container_style())
-            .into()
+    pub fn show(term: &'a Terminal, focused: bool) -> Self {
+        Self {
+            term,
+            focused,
+            padding: 4.0,
+        }
+    }
+
+    /// 设置终端内容的内边距（像素）。
+    pub fn padding(mut self, value: f32) -> Self {
+        self.padding = value;
+        self
     }
 
     /// 判断鼠标光标是否落在终端部件布局矩形范围内。
@@ -104,6 +111,7 @@ impl<'a> TerminalView<'a> {
                     &terminal_mode,
                     cursor_position,
                     layout_position,
+                    self.padding,
                     &mut commands,
                 );
             }
@@ -117,6 +125,7 @@ impl<'a> TerminalView<'a> {
                     self.term.backend.renderable_content(),
                     position,
                     layout_position,
+                    self.padding,
                     &mut commands,
                 );
             }
@@ -147,6 +156,7 @@ impl<'a> TerminalView<'a> {
         terminal_mode: &TermMode,
         cursor_position: Point,
         layout_position: Point,
+        padding: f32,
         commands: &mut Vec<Command>,
     ) {
         let cmd = if terminal_mode.intersects(TermMode::MOUSE_MODE) {
@@ -167,8 +177,8 @@ impl<'a> TerminalView<'a> {
             Command::SelectStart(
                 selection_type,
                 (
-                    cursor_position.x - layout_position.x,
-                    cursor_position.y - layout_position.y,
+                    cursor_position.x - layout_position.x - padding,
+                    cursor_position.y - layout_position.y - padding,
                 ),
             )
         };
@@ -182,10 +192,11 @@ impl<'a> TerminalView<'a> {
         terminal_content: &RenderableContent,
         position: &Point,
         layout_position: Point,
+        padding: f32,
         commands: &mut Vec<Command>,
     ) {
-        let cursor_x = position.x - layout_position.x;
-        let cursor_y = position.y - layout_position.y;
+        let cursor_x = position.x - layout_position.x - padding;
+        let cursor_y = position.y - layout_position.y - padding;
         state.mouse_position_on_grid = Backend::selection_point(
             cursor_x,
             cursor_y,
@@ -533,6 +544,7 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         let font_scale_factor = self.term.font.scale_factor;
         let layout_offset_x = layout.position().x;
         let layout_offset_y = layout.position().y;
+        let layout_size = layout.bounds().size();
 
         // 焦点变化但布局尺寸不变时，几何缓存直接复用旧绘制结果，导致光标（实心/空心）
         // 不随键盘焦点切换刷新。此处检测焦点变化并清缓存，强制本帧重绘光标状态。
@@ -542,177 +554,197 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         }
 
         let geom = self.term.cache.draw(renderer, viewport.size(), |frame| {
-            // 预计算内循环使用的常量
-            let display_offset = content.grid.display_offset() as f32;
-            let cell_size = Size::new(cell_width, cell_height);
-            let half_w = cell_width * 0.5;
-            let half_h = cell_height * 0.5;
-            // 默认使用背景调色板颜色
-            // 因为部件全局背景色必须保持一致
-            let default_bg = self
-                .term
-                .theme
-                .get_color(ansi::Color::Named(NamedColor::Background));
+            // 裁剪矩形：四边内缩 padding，使右侧和底部内容不溢出到容器边缘。
+            let clip_rect = Rectangle::new(
+                Point::new(
+                    layout_offset_x + self.padding,
+                    layout_offset_y + self.padding,
+                ),
+                Size::new(
+                    layout_size.width - self.padding * 2.0,
+                    layout_size.height - self.padding * 2.0,
+                ),
+            );
 
-            let mut last_line: Option<i32> = None;
-            let mut bg_batch_rect = BackgroundRect::default();
+            frame.with_clip(clip_rect, |frame| {
+                // 预计算内循环使用的常量
+                let display_offset = content.grid.display_offset() as f32;
+                let cell_size = Size::new(cell_width, cell_height);
+                let half_w = cell_width * 0.5;
+                let half_h = cell_height * 0.5;
+                // 默认使用背景调色板颜色
+                // 因为部件全局背景色必须保持一致
+                let default_bg = self
+                    .term
+                    .theme
+                    .get_color(ansi::Color::Named(NamedColor::Background));
 
-            for indexed in content.grid.display_iter() {
-                // 低成本计算每格几何信息
-                let line = indexed.point.line.0;
-                let col = indexed.point.column.0 as f32;
+                let mut last_line: Option<i32> = None;
+                let mut bg_batch_rect = BackgroundRect::default();
 
-                // 解析该格的位置点
-                let x = layout_offset_x + (col * cell_width);
-                let y = layout_offset_y + (((line as f32) + display_offset) * cell_height);
-                let cell_center_y = y + half_h;
-                let cell_center_x = x + half_w;
+                for indexed in content.grid.display_iter() {
+                    // 低成本计算每格几何信息
+                    let line = indexed.point.line.0;
+                    let col = indexed.point.column.0 as f32;
 
-                // 解析该格的颜色
-                let mut fg = self.term.theme.get_color(indexed.fg);
-                let mut bg = self.term.theme.get_color(indexed.bg);
+                    // 解析该格的位置点（含内边距偏移）
+                    let x = layout_offset_x + self.padding + (col * cell_width);
+                    let y = layout_offset_y
+                        + self.padding
+                        + (((line as f32) + display_offset) * cell_height);
+                    let cell_center_y = y + half_h;
+                    let cell_center_x = x + half_w;
 
-                // 若检测到换行，
-                // 需要刷新待绘背景矩形并初始化新矩形
-                if last_line != Some(line) {
-                    if bg_batch_rect.can_flush() {
-                        let line = last_line.unwrap_or(line);
-                        frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
-                    }
+                    // 解析该格的颜色
+                    let mut fg = self.term.theme.get_color(indexed.fg);
+                    let mut bg = self.term.theme.get_color(indexed.bg);
 
-                    last_line = Some(line);
-                    bg_batch_rect = BackgroundRect::default()
-                        .with_cell_height(cell_height)
-                        .with_display_offset(display_offset)
-                        .with_layout_offset_y(layout_offset_y);
-                }
-
-                // 处理暗淡、反显与选中文本
-                if indexed
-                    .cell
-                    .flags
-                    .intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD)
-                {
-                    fg.a *= 0.7;
-                }
-                if indexed.cell.flags.contains(cell::Flags::INVERSE)
-                    || content
-                        .selectable_range
-                        .is_some_and(|r| r.contains(indexed.point))
-                {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-
-                // 批量绘制背景：跳过默认背景（容器已绘制）
-                if bg != default_bg {
-                    if bg_batch_rect.can_extend(bg, x) {
-                        // 同色且连续：扩展当前段
-                        bg_batch_rect.extend(cell_width);
-                    } else {
-                        // 新的着色段（或不连续）：若已有则先刷新上一段
+                    // 若检测到换行，
+                    // 需要刷新待绘背景矩形并初始化新矩形
+                    if last_line != Some(line) {
                         if bg_batch_rect.can_flush() {
+                            let line = last_line.unwrap_or(line);
                             frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
                         }
 
-                        // 开启新段但暂不绘制，等待可能的延伸
+                        last_line = Some(line);
                         bg_batch_rect = BackgroundRect::default()
                             .with_cell_height(cell_height)
                             .with_display_offset(display_offset)
                             .with_layout_offset_y(layout_offset_y)
-                            .activate()
-                            .with_color(bg)
-                            .with_start_x(x)
-                            .with_width(cell_width);
+                            .with_padding(self.padding);
                     }
-                } else if bg_batch_rect.can_flush() {
-                    // 背景回到默认，刷新当前背景矩形并初始化新矩形
-                    frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
 
-                    bg_batch_rect = BackgroundRect::default()
-                        .with_cell_height(cell_height)
-                        .with_display_offset(display_offset)
-                        .with_layout_offset_y(layout_offset_y);
-                }
-
-                // 绘制悬浮超链接下划线（较少见，逐格绘制以保证正确）
-                if content.hovered_hyperlink.as_ref().is_some_and(|range| {
-                    range.contains(&indexed.point) && range.contains(&state.mouse_position_on_grid)
-                }) || indexed.cell.flags.contains(cell::Flags::UNDERLINE)
-                {
-                    let underline_height = y + cell_size.height;
-                    let underline = Path::line(
-                        Point::new(x, underline_height),
-                        Point::new(x + cell_size.width, underline_height),
-                    );
-                    frame.stroke(
-                        &underline,
-                        Stroke::default()
-                            .with_width(font_size * 0.15)
-                            .with_color(fg),
-                    );
-                }
-
-                // 处理光标渲染
-                if content.grid.cursor.point == indexed.point
-                    && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
-                {
-                    let cursor_color = self.term.theme.get_color(content.cursor.fg);
-                    let cursor_rect = Path::rectangle(Point::new(x, y), cell_size);
-                    // 聚焦（可接收键盘输入）画实心块；焦点在其它组件时画空心块轮廓。
-                    if self.focused {
-                        frame.fill(&cursor_rect, cursor_color);
-                    } else {
-                        frame.stroke(
-                            &cursor_rect,
-                            Stroke::default()
-                                .with_width(font_size * 0.1)
-                                .with_color(cursor_color),
-                        );
-                    }
-                }
-
-                // 绘制文本
-                if indexed.c != ' ' && indexed.c != '\t' {
-                    if content.grid.cursor.point == indexed.point
-                        && content.terminal_mode.contains(TermMode::APP_CURSOR)
-                    {
-                        fg = bg;
-                    }
-                    // 由格子标志解析字体样式（粗体/斜体）
-                    let mut font = self.term.font.font_type;
+                    // 处理暗淡、反显与选中文本
                     if indexed
                         .cell
                         .flags
-                        .intersects(cell::Flags::BOLD | cell::Flags::DIM_BOLD)
+                        .intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD)
                     {
-                        font.weight = FontWeight::Bold;
+                        fg.a *= 0.7;
                     }
-                    if indexed.cell.flags.contains(cell::Flags::ITALIC) {
-                        font.style = FontStyle::Italic;
+                    if indexed.cell.flags.contains(cell::Flags::INVERSE)
+                        || content
+                            .selectable_range
+                            .is_some_and(|r| r.contains(indexed.point))
+                    {
+                        std::mem::swap(&mut fg, &mut bg);
                     }
-                    let text = Text {
-                        content: indexed.cell.c.to_string(),
-                        position: Point::new(cell_center_x, cell_center_y),
-                        font,
-                        size: iced_core::Pixels(font_size),
-                        color: fg,
-                        align_x: Alignment::Center,
-                        align_y: Vertical::Center,
-                        shaping: Shaping::Advanced,
-                        line_height: LineHeight::Relative(font_scale_factor),
-                        ..Default::default()
-                    };
-                    frame.fill_text(text);
-                }
-            }
 
-            // 结束时刷新剩余的背景段
-            if bg_batch_rect.can_flush() {
-                frame.fill(
-                    &bg_batch_rect.build(last_line.unwrap_or(0)),
-                    bg_batch_rect.color,
-                );
-            }
+                    // 批量绘制背景：跳过默认背景（容器已绘制）
+                    if bg != default_bg {
+                        if bg_batch_rect.can_extend(bg, x) {
+                            // 同色且连续：扩展当前段
+                            bg_batch_rect.extend(cell_width);
+                        } else {
+                            // 新的着色段（或不连续）：若已有则先刷新上一段
+                            if bg_batch_rect.can_flush() {
+                                frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
+                            }
+
+                            // 开启新段但暂不绘制，等待可能的延伸
+                            bg_batch_rect = BackgroundRect::default()
+                                .with_cell_height(cell_height)
+                                .with_display_offset(display_offset)
+                                .with_layout_offset_y(layout_offset_y)
+                                .with_padding(self.padding)
+                                .activate()
+                                .with_color(bg)
+                                .with_start_x(x)
+                                .with_width(cell_width);
+                        }
+                    } else if bg_batch_rect.can_flush() {
+                        // 背景回到默认，刷新当前背景矩形并初始化新矩形
+                        frame.fill(&bg_batch_rect.build(line), bg_batch_rect.color);
+
+                        bg_batch_rect = BackgroundRect::default()
+                            .with_cell_height(cell_height)
+                            .with_display_offset(display_offset)
+                            .with_layout_offset_y(layout_offset_y)
+                            .with_padding(self.padding);
+                    }
+
+                    // 绘制悬浮超链接下划线（较少见，逐格绘制以保证正确）
+                    if content.hovered_hyperlink.as_ref().is_some_and(|range| {
+                        range.contains(&indexed.point)
+                            && range.contains(&state.mouse_position_on_grid)
+                    }) || indexed.cell.flags.contains(cell::Flags::UNDERLINE)
+                    {
+                        let underline_height = y + cell_size.height;
+                        let underline = Path::line(
+                            Point::new(x, underline_height),
+                            Point::new(x + cell_size.width, underline_height),
+                        );
+                        frame.stroke(
+                            &underline,
+                            Stroke::default()
+                                .with_width(font_size * 0.15)
+                                .with_color(fg),
+                        );
+                    }
+
+                    // 处理光标渲染
+                    if content.grid.cursor.point == indexed.point
+                        && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
+                    {
+                        let cursor_color = self.term.theme.get_color(content.cursor.fg);
+                        let cursor_rect = Path::rectangle(Point::new(x, y), cell_size);
+                        // 聚焦（可接收键盘输入）画实心块；焦点在其它组件时画空心块轮廓。
+                        if self.focused {
+                            frame.fill(&cursor_rect, cursor_color);
+                        } else {
+                            frame.stroke(
+                                &cursor_rect,
+                                Stroke::default()
+                                    .with_width(font_size * 0.1)
+                                    .with_color(cursor_color),
+                            );
+                        }
+                    }
+
+                    // 绘制文本
+                    if indexed.c != ' ' && indexed.c != '\t' {
+                        if content.grid.cursor.point == indexed.point
+                            && content.terminal_mode.contains(TermMode::APP_CURSOR)
+                        {
+                            fg = bg;
+                        }
+                        // 由格子标志解析字体样式（粗体/斜体）
+                        let mut font = self.term.font.font_type;
+                        if indexed
+                            .cell
+                            .flags
+                            .intersects(cell::Flags::BOLD | cell::Flags::DIM_BOLD)
+                        {
+                            font.weight = FontWeight::Bold;
+                        }
+                        if indexed.cell.flags.contains(cell::Flags::ITALIC) {
+                            font.style = FontStyle::Italic;
+                        }
+                        let text = Text {
+                            content: indexed.cell.c.to_string(),
+                            position: Point::new(cell_center_x, cell_center_y),
+                            font,
+                            size: iced_core::Pixels(font_size),
+                            color: fg,
+                            align_x: Alignment::Center,
+                            align_y: Vertical::Center,
+                            shaping: Shaping::Advanced,
+                            line_height: LineHeight::Relative(font_scale_factor),
+                            ..Default::default()
+                        };
+                        frame.fill_text(text);
+                    }
+                }
+
+                // 结束时刷新剩余的背景段
+                if bg_batch_rect.can_flush() {
+                    frame.fill(
+                        &bg_batch_rect.build(last_line.unwrap_or(0)),
+                        bg_batch_rect.color,
+                    );
+                }
+            }); // with_clip
         });
 
         use iced::advanced::graphics::geometry::Renderer as _;
@@ -846,6 +878,8 @@ struct BackgroundRect {
     cell_height: f32,
     /// 部件布局在画布中的纵向偏移。
     layout_offset_y: f32,
+    /// 终端内容的内边距（像素）。
+    padding: f32,
     /// 本背景矩形是否已激活（开始了一段着色）。
     is_active: bool,
     /// 本段背景矩形使用的颜色。
@@ -875,6 +909,12 @@ impl BackgroundRect {
         self
     }
 
+    /// 设置内边距并返回自身。
+    fn with_padding(mut self, value: f32) -> Self {
+        self.padding = value;
+        self
+    }
+
     /// 设置背景矩形宽度并返回自身。
     fn with_width(mut self, value: f32) -> Self {
         self.width = value;
@@ -901,8 +941,9 @@ impl BackgroundRect {
 
     /// 依据行号与偏移计算并生成矩形路径。
     fn build(&self, line: i32) -> Path {
-        let flush_y =
-            self.layout_offset_y + ((line as f32 + self.display_offset) * self.cell_height);
+        let flush_y = self.layout_offset_y
+            + self.padding
+            + ((line as f32 + self.display_offset) * self.cell_height);
         Path::rectangle(
             Point::new(self.start_x, flush_y),
             Size::new(self.width, self.cell_height),
@@ -929,6 +970,8 @@ impl BackgroundRect {
 mod tests {
     use super::*;
 
+    const TEST_PADDING: f32 = 4.0;
+
     mod handle_left_button_pressed_tests {
         use super::*;
         use alacritty_terminal::index::{Column, Line};
@@ -947,6 +990,7 @@ mod tests {
                 &terminal_mode,
                 cursor_position,
                 layout_position,
+                TEST_PADDING,
                 &mut commands,
             );
 
@@ -988,13 +1032,14 @@ mod tests {
                     &terminal_mode,
                     cursor_position,
                     layout_position,
+                    TEST_PADDING,
                     &mut commands,
                 );
 
                 assert_eq!(commands.len(), 1);
                 assert!(matches!(
                     commands[0],
-                    Command::SelectStart(_selection_type, (150.0, 100.0))
+                    Command::SelectStart(_selection_type, (146.0, 96.0))
                 ),);
                 assert!(state.is_dragged);
             }
@@ -1016,32 +1061,32 @@ mod tests {
                     Point { x: 0.0, y: 0.0 },
                     Point { x: 1.0, y: 1.0 },
                     TerminalGridPoint {
-                        line: Line(1),
-                        column: Column(1),
+                        line: Line(0),
+                        column: Column(0),
                     },
                 ),
                 (
                     Point { x: 0.0, y: 0.0 },
                     Point { x: 2.0, y: 2.0 },
                     TerminalGridPoint {
-                        line: Line(2),
-                        column: Column(2),
+                        line: Line(0),
+                        column: Column(0),
                     },
                 ),
                 (
                     Point { x: 0.0, y: 0.0 },
                     Point { x: 30.0, y: 2.0 },
                     TerminalGridPoint {
-                        line: Line(2),
-                        column: Column(30),
+                        line: Line(0),
+                        column: Column(26),
                     },
                 ),
                 (
                     Point { x: 10.0, y: 0.0 },
                     Point { x: 30.0, y: 2.0 },
                     TerminalGridPoint {
-                        line: Line(2),
-                        column: Column(20),
+                        line: Line(0),
+                        column: Column(16),
                     },
                 ),
                 (
@@ -1049,7 +1094,7 @@ mod tests {
                     Point { x: 30.0, y: 2.0 },
                     TerminalGridPoint {
                         line: Line(0),
-                        column: Column(20),
+                        column: Column(16),
                     },
                 ),
             ];
@@ -1060,6 +1105,7 @@ mod tests {
                     &terminal_content,
                     &cursor_position,
                     layout_position,
+                    TEST_PADDING,
                     &mut commands,
                 );
 
@@ -1081,11 +1127,12 @@ mod tests {
                 &terminal_content,
                 &cursor_position,
                 layout_position,
+                TEST_PADDING,
                 &mut commands,
             );
 
             assert_eq!(commands.len(), 1);
-            assert!(matches!(commands[0], Command::SelectUpdate((95.0, 145.0))));
+            assert!(matches!(commands[0], Command::SelectUpdate((91.0, 141.0))));
         }
 
         #[test]
@@ -1106,6 +1153,7 @@ mod tests {
                 &terminal_content,
                 &cursor_position,
                 layout_position,
+                TEST_PADDING,
                 &mut commands,
             );
 
@@ -1142,11 +1190,12 @@ mod tests {
                 &terminal_content,
                 &cursor_position,
                 layout_position,
+                TEST_PADDING,
                 &mut commands,
             );
 
             assert_eq!(commands.len(), 1);
-            assert!(matches!(commands[0], Command::SelectUpdate((95.0, 145.0))));
+            assert!(matches!(commands[0], Command::SelectUpdate((91.0, 141.0))));
         }
 
         #[test]
@@ -1167,11 +1216,12 @@ mod tests {
                 &terminal_content,
                 &cursor_position,
                 layout_position,
+                TEST_PADDING,
                 &mut commands,
             );
 
             assert_eq!(commands.len(), 2);
-            assert!(matches!(commands[0], Command::SelectUpdate((95.0, 145.0))));
+            assert!(matches!(commands[0], Command::SelectUpdate((91.0, 141.0))));
             assert!(matches!(
                 commands[1],
                 Command::ProcessLink(

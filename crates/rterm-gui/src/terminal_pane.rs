@@ -12,7 +12,7 @@ use crate::app::tabs;
 use crate::icons::Icon;
 use crate::message::Message;
 use crate::state::TerminalTab;
-use crate::widget::term::TerminalView;
+use crate::widget::term::{Event as TerminalEvent, TerminalView};
 use iced::alignment::Horizontal;
 use iced::widget::tooltip::Position;
 use iced::widget::{button, column, container, row, scrollable, text};
@@ -242,20 +242,26 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .find(|t| Some(t.id) == app.tabs.active())
     {
         Some(tab) => match &tab.terminal {
-            Some(term) => container(
-                TerminalView::show(term, app.terminal_focused)
-                    .map(|e| Message::Tabs(tabs::Message::Terminal(e))),
-            )
-            .padding(4)
-            .style(|_theme| container::Style {
-                background: Some(crate::theme::terminal_bg(&app.config.terminal_theme).into()),
-                border: Border {
-                    radius: 4.0.into(),
-                    ..Border::default()
-                },
-                ..container::Style::default()
-            })
-            .into(),
+            Some(term) => {
+                let terminal_elem: Element<'_, TerminalEvent> =
+                    TerminalView::show(term, app.terminal_focused)
+                        .padding(8.0)
+                        .into();
+                let terminal_elem =
+                    terminal_elem.map(|e| Message::Tabs(tabs::Message::Terminal(e)));
+                container(terminal_elem)
+                    .style(|_theme| container::Style {
+                        background: Some(
+                            crate::theme::terminal_bg(&app.config.terminal_theme).into(),
+                        ),
+                        border: Border {
+                            radius: 4.0.into(),
+                            ..Border::default()
+                        },
+                        ..container::Style::default()
+                    })
+                    .into()
+            }
             None => {
                 // 标签已建但终端尚未就绪：按本标签的连接状态显示“连接中”或失败原因。
                 match tab.status {
@@ -308,13 +314,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         // 标签栏自身不设背景（透明，透出 pane 底色）；区分度靠活动标签的 `tab_style` 高亮，
         // 而非标签栏底色。
         container(tab_bar),
-        // 终端区域：仅左右下侧留白，背景取当前终端配色主题的 `terminal_bg`
-        // （跟随用户所选终端主题，22 套预设中含浅色方案），使终端本体在面板中形成内嵌边框视觉。
+        // 终端区域：仅左右下侧留白
         container(body).height(Length::Fill).padding(Padding {
-            left: 6.0,
-            right: 6.0,
+            left: 4.0,
+            right: 2.0,
             top: 0.0,
-            bottom: 6.0,
+            bottom: 2.0,
         })
     ]
     .spacing(2)

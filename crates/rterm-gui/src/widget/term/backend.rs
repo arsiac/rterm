@@ -213,7 +213,13 @@ impl Backend {
         };
 
         let pty = tty::new(&pty_config, TerminalSize::default().into(), id)?;
-        Self::from_pty(id, pty_event_proxy_sender, pty, settings.scrollback, settings.trim_trailing_whitespace)
+        Self::from_pty(
+            id,
+            pty_event_proxy_sender,
+            pty,
+            settings.scrollback,
+            settings.trim_trailing_whitespace,
+        )
     }
 
     /// SSH 场景：直接桥接 russh shell 通道，不经过本地 PTY 子进程。
@@ -224,7 +230,13 @@ impl Backend {
         scrollback: usize,
         trim_trailing_whitespace: bool,
     ) -> Result<Self> {
-        Self::from_pty(id, pty_event_proxy_sender, pty, scrollback, trim_trailing_whitespace)
+        Self::from_pty(
+            id,
+            pty_event_proxy_sender,
+            pty,
+            scrollback,
+            trim_trailing_whitespace,
+        )
     }
 
     /// 以给定 PTY 构造后端，初始化 alacritty 终端与 event loop。
@@ -575,7 +587,11 @@ impl Backend {
             }
         }
         if self.trim_trailing_whitespace {
-            result.lines().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n")
+            result
+                .lines()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n")
         } else {
             result
         }
