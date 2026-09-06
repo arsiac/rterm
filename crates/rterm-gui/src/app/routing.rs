@@ -149,6 +149,10 @@ pub(crate) fn handle_right_press(app: &mut App) -> iced::Task<Message> {
 /// 切换中央视图；切到文件管理时若活动标签尚未打开 SFTP 则自动打开。
 pub(crate) fn handle_switch_center(app: &mut App, view: CenterView) -> iced::Task<Message> {
     app.center = view;
+    // 切换视图时，如果侧边栏已收起则自动展开
+    if app.panes.center_collapsed {
+        app.panes.center_collapsed = false;
+    }
     // 切到文件管理且当前活动标签尚未打开 SFTP 时，自动在该标签上打开 SFTP，
     // 使面板显示当前标签自己的文件上下文。
     if view == CenterView::Files {
