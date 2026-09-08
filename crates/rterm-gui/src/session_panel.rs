@@ -98,10 +98,12 @@ fn list_view(app: &App) -> Element<'_, Message> {
             }
         }
     }
-    items.push(group_header(app, "", ungrouped.len()));
-    if !app.session.collapsed_groups.contains("") {
-        for s in &ungrouped {
-            items.push(session_row(app, s));
+    if !ungrouped.is_empty() {
+        items.push(group_header(app, "", ungrouped.len()));
+        if !app.session.collapsed_groups.contains("") {
+            for s in &ungrouped {
+                items.push(session_row(app, s));
+            }
         }
     }
 
