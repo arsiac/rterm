@@ -773,12 +773,34 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         let is_cursor_in_layout = self.is_cursor_in_layout(cursor, layout);
 
         let commands = match event {
-            iced::Event::Mouse(mouse_event) if is_cursor_in_layout => self.handle_mouse_event(
-                state,
-                layout.position(),
-                cursor.position().unwrap(),
-                mouse_event,
-            ),
+            iced::Event::Mouse(mouse_event) if is_cursor_in_layout => {
+                if !self.focused {
+                    // 终端未持键盘焦点时，用户在终端区域按下鼠标即请求把焦点交还终端。
+                    // 否则（见 `handle_mouse_event` 的早返回）点击会被完全忽略，
+                    // 失去焦点后只能靠切标签页才能找回焦点。
+                    if matches!(
+                        mouse_event,
+                        iced_core::mouse::Event::ButtonPressed(iced_core::mouse::Button::Left)
+                            | iced_core::mouse::Event::ButtonPressed(
+                                iced_core::mouse::Button::Right
+                            )
+                            | iced_core::mouse::Event::ButtonPressed(
+                                iced_core::mouse::Button::Middle
+                            )
+                    ) {
+                        shell.publish(Event::FocusRequest(self.term.id));
+                        shell.capture_event();
+                    }
+                    Vec::new()
+                } else {
+                    self.handle_mouse_event(
+                        state,
+                        layout.position(),
+                        cursor.position().unwrap(),
+                        mouse_event,
+                    )
+                }
+            }
             iced::Event::Keyboard(keyboard_event) => {
                 if !self.focused {
                     return;

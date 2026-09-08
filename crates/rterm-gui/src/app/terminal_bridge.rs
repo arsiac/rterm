@@ -173,39 +173,46 @@ pub(crate) fn spawn_terminal_widget(
 }
 
 /// 处理终端部件后端回调（键盘 / 鼠标 / resize 等）。
-///
-/// 当前版本的 `crate::widget::term::Event` 仅含 `BackendCall` 一个变体，故直接解构。
 pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Message> {
-    let TermEvent::BackendCall(id, backend_cmd) = event;
-    // 点击 / 选择 / 滚轮 / 键入等「用户与终端的交互」都以非 Resize 的 BackendCall 形式到达；
-    // 一旦出现即说明键盘焦点已落回终端，恢复聚焦态（修正「点回终端边框仍显未聚焦」）。
-    // 必须排除 `ProcessAlacrittyEvent`：它是 PTY 输出经订阅推送的事件，不代表用户交互——
-    // 否则后台终端一有输出（日志、运行命令）就会误把焦点判为聚焦，而用户其实在文件管理器输入。
-    let is_user_interaction = matches!(
-        &backend_cmd,
-        BackendCommand::SelectStart(..)
-            | BackendCommand::SelectUpdate(..)
-            | BackendCommand::MouseReport(..)
-            | BackendCommand::Scroll(..)
-            | BackendCommand::ProcessLink(..)
-            | BackendCommand::Write(..)
-    );
-    if is_user_interaction {
-        app.terminal_focused = true;
-    }
-    if let Some(tab) = app.tabs.tab_mut(id) {
-        // 本地终端尺寸变化时，转发到远端（window-change）。
-        if let BackendCommand::Resize(Some(layout), Some(font)) = &backend_cmd {
-            let cols = (layout.width / font.width).floor().max(1.0) as u32;
-            let rows = (layout.height / font.height).floor().max(1.0) as u32;
-            if let Some(tx) = &tab.resize_tx {
-                let _ = tx.try_send((cols, rows));
+    match event {
+        // 用户在终端区域按下鼠标以取回键盘焦点：直接置聚焦态（光标转实心、恢复输入门控）。
+        // 仅展示中的活动标签终端会收到此事件，故无需再校验标签 id。
+        TermEvent::FocusRequest(_id) => {
+            app.terminal_focused = true;
+            Task::none()
+        }
+        TermEvent::BackendCall(id, backend_cmd) => {
+            // 点击 / 选择 / 滚轮 / 键入等「用户与终端的交互」都以非 Resize 的 BackendCall 形式到达；
+            // 一旦出现即说明键盘焦点已落回终端，恢复聚焦态（修正「点回终端边框仍显未聚焦」）。
+            // 必须排除 `ProcessAlacrittyEvent`：它是 PTY 输出经订阅推送的事件，不代表用户交互——
+            // 否则后台终端一有输出（日志、运行命令）就会误把焦点判为聚焦，而用户其实在文件管理器输入。
+            let is_user_interaction = matches!(
+                &backend_cmd,
+                BackendCommand::SelectStart(..)
+                    | BackendCommand::SelectUpdate(..)
+                    | BackendCommand::MouseReport(..)
+                    | BackendCommand::Scroll(..)
+                    | BackendCommand::ProcessLink(..)
+                    | BackendCommand::Write(..)
+            );
+            if is_user_interaction {
+                app.terminal_focused = true;
             }
-        }
-        // 将命令转交终端组件（写入 PTY / 调整布局等）。
-        if let Some(term) = tab.terminal.as_mut() {
-            term.handle(TermCommand::ProxyToBackend(backend_cmd));
+            if let Some(tab) = app.tabs.tab_mut(id) {
+                // 本地终端尺寸变化时，转发到远端（window-change）。
+                if let BackendCommand::Resize(Some(layout), Some(font)) = &backend_cmd {
+                    let cols = (layout.width / font.width).floor().max(1.0) as u32;
+                    let rows = (layout.height / font.height).floor().max(1.0) as u32;
+                    if let Some(tx) = &tab.resize_tx {
+                        let _ = tx.try_send((cols, rows));
+                    }
+                }
+                // 将命令转交终端组件（写入 PTY / 调整布局等）。
+                if let Some(term) = tab.terminal.as_mut() {
+                    term.handle(TermCommand::ProxyToBackend(backend_cmd));
+                }
+            }
+            Task::none()
         }
     }
-    Task::none()
 }

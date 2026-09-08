@@ -21,6 +21,11 @@ use tokio::sync::mpsc::{self, Receiver};
 pub enum Event {
     /// 携带标签 id 与一条后端命令，由后端事件订阅流回送。
     BackendCall(u64, backend::Command),
+    /// 终端未持键盘焦点时用户在终端区域按下鼠标：请求把键盘焦点交还终端。
+    ///
+    /// 因 `handle_mouse_event` 在 `!focused` 时会早返回、不产出任何 `BackendCall`，
+    /// 故需独立的聚焦请求事件，否则失去焦点后只能靠切标签页才能找回焦点。
+    FocusRequest(u64),
 }
 
 #[derive(Debug, Clone)]
