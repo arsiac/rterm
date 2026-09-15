@@ -139,6 +139,7 @@ sftp:
   download: Download
   rename: Rename
   delete: Delete
+  copy_name: Copy name
   copy_path: Copy path
   properties: Properties
   delete_title: Delete confirmation
@@ -227,6 +228,7 @@ app:
   imported: Imported %{count} sessions
   import_failed: "Import failed: %{err}"
   copied_path: Path copied
+  copied_name: Name copied
   save_failed: "Save failed: %{err}"
   decrypt_failed: "Failed to decrypt credential (master passphrase may have changed)"
   vault_locked: Credential vault is locked

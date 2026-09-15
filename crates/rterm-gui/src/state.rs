@@ -188,6 +188,10 @@ pub struct SftpView {
     pub selected: Option<String>,
     /// 当前被鼠标悬浮的条目名称（`None` 表示无悬浮），用于渲染行的悬浮高亮背景。
     pub hovered: Option<String>,
+    /// 右键菜单的上下文目标：右键按下瞬间命中的条目 `(名称, 是否目录)`，
+    /// `None` 表示空白处（或 “..” 合成项）。仅在右键时快照，使已打开的菜单
+    /// 在鼠标移动后保持稳定，不随 [`Self::hovered`] 改变。
+    pub context_target: Option<(String, bool)>,
     /// 是否有 SFTP 写操作进行中（用于禁用按钮 / 提示）。
     pub busy: bool,
     /// 当前打开的模态对话框（`None` 表示无）：删除确认 / 下载覆盖确认 / 文件属性。
@@ -211,6 +215,7 @@ impl Default for SftpView {
             entries: Vec::new(),
             selected: None,
             hovered: None,
+            context_target: None,
             busy: false,
             dialog: None,
             download_dir: dirs::download_dir()

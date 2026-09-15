@@ -139,6 +139,7 @@ sftp:
   download: 下载
   rename: 重命名
   delete: 删除
+  copy_name: 复制文件名
   copy_path: 复制路径
   properties: 属性
   delete_title: 删除确认
@@ -226,6 +227,7 @@ app:
   imported: 已导入 %{count} 个会话
   import_failed: "导入失败: %{err}"
   copied_path: 已复制路径
+  copied_name: 已复制文件名
   save_failed: "保存失败: %{err}"
   decrypt_failed: 凭据解密失败（主密码可能已变更）
   vault_locked: 凭据库未解锁

@@ -122,6 +122,8 @@ pub enum Message {
     SftpShowProperties(String),
     /// 复制远端条目的完整路径到系统剪贴板（携带完整路径）。
     SftpCopyPath(String),
+    /// 复制远端条目的文件名到系统剪贴板（携带文件名，含扩展名）。
+    SftpCopyName(String),
     /// 跳转到终端当前所在目录（由路由层读取活动终端 cwd 后转 [`SftpCd`] 处理，
     /// 模块自身不持有终端访问权，故此处仅作占位、不在此分支消费）。
     SftpGotoTerminalDir,
@@ -295,11 +297,20 @@ impl State {
                 Task::none()
             }
             Message::SftpSelectHovered => {
-                if let Some(tab) = self.per_tab.get_mut(&active_tab)
-                    && let Some(name) = tab.hovered.clone()
-                {
-                    // 悬浮项即光标下的条目；未在条目上悬浮（右击空白处 / 终端）时保持原选中不变。
-                    tab.selected = Some(name);
+                if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+                    // 右键瞬间快照命中条目，供菜单内容使用（“..” / 空白处 → None）；
+                    // 只在此处更新，使已打开的菜单不随之后的鼠标移动而改变。
+                    let target = tab.hovered.as_deref().and_then(|name| {
+                        tab.entries
+                            .iter()
+                            .find(|e| e.name == name)
+                            .map(|e| (e.name.clone(), e.is_dir))
+                    });
+                    if let Some(name) = tab.hovered.clone() {
+                        // 悬浮项即光标下的条目；未在条目上悬浮（右击空白处 / 终端）时保持原选中不变。
+                        tab.selected = Some(name);
+                    }
+                    tab.context_target = target;
                 }
                 Task::none()
             }
@@ -512,6 +523,13 @@ impl State {
                 Task::batch([
                     iced::clipboard::write::<Event>(path),
                     Task::done(Event::Toast(ToastKind::Success, t!("app.copied_path"))),
+                ])
+            }
+            Message::SftpCopyName(name) => {
+                // 与复制路径同构：把文件名写入系统剪贴板，并提示成功。
+                Task::batch([
+                    iced::clipboard::write::<Event>(name),
+                    Task::done(Event::Toast(ToastKind::Success, t!("app.copied_name"))),
                 ])
             }
             Message::SftpNoop => Task::none(),

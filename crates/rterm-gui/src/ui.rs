@@ -97,6 +97,23 @@ pub fn menu_container<'a, M: Clone + 'a>(content: Element<'a, M>) -> Element<'a,
         .into()
 }
 
+/// 右键菜单中的分组分割线：一行低对比度细线，用于把菜单项按功能分类。
+///
+/// 与 [`menu_entry`] / [`menu_container`] 同属右键菜单构件，泛型 `M` 仅用于推断菜单消息类型。
+pub fn menu_separator<'a, M: Clone + 'a>() -> Element<'a, M> {
+    container(
+        iced::widget::rule::horizontal(1).style(|theme: &Theme| iced::widget::rule::Style {
+            color: theme::custom_palette(theme).border,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full,
+            snap: true,
+        }),
+    )
+    .padding([2, 4])
+    .width(Length::Fill)
+    .into()
+}
+
 /// 文本框 / 组合框输入区样式：跟随主题底色，圆角边框（名称 / 主机 / 路径等复用）。
 ///
 /// 此前会话面板、设置弹窗各有一份逐字相同的输入样式、文件面板另有 4 处内联同款样式，

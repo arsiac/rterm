@@ -286,13 +286,8 @@ fn panel(app: &App) -> Element<'_, Message> {
             .interaction(iced::mouse::Interaction::Pointer)
             .into();
 
-            // 右键菜单提供行内操作（进入 / 下载、重命名、删除、复制路径、属性）。
-            let path = sftp.path.clone();
-            let is_dir = e.is_dir;
-            let item: Element<'_, Message> = ContextMenu::new(item, move || {
-                menu_actions(name.clone(), is_dir, path.clone())
-            })
-            .into();
+            // 右键菜单由列表整体统一提供（见下方 `list` 处的 `ContextMenu`）：
+            // 这里只返回条目本身，避免逐行再套一层导致右键时同时弹出两个菜单。
             item
         })
         .collect();
@@ -341,6 +336,18 @@ fn panel(app: &App) -> Element<'_, Message> {
     }))
     .height(Length::Fill);
 
+    // 列表整体只套一层 `ContextMenu`：右键落在条目上时渲染行菜单，落在空白处或 “..”
+    // 合成项上时渲染空白菜单。全局仅此一层——若逐行与整列表各套一层，右键会被两层同时
+    // 命中而弹出两个菜单。菜单内容取 `context_target`——它在右键按下瞬间快照，
+    // 不读实时 `hovered`，否则菜单打开后鼠标划过别处会让内容随之改变。
+    let target = sftp.context_target.clone();
+    let menu_path = sftp.path.clone();
+    let list: Element<'_, Message> = ContextMenu::new(list, move || match &target {
+        Some((name, is_dir)) => menu_actions(name.clone(), *is_dir, menu_path.clone()),
+        None => blank_menu_actions(menu_path.clone()),
+    })
+    .into();
+
     // 传输进度统一由「传输」中心视图（transfer_panel，与会话 / 文件并列切换）汇总展示，
     // 本面板只保留文件操作区。
     column![toolbar, path_row, list]
@@ -349,8 +356,8 @@ fn panel(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// 单条“更多 / 右键”菜单内容：目录给「进入」、文件给「下载」，另加重命名 / 删除 /
-/// 复制路径 / 属性。
+/// 条目“右键”菜单内容：目录给「进入」、文件给「下载」，其余按功能用分割线分组——
+/// 主操作 / 上传 / 编辑 / 复制 / 信息。
 fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Message> {
     let mut actions = column![];
     if is_dir {
@@ -365,6 +372,16 @@ fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Mes
         ));
     }
     actions = actions
+        .push(crate::ui::menu_separator())
+        .push(crate::ui::menu_entry(
+            t!("sftp.upload"),
+            crate::app::sftp::Message::SftpPickUpload,
+        ))
+        .push(crate::ui::menu_entry(
+            t!("sftp.upload_folder"),
+            crate::app::sftp::Message::SftpPickUploadFolder,
+        ))
+        .push(crate::ui::menu_separator())
         .push(crate::ui::menu_entry(
             t!("sftp.rename"),
             crate::app::sftp::Message::SftpRenameConfirm(name.clone()),
@@ -373,14 +390,41 @@ fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Mes
             t!("sftp.delete"),
             crate::app::sftp::Message::SftpDeleteConfirm(name.clone()),
         ))
+        .push(crate::ui::menu_separator())
+        .push(crate::ui::menu_entry(
+            t!("sftp.copy_name"),
+            crate::app::sftp::Message::SftpCopyName(name.clone()),
+        ))
         .push(crate::ui::menu_entry(
             t!("sftp.copy_path"),
             crate::app::sftp::Message::SftpCopyPath(crate::app::tasks::join_path(&path, &name)),
         ))
+        .push(crate::ui::menu_separator())
         .push(crate::ui::menu_entry(
             t!("sftp.properties"),
             crate::app::sftp::Message::SftpShowProperties(name.clone()),
         ));
+    crate::ui::menu_container(actions.into())
+}
+
+/// 文件列表空白处（或 “..” 合成项）的“右键”菜单：上传 / 新建 / 刷新，按功能用分割线分组。
+///
+/// 上传目标为当前目录（由传输模块读取该标签的 SFTP 当前路径），故无需携带条目名。
+fn blank_menu_actions<'a>(path: String) -> Element<'a, Message> {
+    let actions = column![
+        crate::ui::menu_entry(t!("sftp.upload"), crate::app::sftp::Message::SftpPickUpload),
+        crate::ui::menu_entry(
+            t!("sftp.upload_folder"),
+            crate::app::sftp::Message::SftpPickUploadFolder,
+        ),
+        crate::ui::menu_separator(),
+        crate::ui::menu_entry(
+            t!("sftp.new_dir"),
+            crate::app::sftp::Message::SftpNewDirConfirm,
+        ),
+        crate::ui::menu_separator(),
+        crate::ui::menu_entry(t!("sftp.refresh"), crate::app::sftp::Message::SftpCd(path),),
+    ];
     crate::ui::menu_container(actions.into())
 }
 
