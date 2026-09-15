@@ -12,6 +12,7 @@ use crate::i18n::localize_error;
 use crate::state::{ToastKind, Transfer, TransferDirection, TransferStatus};
 use crate::t;
 use futures::{SinkExt, StreamExt};
+use log::warn;
 use rterm_core::SftpClient;
 use std::path::Path;
 use tokio::task::AbortHandle;
@@ -189,6 +190,14 @@ impl State {
                 }
                 Task::none()
             }
+            Message::OpenContainingFolder(local) => {
+                // 携带完整本地路径而非传输 id：避免现有「仅活动标签可操作」的限制（面板跨标签
+                // 聚合展示，非活动标签的传输同样应能定位）。
+                if let Err(e) = open::that(containing_folder(&local)) {
+                    warn!("failed to open containing folder: {e}");
+                }
+                Task::none()
+            }
         }
     }
 
@@ -298,6 +307,8 @@ pub enum Message {
     RetryTransfer(u64),
     /// 从列表中移除某个已完成 / 失败的传输（携带任务 id）。
     RemoveTransfer(u64),
+    /// 用系统文件管理器打开某个传输对应的本地文件所在文件夹（携带完整本地路径）。
+    OpenContainingFolder(PathBuf),
 }
 
 /// 模块上行事件：仅通知父层，父层收到后才修改父状态或转发给其它模块。
@@ -315,6 +326,14 @@ pub enum Event {
     /// 不能写父态；故把内部消息装进 `Emit` 上行，父层在 `Message::TransferEvent` 分支收到后再
     /// `self.transfer.update` 一次，形成自回路。
     Emit(Box<Message>),
+}
+
+/// 返回本地文件的所在文件夹；文件无父目录时回退为该路径本身（此时通常已是目录）。
+fn containing_folder(local: &Path) -> PathBuf {
+    local
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| local.to_path_buf())
 }
 
 /// 运行单个传输任务（上传 / 下载），以 `Task::stream` 把进度与完成事件流回流模块。
@@ -569,6 +588,20 @@ mod tests {
         let _ = run_events(s.update(Message::RemoveTransfer(1), &no_client_ctx(7)));
 
         assert!(s.per_tab.get(&7).unwrap().is_empty(), "移除后队列应为空");
+    }
+
+    #[test]
+    fn containing_folder_returns_parent_directory() {
+        assert_eq!(
+            containing_folder(Path::new("/home/user/dl/f.txt")),
+            PathBuf::from("/home/user/dl"),
+            "应返回文件的父目录"
+        );
+        assert_eq!(
+            containing_folder(Path::new("/")),
+            PathBuf::from("/"),
+            "根目录无父目录时应回退为自身"
+        );
     }
 
     #[test]

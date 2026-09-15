@@ -3,6 +3,7 @@ common:
   cancel: Cancel
   retry: Retry
   remove: Remove
+  open_folder: Open containing folder
 settings:
   title: Settings
   general: General

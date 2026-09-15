@@ -2,7 +2,7 @@
 //!
 //! 聚合展示所有终端标签的 SFTP 传输队列（上传 / 下载）。每个标签的 SFTP 通道非并发安全，
 //! 故单标签内顺序执行，但面板跨标签汇总。每条传输提供进度条、速度 / 剩余时间；可用操作随
-//! 状态不同——进行中 / 排队中只可取消，失败可重试或移除，已完成只可移除。
+//! 状态不同——进行中 / 排队中只可取消，失败可重试或移除，已完成可打开所在文件夹或移除。
 
 use crate::t;
 
@@ -143,6 +143,13 @@ fn transfer_item(t: &Transfer) -> Element<'_, Message> {
             ));
         }
         TransferStatus::Done => {
+            header_row.push(icon_button(
+                Icon::FolderOpen,
+                ACTION_ICON_SIZE,
+                t!("common.open_folder"),
+                crate::app::transfer::Message::OpenContainingFolder(t.local.clone()),
+                Position::Left,
+            ));
             header_row.push(icon_button(
                 Icon::Dismiss,
                 ACTION_ICON_SIZE,

@@ -90,6 +90,8 @@ pub enum Icon {
     PanelLeftExpand,
     /// 文件管理「进入终端目录」：点击后跳转到终端当前所在目录。
     ArrowEnter,
+    /// 用系统文件管理器打开本地文件所在文件夹（传输完成后定位）。
+    FolderOpen,
 }
 
 impl Icon {
@@ -123,6 +125,7 @@ impl Icon {
             Icon::PanelLeftContract => svg_bytes!("panel-left-contract-16-filled"),
             Icon::PanelLeftExpand => svg_bytes!("panel-left-expand-16-filled"),
             Icon::ArrowEnter => svg_bytes!("arrow-enter-16-filled"),
+            Icon::FolderOpen => svg_bytes!("folder-open-16-filled"),
         }
     }
 
