@@ -243,6 +243,8 @@ fn panel(app: &App) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .wrapping(Wrapping::None);
             let name_clipped = container(name_text).width(Length::Fill).clip(true);
+            let name_clipped =
+                crate::ui::hover_tooltip(name_clipped, name.clone(), Position::FollowCursor);
 
             let row_item = row![
                 type_icon.svg(ACTION_ICON_SIZE),

@@ -79,6 +79,7 @@ fn transfer_item(t: &Transfer) -> Element<'_, Message> {
         .width(Length::Fill)
         .wrapping(Wrapping::None);
     let name_clip = container(name).width(Length::Fill).clip(true);
+    let name_clip = crate::ui::hover_tooltip(name_clip, t.name.clone(), Position::FollowCursor);
 
     let bar_color = match t.status {
         TransferStatus::Done => crate::ui::SUCCESS,
@@ -97,7 +98,7 @@ fn transfer_item(t: &Transfer) -> Element<'_, Message> {
 
     let mut header_row: Vec<Element<'_, Message>> = Vec::new();
     header_row.push(dir_icon.svg(ITEM_ICON_SIZE).into());
-    header_row.push(name_clip.into());
+    header_row.push(name_clip);
     match t.status {
         TransferStatus::Done => {
             header_row.push(

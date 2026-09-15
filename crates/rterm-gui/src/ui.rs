@@ -11,7 +11,10 @@ use iced::widget::button;
 use iced::widget::container;
 use iced::widget::svg;
 use iced::widget::text;
+use iced::widget::text::Wrapping;
 use iced::widget::text_input;
+use iced::widget::tooltip;
+use iced::widget::tooltip::Position;
 use iced::{Background, Border, Color, Element, Length, Theme};
 
 /// 右键上下文菜单宽度（像素）。
@@ -214,4 +217,29 @@ fn dialog_btn_style_for(style: DialogBtnStyle, theme: &Theme, st: button::Status
         DialogBtnStyle::Emphasis { danger } => dialog_btn_style(st, danger),
         DialogBtnStyle::Neutral => dialog_btn_style_neutral(theme, st),
     }
+}
+
+/// 为任意部件包裹一个悬停 `tooltip`，在 `label` 被裁剪时展示其完整内容（如超长文件名）。
+///
+/// 延迟与样式与 [`crate::icons::icon_button`] 内置的 tooltip 保持一致。tooltip 文本限宽并
+/// 自动换行，避免超长内容横向撑出视口；`position` 由调用处指定（长列表行推荐
+/// [`Position::FollowCursor`]），并启用 `snap_within_viewport` 防止浮层溢出可视区。
+pub fn hover_tooltip<'a, M>(
+    content: impl Into<Element<'a, M>>,
+    label: impl Into<String>,
+    position: Position,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    /// tooltip 文本最大宽度（像素），超出则换行，避免单行过长。
+    const TOOLTIP_MAX_WIDTH: f32 = 400.0;
+    let body = container(text(label.into()).size(12).wrapping(Wrapping::WordOrGlyph))
+        .max_width(TOOLTIP_MAX_WIDTH);
+    tooltip(content, body, position)
+        .delay(iced::time::Duration::from_millis(theme::TOOLTIP_DELAY_MS))
+        .style(theme::tooltip_style)
+        .gap(6.0)
+        .snap_within_viewport(true)
+        .into()
 }
