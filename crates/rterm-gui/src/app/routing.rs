@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
-use crate::app::{events, hostkey, session, settings, sftp};
+use crate::app::{events, hostkey, session, settings, sftp, tabs, window};
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
 use crate::t;
@@ -48,6 +48,23 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         // 两栏布局比例：路由进 panes 模块（其上行事件为空，纯自包含几何）。
         Message::Panes(m) => app.panes.update(m).map(Message::PanesEvent),
         Message::PanesEvent(_e) => Task::none(),
+        // 主窗口生命周期：路由进 window 模块，上行事件经 `Message::WindowEvent` 落地。
+        Message::Window(m) => {
+            // 收到关闭请求时先通知所有标签断开桥接，使后台 pump / 线程尽快退出；
+            // 无论是否开启窗口记忆都需执行，确保进程干净退出。
+            let cleanup = if matches!(m, window::Message::CloseRequested(_)) {
+                let ctx = contexts::tabs_ctx(app);
+                app.tabs
+                    .update(tabs::Message::WindowClosing, &ctx, &app.sftp)
+                    .map(Message::TabsEvent)
+            } else {
+                Task::none()
+            };
+            let ctx = contexts::window_ctx(app);
+            let window = app.window.update(m, &ctx).map(Message::WindowEvent);
+            Task::batch([cleanup, window])
+        }
+        Message::WindowEvent(e) => events::apply_window_event(app, e),
         Message::Sftp(m) => {
             // 「进入终端目录」按钮：SFTP 模块无终端访问权，需在此读取活动终端的 cwd
             // 后转交既有的 `SftpCd` 完成跳转；尚未捕获到 cwd（远端未输出提示符 / 不支持

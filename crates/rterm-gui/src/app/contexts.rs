@@ -1,6 +1,6 @@
 //! 父状态到子模块的只读上下文适配层，以及父状态的通用写入动作。
 
-use crate::app::{App, masterpw, session, settings, tabs, transfer, updates};
+use crate::app::{App, masterpw, session, settings, tabs, transfer, updates, window};
 use crate::state::{SftpView, ToastKind};
 use crate::t;
 use crate::widget::toast::{ToastLevel, toast};
@@ -44,6 +44,16 @@ pub(crate) fn session_status(app: &App, id: &str) -> ConnectionStatus {
 pub(crate) fn session_ctx(app: &App) -> session::Ctx {
     session::Ctx {
         vault: app.vault.clone(),
+    }
+}
+
+/// 组装主窗口模块所需的只读上下文（是否开启窗口大小记忆）。
+///
+/// 每次 `update` 调用前重建，确保模块读到最新父状态；模块据此决定关闭时是否查询 / 写回尺寸，
+/// 写回经 `window::Event` 由父层落地。
+pub(crate) fn window_ctx(app: &App) -> window::Ctx {
+    window::Ctx {
+        remember_window_size: app.config.remember_window_size,
     }
 }
 

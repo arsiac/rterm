@@ -6,8 +6,6 @@ use log::error;
 
 /// 初始 / 默认中心（左）栏像素宽度。
 const INITIAL_LEFT_WIDTH: f32 = 320.0;
-/// 初始窗口宽度（与 iced 窗口默认宽度 1144 一致），用于换算初始比例。
-const INITIAL_WINDOW_WIDTH: f32 = 1144.0;
 
 /// 模块状态：两栏 `pane_grid` 的布局态。
 pub struct State {
@@ -31,9 +29,11 @@ pub struct State {
 
 impl State {
     /// 构建初始两栏布局：中心面板（左）+ 终端区（右），左栏为固定像素宽度。
-    pub fn new() -> Self {
+    ///
+    /// `window_width` 为启动时窗口的实际宽度（取配置中记录的尺寸或默认值），
+    /// 用于换算初始分隔比例，避免恢复自定义尺寸后首帧分隔条位置偏移。
+    pub fn new(window_width: f32) -> Self {
         let left_pane_width = INITIAL_LEFT_WIDTH;
-        let window_width = INITIAL_WINDOW_WIDTH;
         let (mut pane_grid_state, center_pane) = pane_grid::State::new(());
         let (right_pane, split) =
             match pane_grid_state.split(pane_grid::Axis::Vertical, center_pane, ()) {
@@ -96,7 +96,7 @@ impl State {
 
 impl Default for State {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::DEFAULT_WINDOW_WIDTH)
     }
 }
 

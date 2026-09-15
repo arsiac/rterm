@@ -280,6 +280,15 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .style(|theme: &Theme| iced::widget::text::Style {
                 color: Some(theme.extended_palette().background.weak.text),
             }),
+        checkbox(app.config.remember_window_size)
+            .label(t!("settings.remember_window_size"))
+            .on_toggle(|v| Message::Settings(settings::Message::RememberWindowSize(v)))
+            .spacing(8),
+        text(t!("settings.remember_window_size_hint"))
+            .size(12)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.extended_palette().background.weak.text),
+            }),
     ]
     .spacing(10)
     .padding(20)

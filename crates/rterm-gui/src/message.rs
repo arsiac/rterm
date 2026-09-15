@@ -13,6 +13,7 @@ use crate::app::sftp;
 use crate::app::tabs;
 use crate::app::transfer;
 use crate::app::updates;
+use crate::app::window;
 use crate::state::CenterView;
 use tokio::sync::mpsc;
 
@@ -60,6 +61,13 @@ pub enum Message {
     Panes(panes::Message),
     /// 两栏布局模块上行事件：当前为空（纯自包含几何，无需父层配合）。
     PanesEvent(panes::Event),
+
+    // ===== 主窗口生命周期（路由）=====
+    /// 主窗口模块内部消息：窗口创建 / 关闭请求 / 关闭前的最大化与尺寸查询结果，
+    /// 由父层经此变体路由进 `app::window` 模块。
+    Window(window::Message),
+    /// 主窗口模块上行事件（查询最大化 / 尺寸、写回尺寸、关闭窗口），由父层落地。
+    WindowEvent(window::Event),
 
     // ===== SFTP 文件管理 =====
     /// SFTP 模块内部消息：UI 意图与模块自处理的异步结果，由父层经此变体路由进模块。

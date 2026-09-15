@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
-use crate::app::{masterpw, session, settings, sftp, tabs, transfer, updates};
+use crate::app::{masterpw, session, settings, sftp, tabs, transfer, updates, window};
 use crate::message::Message;
 use crate::vault_keyring;
 use crate::widget::term::{BackendCommand, Command as TermCommand};
@@ -254,6 +254,16 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::RememberWindowSize(v) => {
+            app.config.remember_window_size = v;
+            // 关闭「记住窗口大小」时顺带清除已保存尺寸（一次），避免下次启动仍恢复旧尺寸；
+            // 重新开启后从当前会话的下一次关闭重新记录。
+            if !v {
+                app.config.clear_window_size();
+            }
+            contexts::save_config(app);
+            Task::none()
+        }
     }
 }
 
@@ -270,6 +280,34 @@ pub(crate) fn apply_updates_event(app: &mut App, e: updates::Event) -> Task<Mess
         updates::Event::Emit(m) => {
             let ctx = contexts::updates_ctx(app);
             app.updates.update(*m, &ctx).map(Message::UpdatesEvent)
+        }
+    }
+}
+
+/// 落地 `window::Event`：执行窗口查询、按需写回窗口尺寸并关闭窗口。
+///
+/// 关闭前先通知所有标签的桥接断开，使后台 pump / 线程尽快退出，避免进程残留；
+/// 窗口本身由父层在查询完成后显式 `window::close` 关闭（应用已关闭默认关闭行为）。
+pub(crate) fn apply_window_event(app: &mut App, e: window::Event) -> Task<Message> {
+    match e {
+        // 关闭前查询是否最大化：查询结果回派 `MaximizedForClose`。
+        // （标签桥接断开已在路由层随关闭请求完成。）
+        window::Event::QueryMaximized(id) => iced::window::is_maximized(id).map(move |maximized| {
+            Message::Window(window::Message::MaximizedForClose(id, maximized))
+        }),
+        // 非最大化：查询当前尺寸，回派 `SizeForClose`。
+        window::Event::QuerySize(id) => iced::window::size(id)
+            .map(move |size| Message::Window(window::Message::SizeForClose(id, size))),
+        // 最大化 / 未开启记忆：直接关闭，保留配置中上一次的非最大化尺寸。
+        window::Event::Close(id) => iced::window::close(id),
+        // 写回非最大化尺寸后关闭窗口。
+        window::Event::PersistAndClose(id, size) => {
+            if app.config.remember_window_size {
+                app.config.window_width = Some(size.width);
+                app.config.window_height = Some(size.height);
+                contexts::save_config(app);
+            }
+            iced::window::close(id)
         }
     }
 }

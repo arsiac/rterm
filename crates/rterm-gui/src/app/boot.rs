@@ -2,7 +2,9 @@
 
 use crate::app::App;
 use crate::app::contexts;
-use crate::app::{hostkey, masterpw, panes, session, settings, sftp, tabs, transfer, updates};
+use crate::app::{
+    hostkey, masterpw, panes, session, settings, sftp, tabs, transfer, updates, window,
+};
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
 use crate::t;
@@ -82,9 +84,14 @@ pub(crate) fn new() -> (App, Task<Message>) {
         }
     };
 
-    // 两栏 `pane_grid` 布局态交由 `app::panes` 模块构建（初始左栏固定像素宽度 320，
-    // 比例按 320 / (1144 - 活动栏宽) 设置，与 iced 窗口默认宽度一致）。
-    let panes = panes::State::new();
+    // 两栏 `pane_grid` 布局态交由 `app::panes` 模块构建（初始左栏固定像素宽度 320）。
+    // 比例按 320 / (恢复后的窗口宽度 - 活动栏宽) 换算：窗口宽度取配置中记录的尺寸，
+    // 未启用 / 未记录时回退默认宽度，保证启动首帧分隔比例即正确。
+    let initial_window_width = config
+        .remembered_size()
+        .map(|(w, _)| w)
+        .unwrap_or(crate::DEFAULT_WINDOW_WIDTH);
+    let panes = panes::State::new(initial_window_width);
 
     // 设置弹窗模块状态须在 `config` move 进结构体之前构建，因其读取 `config.ui_font` /
     // `config.terminal_font` 构建下拉框选项。
@@ -108,6 +115,7 @@ pub(crate) fn new() -> (App, Task<Message>) {
         updates: updates::State::new(),
         vault: initial_vault.map(Arc::new),
         masterpw: masterpw::State::new(),
+        window: window::State::new(),
     };
 
     // 模式 0 钥匙串缺失后就地重生随机密钥：提示用户既有凭据可能失效。

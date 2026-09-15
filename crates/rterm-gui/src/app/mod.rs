@@ -16,6 +16,7 @@ pub(crate) mod tasks;
 pub(crate) mod terminal_bridge;
 pub(crate) mod transfer;
 pub(crate) mod updates;
+pub(crate) mod window;
 
 use crate::layout;
 use crate::message::Message;
@@ -92,6 +93,9 @@ pub struct App {
     /// 模块经 `Message::MasterPw` 接收意图、经 `Message::MasterPwEvent` 回写父状态，
     /// 自身绝不修改 `App` 的 `vault` / `sessions` / `config`。
     pub masterpw: masterpw::State,
+    /// 主窗口生命周期模块状态：记录主窗口 id，并在关闭时按是否最大化决定写回窗口尺寸。
+    /// 模块经 `Message::Window` 接收意图、经 `Message::WindowEvent` 由父层落地，自身绝不修改 `App`。
+    pub window: window::State,
 }
 
 impl App {
@@ -124,7 +128,11 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        let resize = iced::event::listen_with(|event, _status, _window| match event {
+        let resize = iced::event::listen_with(|event, _status, window| match event {
+            iced::Event::Window(iced::window::Event::Opened { .. }) => {
+                // 窗口创建完成：记录主窗口 id，供关闭时查询是否最大化 / 尺寸。
+                Some(Message::Window(window::Message::Opened(window)))
+            }
             iced::Event::Window(iced::window::Event::Resized(size)) => {
                 Some(Message::Panes(panes::Message::WindowResized(size.width)))
             }
@@ -135,9 +143,9 @@ impl App {
                 Some(Message::Tabs(tabs::Message::WindowFocused(false)))
             }
             iced::Event::Window(iced::window::Event::CloseRequested) => {
-                // 窗口关闭请求：先通知所有标签的桥接断开，使后台 pump / 线程尽快退出，
-                // 避免进程残留；窗口本身由 iced 默认行为（exit_on_close_request）关闭。
-                Some(Message::Tabs(tabs::Message::WindowClosing))
+                // 窗口关闭请求：交由窗口模块决定先落盘尺寸再关闭（最大化时不覆盖旧尺寸）。
+                // 关闭前的桥接断开会随之在父层落地。
+                Some(Message::Window(window::Message::CloseRequested(window)))
             }
             _ => None,
         });

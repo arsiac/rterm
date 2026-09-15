@@ -33,6 +33,11 @@ use iced::Result;
 use iced::font::Font;
 use rterm_config::AppConfig;
 
+/// 默认窗口宽度（像素）：首次启动或未启用 / 已清除窗口记忆时使用。
+pub(crate) const DEFAULT_WINDOW_WIDTH: f32 = 1144.0;
+/// 默认窗口高度（像素）：首次启动或未启用 / 已清除窗口记忆时使用。
+pub(crate) const DEFAULT_WINDOW_HEIGHT: f32 = 768.0;
+
 // 编译期嵌入翻译资源；缺失键回退到 en。
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -56,6 +61,7 @@ pub fn run() -> Result {
     }
 
     let font = config
+        .as_ref()
         .and_then(|c| {
             if c.ui_font.is_empty() {
                 None
@@ -65,6 +71,12 @@ pub fn run() -> Result {
         })
         .unwrap_or(Font::DEFAULT);
 
+    // 恢复窗口尺寸：仅当「记住窗口大小」开启且存在有效记录时使用，否则回退默认尺寸。
+    let (window_width, window_height) = config
+        .as_ref()
+        .and_then(|c| c.remembered_size())
+        .unwrap_or((DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
+
     let window_icon = iced::window::icon::from_file_data(crate::icons::WINDOW_ICON, None).ok();
 
     iced::application(app::App::new, app::App::update, app::App::view)
@@ -73,9 +85,12 @@ pub fn run() -> Result {
         .default_font(font)
         .title(app_title)
         .window(iced::window::Settings {
-            size: iced::Size::new(1144.0, 768.0),
+            size: iced::Size::new(window_width, window_height),
             icon: window_icon,
             platform_specific: platform_specific_settings(),
+            // 关闭请求改由 `app::window` 模块接管：先查询是否最大化并落盘非最大化尺寸，再关闭窗口。
+            // 必须写在 Settings 字面量里——`window(...)` 会整体覆盖之前的设置。
+            exit_on_close_request: false,
             ..Default::default()
         })
         .run()

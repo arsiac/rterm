@@ -40,6 +40,8 @@ settings:
   suppress_bootstrap_echo_hint: When enabled, the PTY is configured with ECHO=0 during script injection to prevent the script text from appearing on screen. When disabled, the script will be echoed normally.
   trim_trailing_whitespace: Trim trailing whitespace on copy
   trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
+  remember_window_size: Remember window size
+  remember_window_size_hint: Restores the last non-maximized window size on startup. Closing a maximized window keeps the previous non-maximized size. Turning this off clears the saved size.
   updates: Updates
   auto_check_updates: Automatically check for updates on startup
   check_now: Check now

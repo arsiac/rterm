@@ -85,6 +85,8 @@ pub enum Message {
     SuppressBootstrapEcho(bool),
     /// 修改「复制时去除行尾空格」设置（携带开关状态，即时持久化）。
     TrimTrailingWhitespace(bool),
+    /// 修改「记住窗口大小」设置（携带开关状态，即时持久化；关闭时清除已存尺寸）。
+    RememberWindowSize(bool),
 }
 
 /// 上行事件：仅通知父层，由父层 `Message::SettingsEvent` 分支修改父状态并落盘。
@@ -120,6 +122,8 @@ pub enum Event {
     SuppressBootstrapEcho(bool),
     /// 写回"复制时去除行尾空格"配置（携带开关状态）。
     TrimTrailingWhitespace(bool),
+    /// 写回"记住窗口大小"配置（携带开关状态）。
+    RememberWindowSize(bool),
 }
 
 /// 父层只读上下文：当前 `AppConfig`，供模块构建下拉框选项等读取，不写回。
@@ -190,6 +194,7 @@ impl State {
             Message::CwdBootstrap(v) => Task::done(Event::CwdBootstrap(v)),
             Message::SuppressBootstrapEcho(v) => Task::done(Event::SuppressBootstrapEcho(v)),
             Message::TrimTrailingWhitespace(v) => Task::done(Event::TrimTrailingWhitespace(v)),
+            Message::RememberWindowSize(v) => Task::done(Event::RememberWindowSize(v)),
         }
     }
 }

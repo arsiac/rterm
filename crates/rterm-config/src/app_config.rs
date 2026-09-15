@@ -207,6 +207,19 @@ pub struct AppConfig {
     /// 仅在 `cwd_bootstrap` 开启时生效。默认开启。
     #[serde(default = "default_true")]
     pub suppress_bootstrap_echo: bool,
+    /// 是否记住窗口大小并在下次启动时恢复。默认开启。
+    ///
+    /// 记录的是**非最大化**时的窗口尺寸：关闭时若窗口处于最大化状态，则保留上一次
+    /// 非最大化的尺寸，不会把最大化后的尺寸写入配置。在设置中关闭该开关时会同时清除
+    /// 已保存的尺寸。
+    #[serde(default = "default_true")]
+    pub remember_window_size: bool,
+    /// 上次退出时窗口的宽度（逻辑像素）。`None` 表示尚未记录或已被用户清除。
+    #[serde(default)]
+    pub window_width: Option<f32>,
+    /// 上次退出时窗口的高度（逻辑像素）。`None` 表示尚未记录或已被用户清除。
+    #[serde(default)]
+    pub window_height: Option<f32>,
 }
 
 /// 连接超时默认值（秒）：30 秒（0 表示不限制）。
@@ -297,6 +310,9 @@ impl Default for AppConfig {
             cwd_bootstrap: default_true(),
             suppress_bootstrap_echo: default_true(),
             trim_trailing_whitespace: default_true(),
+            remember_window_size: default_true(),
+            window_width: None,
+            window_height: None,
         }
     }
 }
@@ -350,6 +366,28 @@ impl AppConfig {
         Ok(config)
     }
 
+    /// 返回下次启动应恢复的窗口尺寸 `(宽, 高)`。
+    ///
+    /// 当「记住窗口大小」关闭、字段缺失或数值非法（非正 / 非有限）时返回 `None`，
+    /// 由调用方回退到内置默认尺寸。
+    pub fn remembered_size(&self) -> Option<(f32, f32)> {
+        if !self.remember_window_size {
+            return None;
+        }
+        match (self.window_width, self.window_height) {
+            (Some(w), Some(h)) if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => {
+                Some((w, h))
+            }
+            _ => None,
+        }
+    }
+
+    /// 清除已保存的窗口尺寸（不影响当前窗口，仅使下次启动回到默认尺寸）。
+    pub fn clear_window_size(&mut self) {
+        self.window_width = None;
+        self.window_height = None;
+    }
+
     /// 把当前配置写回 `self.path`（序列化为 TOML）。
     ///
     /// # 错误
@@ -361,5 +399,56 @@ impl AppConfig {
             .map_err(|e| ConfigError::Store(format!("写入配置文件失败: {e}")))?;
         debug!("App config saved to {}", self.path.display());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remembered_size_requires_valid_positive_values() {
+        // 默认无记录 -> 回退默认尺寸。
+        assert_eq!(AppConfig::default().remembered_size(), None);
+        // 记录有效尺寸后返回该值。
+        let mut config = AppConfig {
+            window_width: Some(1280.0),
+            window_height: Some(720.0),
+            ..Default::default()
+        };
+        assert_eq!(config.remembered_size(), Some((1280.0, 720.0)));
+        // 非法值（非正 / 非有限）视为无记录。
+        config.window_width = Some(0.0);
+        assert_eq!(config.remembered_size(), None);
+        config.window_width = Some(f32::NAN);
+        config.window_height = Some(720.0);
+        assert_eq!(config.remembered_size(), None);
+    }
+
+    #[test]
+    fn remembered_size_respects_toggle() {
+        let mut config = AppConfig {
+            window_width: Some(1280.0),
+            window_height: Some(720.0),
+            remember_window_size: false,
+            ..Default::default()
+        };
+        // 关闭开关时不恢复尺寸，但已记录值仍在，重新开启后可用。
+        assert_eq!(config.remembered_size(), None);
+        config.remember_window_size = true;
+        assert_eq!(config.remembered_size(), Some((1280.0, 720.0)));
+    }
+
+    #[test]
+    fn clear_window_size_erases_record() {
+        let mut config = AppConfig {
+            window_width: Some(1280.0),
+            window_height: Some(720.0),
+            ..Default::default()
+        };
+        config.clear_window_size();
+        assert_eq!(config.window_width, None);
+        assert_eq!(config.window_height, None);
+        assert_eq!(config.remembered_size(), None);
     }
 }
