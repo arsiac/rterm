@@ -53,7 +53,7 @@ pub(crate) fn session_ctx(app: &App) -> session::Ctx {
 /// 写回经 `window::Event` 由父层落地。
 pub(crate) fn window_ctx(app: &App) -> window::Ctx {
     window::Ctx {
-        remember_window_size: app.config.remember_window_size,
+        remember_window_size: app.config.window.remember_size,
     }
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn masterpw_ctx(app: &App) -> masterpw::Ctx {
         store: app.session.store.clone(),
         vault: app.vault.clone(),
         sessions: app.session.sessions.clone(),
-        remember: app.config.remember_master_key,
+        remember: app.config.security.remember_master_key,
     }
 }
 
@@ -98,8 +98,8 @@ pub(crate) fn settings_ctx(app: &App) -> settings::Ctx {
 /// 但**绝不写父状态**，时间戳写回经 `updates::Event::SetLastCheck` 由父层落地。
 pub(crate) fn updates_ctx(app: &App) -> updates::Ctx {
     updates::Ctx {
-        auto_check: app.config.auto_check_updates,
-        last_check_unix: app.config.last_update_check_unix,
+        auto_check: app.config.updates.auto_check,
+        last_check_unix: app.config.updates.last_check_unix,
     }
 }
 

@@ -7,7 +7,7 @@ fn main() {
     let config = AppConfig::new().unwrap_or_default();
     // 构造 flexi_logger 指令串：白名单方式——全局默认 warn 抑制所有第三方库噪声，
     // 仅项目自身的 crate 获得用户选择的日志级别。Off 时全局为 off，确保真正静默。
-    let log_level = config.log_level;
+    let log_level = config.logging.level;
     let directive = if log_level == LogLevel::Off {
         "off".to_string()
     } else {

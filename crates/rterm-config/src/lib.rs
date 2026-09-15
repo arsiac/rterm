@@ -4,7 +4,8 @@
 //! 持久化文件统一存放在系统配置目录下（经 `dirs::config_dir()`：Linux 为
 //! `~/.config/rterm/`、macOS 为 `~/Library/Application Support/rterm/`、Windows 为
 //! `%APPDATA%\rterm\`），分别为：
-//! - `config.toml`：应用级偏好（[`AppConfig`]）。
+//! - `config.toml`：应用级偏好（[`AppConfig`]），按功能域分组为嵌套 TOML 段
+//!   （`[connection]` / `[terminal]` / …）；加载时自动迁移旧版扁平格式。
 //! - `sessions.toml`：会话连接配置（[`SessionStore`] / [`SessionConfig`]）。
 
 pub mod app_config;

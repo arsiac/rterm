@@ -76,8 +76,8 @@ pub(crate) fn open_terminal_bridge(
             super::DEFAULT_ROWS,
             disconnect_tx,
             cwd,
-            app.config.cwd_bootstrap,
-            app.config.suppress_bootstrap_echo,
+            app.config.terminal.cwd_bootstrap,
+            app.config.terminal.suppress_bootstrap_echo,
         ),
         move |res| {
             Message::Tabs(tabs::Message::TerminalOpened(
@@ -129,17 +129,17 @@ pub(crate) fn spawn_terminal_widget(
     };
     let settings = TermSettings {
         backend: BackendSettings {
-            scrollback: app.config.scrollback,
-            trim_trailing_whitespace: app.config.trim_trailing_whitespace,
+            scrollback: app.config.terminal.scrollback,
+            trim_trailing_whitespace: app.config.terminal.trim_trailing_whitespace,
             ..Default::default()
         },
         font: FontSettings {
-            size: app.config.font_size,
+            size: app.config.terminal.font_size,
             scale_factor: 1.3,
-            font_type: font::resolve_terminal_font(&app.config.terminal_font),
+            font_type: font::resolve_terminal_font(&app.config.terminal.font),
         },
         theme: ThemeSettings::new(Box::new(terminal_theme::resolve_terminal_theme(
-            &app.config.terminal_theme,
+            &app.config.terminal.theme,
         ))),
     };
     match Terminal::new_with_pty(tab_id, settings, russh_pty) {

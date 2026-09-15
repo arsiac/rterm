@@ -1,8 +1,4 @@
 //! 应用级偏好配置（GUI 设置）的加载与保存。
-//!
-//! 与 [`store`](crate::store) 的会话配置不同，本模块仅持久化 UI 偏好（连接超时、
-//! 终端字号、程序主题与界面字体、主密码「本机记住」开关），不涉及任何敏感凭据。
-//! 配置以 TOML 格式存放于 `~/.config/rterm/config.toml`。
 
 use crate::ConfigError;
 use dirs::config_dir;
@@ -10,7 +6,7 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 日志级别（设置中切换，重启生效）。
 ///
@@ -141,59 +137,41 @@ pub fn log_dir() -> PathBuf {
         .join("logs")
 }
 
-/// 应用级偏好配置。
-///
-/// 除运行时字段外均可在 GUI 设置弹窗中修改并即时持久化。文件路径在构造时确定并跳过序列化，
-/// 因此不写入配置文件；另有 `last_update_check_unix` 等由程序内部写回、不出现在设置界面。
+/// `[connection]` 段：连接相关设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    /// 配置文件绝对路径（运行时持有，不参与序列化）。
-    #[serde(skip)]
-    path: PathBuf,
-    /// 0 表示不限制。
+pub struct ConnectionConfig {
+    /// 连接超时（秒），0 表示不限制。
     #[serde(default = "default_timeout")]
-    pub connect_timeout: u64,
-    /// 终端与界面默认字号（像素）。
+    pub timeout: u64,
+}
+
+impl Default for ConnectionConfig {
+    /// 超时默认 30 秒。
+    fn default() -> Self {
+        Self {
+            timeout: default_timeout(),
+        }
+    }
+}
+
+/// `[terminal]` 段：终端显示与目录追踪设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalConfig {
+    /// 终端字体族名；空字符串表示使用 iced 等宽回退 `Font::MONOSPACE`。
+    ///
+    /// 仅接受等宽字体以保证字符网格对齐，切换即时作用于所有终端标签。
+    #[serde(default)]
+    pub font: String,
+    /// 终端字号（像素）。
     #[serde(default = "default_font_size")]
     pub font_size: f32,
-    /// iced 主题显示名（如 `"Dark"` / `"Light"` / `"Dracula"`）；旧值 `"dark"` / `"light"` 由 GUI 层 rterm_gui::theme 兼容映射。
-    #[serde(default = "default_theme")]
-    pub theme: String,
-    /// 空字符串表示使用 iced 默认字体，重启后生效。
-    #[serde(default)]
-    pub ui_font: String,
-    /// 空字符串表示使用 iced 等宽回退 `Font::MONOSPACE`；仅接受等宽字体以保证字符网格对齐，切换即时作用于所有终端标签。
-    #[serde(default)]
-    pub terminal_font: String,
-    /// 仅持久化名字，具体调色板由 GUI 层 rterm_gui::terminal_theme 解析；切换会即时作用于所有终端标签。
+    /// 终端配色主题名；具体调色板由 GUI 层 `rterm_gui::terminal_theme` 解析，
+    /// 切换会即时作用于所有终端标签。
     #[serde(default = "default_terminal_theme")]
-    pub terminal_theme: String,
-    /// 重启生效；序列化为 flexi_logger 接受的小写名。
-    #[serde(default)]
-    pub log_level: LogLevel,
-    /// 设置面板切换，实时生效；默认跟随系统区域。
-    #[serde(default)]
-    pub language: Language,
+    pub theme: String,
     /// 终端历史缓冲行数（滚动回看上限）；0 表示不保留历史。仅对新建终端标签生效。
     #[serde(default = "default_scrollback")]
     pub scrollback: usize,
-    /// 启动时是否自动检查更新。
-    #[serde(default = "default_auto_check_updates")]
-    pub auto_check_updates: bool,
-    /// 用于 24h 节流，避免频繁请求 GitHub API。
-    #[serde(default)]
-    pub last_update_check_unix: Option<i64>,
-    /// 是否在本机记住主密钥（系统钥匙串自动解锁）。
-    ///
-    /// 无论模式 0 还是模式 1，本开关开启时都会把**当前 DEK**（模式 0 的随机密钥 / 模式 1
-    /// 的口令派生密钥）存入系统钥匙串，启动若读到钥匙串 DEK 且校验通过则静默解锁、不弹窗；
-    /// 仅模式 1 且关闭此开关时，回到每次启动输入主密码。默认开启。无钥匙串后端时不适用
-    /// （视为不支持，GUI 不展示该开关）。
-    #[serde(default = "default_true")]
-    pub remember_master_key: bool,
-    /// 是否在复制时将选中区域各行的尾部空格去除，默认开启。
-    #[serde(default = "default_true")]
-    pub trim_trailing_whitespace: bool,
     /// 是否在终端连接时向远端 shell 注入 CWD 上报钩子（OSC 7 序列）。
     ///
     /// 开启时每个新终端标签连接后会自动向 shell 注入一段 prompt 钩子，使 shell 在每个
@@ -207,19 +185,174 @@ pub struct AppConfig {
     /// 仅在 `cwd_bootstrap` 开启时生效。默认开启。
     #[serde(default = "default_true")]
     pub suppress_bootstrap_echo: bool,
+    /// 是否在复制时将选中区域各行的尾部空格去除，默认开启。
+    #[serde(default = "default_true")]
+    pub trim_trailing_whitespace: bool,
+}
+
+impl Default for TerminalConfig {
+    /// 终端段默认值：默认字号 / 配色 / 10000 行历史，各项开关默认开启。
+    fn default() -> Self {
+        Self {
+            font: String::new(),
+            font_size: default_font_size(),
+            theme: default_terminal_theme(),
+            scrollback: default_scrollback(),
+            cwd_bootstrap: default_true(),
+            suppress_bootstrap_echo: default_true(),
+            trim_trailing_whitespace: default_true(),
+        }
+    }
+}
+
+/// `[appearance]` 段：程序外观与界面语言设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppearanceConfig {
+    /// iced 主题显示名（如 `"Dark"` / `"Light"` / `"Dracula"`）；
+    /// 旧值 `"dark"` / `"light"` 由 GUI 层 `rterm_gui::theme` 兼容映射。
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// 界面字体族名；空字符串表示使用 iced 默认字体，重启后生效。
+    #[serde(default)]
+    pub ui_font: String,
+    /// 界面语言；默认跟随系统区域。
+    #[serde(default)]
+    pub language: Language,
+}
+
+impl Default for AppearanceConfig {
+    /// 外观段默认值：深色主题、默认界面字体、跟随系统语言。
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            ui_font: String::new(),
+            language: Language::default(),
+        }
+    }
+}
+
+/// `[logging]` 段：日志设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// 日志级别，重启生效；序列化为 flexi_logger 接受的小写名。
+    #[serde(default)]
+    pub level: LogLevel,
+}
+
+impl Default for LoggingConfig {
+    /// 日志段默认值：`info` 级别。
+    fn default() -> Self {
+        Self {
+            level: LogLevel::default(),
+        }
+    }
+}
+
+/// `[updates]` 段：应用更新检查设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatesConfig {
+    /// 启动时是否自动检查更新。
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check: bool,
+    /// 用于 24h 节流，避免频繁请求 GitHub API。
+    #[serde(default)]
+    pub last_check_unix: Option<i64>,
+}
+
+impl Default for UpdatesConfig {
+    /// 更新段默认值：自动检查开启、无上次检查时间。
+    fn default() -> Self {
+        Self {
+            auto_check: default_auto_check_updates(),
+            last_check_unix: None,
+        }
+    }
+}
+
+/// `[security]` 段：安全相关设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// 是否在本机记住主密钥（系统钥匙串自动解锁）。
+    ///
+    /// 无论模式 0 还是模式 1，本开关开启时都会把**当前 DEK**（模式 0 的随机密钥 / 模式 1
+    /// 的口令派生密钥）存入系统钥匙串，启动若读到钥匙串 DEK 且校验通过则静默解锁、不弹窗；
+    /// 仅模式 1 且关闭此开关时，回到每次启动输入主密码。默认开启。无钥匙串后端时不适用
+    /// （视为不支持，GUI 不展示该开关）。
+    #[serde(default = "default_true")]
+    pub remember_master_key: bool,
+}
+
+impl Default for SecurityConfig {
+    /// 安全段默认值：本机记住主密钥开启。
+    fn default() -> Self {
+        Self {
+            remember_master_key: default_true(),
+        }
+    }
+}
+
+/// `[window]` 段：主窗口几何记忆设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowConfig {
     /// 是否记住窗口大小并在下次启动时恢复。默认开启。
     ///
     /// 记录的是**非最大化**时的窗口尺寸：关闭时若窗口处于最大化状态，则保留上一次
     /// 非最大化的尺寸，不会把最大化后的尺寸写入配置。在设置中关闭该开关时会同时清除
     /// 已保存的尺寸。
     #[serde(default = "default_true")]
-    pub remember_window_size: bool,
+    pub remember_size: bool,
     /// 上次退出时窗口的宽度（逻辑像素）。`None` 表示尚未记录或已被用户清除。
     #[serde(default)]
-    pub window_width: Option<f32>,
+    pub width: Option<f32>,
     /// 上次退出时窗口的高度（逻辑像素）。`None` 表示尚未记录或已被用户清除。
     #[serde(default)]
-    pub window_height: Option<f32>,
+    pub height: Option<f32>,
+}
+
+impl Default for WindowConfig {
+    /// 窗口段默认值：记住大小开启、无已保存尺寸。
+    fn default() -> Self {
+        Self {
+            remember_size: default_true(),
+            width: None,
+            height: None,
+        }
+    }
+}
+
+/// 应用级偏好配置（`config.toml` 根结构）。
+///
+/// 除运行时字段外均可在 GUI 设置弹窗中修改并即时持久化。各功能域拆分为独立子段
+/// （见 [`ConnectionConfig`] / [`TerminalConfig`] / [`AppearanceConfig`] /
+/// [`LoggingConfig`] / [`UpdatesConfig`] / [`SecurityConfig`] / [`WindowConfig`]）。
+/// 文件路径在构造时确定并跳过序列化，因此不写入配置文件；`last_check_unix` 等由程序
+/// 内部写回、不出现在设置界面。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    /// 配置文件绝对路径（运行时持有，不参与序列化）。
+    #[serde(skip)]
+    path: PathBuf,
+    /// `[connection]` 段：连接相关设置。
+    #[serde(default)]
+    pub connection: ConnectionConfig,
+    /// `[terminal]` 段：终端显示与目录追踪设置。
+    #[serde(default)]
+    pub terminal: TerminalConfig,
+    /// `[appearance]` 段：程序外观与界面语言设置。
+    #[serde(default)]
+    pub appearance: AppearanceConfig,
+    /// `[logging]` 段：日志设置。
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    /// `[updates]` 段：应用更新检查设置。
+    #[serde(default)]
+    pub updates: UpdatesConfig,
+    /// `[security]` 段：安全相关设置。
+    #[serde(default)]
+    pub security: SecurityConfig,
+    /// `[window]` 段：主窗口几何记忆设置。
+    #[serde(default)]
+    pub window: WindowConfig,
 }
 
 /// 连接超时默认值（秒）：30 秒（0 表示不限制）。
@@ -276,7 +409,7 @@ fn detect_system_is_dark() -> bool {
     }
 }
 
-/// 按系统外观给出首次启动的默认主题组合。
+/// 按系统外观给出首次启动的默认主题组合 `(程序主题, 终端主题)`。
 ///
 /// 深色系统对应程序主题 `Dark` + 终端 `One Dark`，浅色对应 `Light` + `One Light`；
 /// 该组合仅在配置文件缺失（即首次启动）时一次性写入，之后由用户手动设置覆盖。
@@ -293,32 +426,190 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             path: PathBuf::new(),
-            connect_timeout: default_timeout(),
-            font_size: default_font_size(),
-            theme: default_theme(),
-            ui_font: String::new(),
-            terminal_font: String::new(),
-            terminal_theme: default_terminal_theme(),
-            log_level: LogLevel::default(),
-            language: Language::default(),
-            scrollback: default_scrollback(),
-            auto_check_updates: default_auto_check_updates(),
-            last_update_check_unix: None,
-            // `remember_master_key` 默认开启（提供免输入体验）：这里走 `default_true()` 而非
-            // 直接写字面量，是为了让 serde 的字段缺省值也保持 `true`（bool 默认是 `false`）。
-            remember_master_key: default_true(),
-            cwd_bootstrap: default_true(),
-            suppress_bootstrap_echo: default_true(),
-            trim_trailing_whitespace: default_true(),
-            remember_window_size: default_true(),
-            window_width: None,
-            window_height: None,
+            connection: ConnectionConfig::default(),
+            terminal: TerminalConfig::default(),
+            appearance: AppearanceConfig::default(),
+            logging: LoggingConfig::default(),
+            updates: UpdatesConfig::default(),
+            security: SecurityConfig::default(),
+            window: WindowConfig::default(),
         }
+    }
+}
+
+/// 旧版扁平配置（迁移快照）。
+///
+/// 冻结迁移前的顶层键 schema，仅用于把旧 `config.toml` 读入并转换。**刻意**保持独立，
+/// 不随新结构演进而漂移，以免旧文件的字段映射被无意改变。
+#[derive(Debug, Deserialize)]
+struct LegacyAppConfig {
+    /// 旧字段：连接超时（秒）。
+    #[serde(default = "default_timeout")]
+    connect_timeout: u64,
+    /// 旧字段：终端与界面字号（像素）。
+    #[serde(default = "default_font_size")]
+    font_size: f32,
+    /// 旧字段：程序主题显示名。
+    #[serde(default = "default_theme")]
+    theme: String,
+    /// 旧字段：界面字体族名。
+    #[serde(default)]
+    ui_font: String,
+    /// 旧字段：终端字体族名。
+    #[serde(default)]
+    terminal_font: String,
+    /// 旧字段：终端配色主题名。
+    #[serde(default = "default_terminal_theme")]
+    terminal_theme: String,
+    /// 旧字段：日志级别。
+    #[serde(default)]
+    log_level: LogLevel,
+    /// 旧字段：界面语言。
+    #[serde(default)]
+    language: Language,
+    /// 旧字段：终端历史缓冲行数。
+    #[serde(default = "default_scrollback")]
+    scrollback: usize,
+    /// 旧字段：自动检查更新开关。
+    #[serde(default = "default_auto_check_updates")]
+    auto_check_updates: bool,
+    /// 旧字段：上次更新检查时间戳。
+    #[serde(default)]
+    last_update_check_unix: Option<i64>,
+    /// 旧字段：本机记住主密钥开关。
+    #[serde(default = "default_true")]
+    remember_master_key: bool,
+    /// 旧字段：复制去除行尾空格开关。
+    #[serde(default = "default_true")]
+    trim_trailing_whitespace: bool,
+    /// 旧字段：CWD 钩子注入开关。
+    #[serde(default = "default_true")]
+    cwd_bootstrap: bool,
+    /// 旧字段：抑制 CWD 钩子回显开关。
+    #[serde(default = "default_true")]
+    suppress_bootstrap_echo: bool,
+    /// 旧字段：记住窗口大小开关。
+    #[serde(default = "default_true")]
+    remember_window_size: bool,
+    /// 旧字段：上次窗口宽度（逻辑像素）。
+    #[serde(default)]
+    window_width: Option<f32>,
+    /// 旧字段：上次窗口高度（逻辑像素）。
+    #[serde(default)]
+    window_height: Option<f32>,
+}
+
+impl From<LegacyAppConfig> for AppConfig {
+    /// 把旧扁平配置逐字段映射到新分组结构。
+    fn from(l: LegacyAppConfig) -> Self {
+        AppConfig {
+            path: PathBuf::new(),
+            connection: ConnectionConfig {
+                timeout: l.connect_timeout,
+            },
+            terminal: TerminalConfig {
+                font: l.terminal_font,
+                font_size: l.font_size,
+                theme: l.terminal_theme,
+                scrollback: l.scrollback,
+                cwd_bootstrap: l.cwd_bootstrap,
+                suppress_bootstrap_echo: l.suppress_bootstrap_echo,
+                trim_trailing_whitespace: l.trim_trailing_whitespace,
+            },
+            appearance: AppearanceConfig {
+                theme: l.theme,
+                ui_font: l.ui_font,
+                language: l.language,
+            },
+            logging: LoggingConfig { level: l.log_level },
+            updates: UpdatesConfig {
+                auto_check: l.auto_check_updates,
+                last_check_unix: l.last_update_check_unix,
+            },
+            security: SecurityConfig {
+                remember_master_key: l.remember_master_key,
+            },
+            window: WindowConfig {
+                remember_size: l.remember_window_size,
+                width: l.window_width,
+                height: l.window_height,
+            },
+        }
+    }
+}
+
+/// 旧扁平格式的顶层键名（任一存在即判定为旧格式）。
+const LEGACY_KEYS: [&str; 18] = [
+    "connect_timeout",
+    "font_size",
+    "theme",
+    "ui_font",
+    "terminal_font",
+    "terminal_theme",
+    "log_level",
+    "language",
+    "scrollback",
+    "auto_check_updates",
+    "last_update_check_unix",
+    "remember_master_key",
+    "trim_trailing_whitespace",
+    "cwd_bootstrap",
+    "suppress_bootstrap_echo",
+    "remember_window_size",
+    "window_width",
+    "window_height",
+];
+
+/// 判断 TOML 根表是否为旧扁平格式：根层出现任一 [`LEGACY_KEYS`] 键即视为旧格式。
+///
+/// 新格式的根键只有各分段名（`connection` 等），与旧键不重叠，故可无歧义区分。
+fn is_legacy(table: &toml::Table) -> bool {
+    LEGACY_KEYS.iter().any(|k| table.contains_key(*k))
+}
+
+/// 解析配置文本，返回配置及「是否由旧扁平格式迁移而来」。
+///
+/// 旧格式走 [`LegacyAppConfig`] 转换；新格式直接反序列化（缺失段 / 字段补默认）。
+///
+/// # 错误
+/// TOML 解析失败时返回 [`ConfigError::Store`]。
+fn parse_config(content: &str) -> Result<(AppConfig, bool), ConfigError> {
+    let table: toml::Table = toml::from_str(content)
+        .map_err(|e| ConfigError::Store(format!("解析配置文件失败: {e}")))?;
+    if is_legacy(&table) {
+        let legacy: LegacyAppConfig = toml::from_str(content)
+            .map_err(|e| ConfigError::Store(format!("解析旧版配置文件失败: {e}")))?;
+        Ok((AppConfig::from(legacy), true))
+    } else {
+        let config: AppConfig = toml::from_str(content)
+            .map_err(|e| ConfigError::Store(format!("解析配置文件失败: {e}")))?;
+        Ok((config, false))
+    }
+}
+
+/// 计算迁移备份路径：首选 `config.toml.bak`，已存在时追加 Unix 秒时间戳避免覆盖旧备份。
+fn backup_path(path: &Path) -> PathBuf {
+    let file = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.toml");
+    let backup = path.with_file_name(format!("{file}.bak"));
+    if backup.exists() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        backup.with_file_name(format!("{file}.bak.{ts}"))
+    } else {
+        backup
     }
 }
 
 impl AppConfig {
     /// 创建配置实例：定位并准备好配置目录，加载已有文件或回退到默认配置。
+    ///
+    /// 首次启动（文件缺失）按系统外观写入默认主题并落盘新格式；检测到旧扁平格式时
+    /// 转换、备份旧文件并落盘新格式，实现透明迁移。
     ///
     /// # 错误
     /// 无法定位配置目录时返回 [`ConfigError::ConfigDir`]；创建目录失败、读取或解析
@@ -335,33 +626,50 @@ impl AppConfig {
             // 首次启动：按系统外观决定默认主题组合，并立即落盘，
             // 使得「配置文件缺失即回退默认」的语义同时完成一次性初始化。
             let (theme, terminal_theme) = first_launch_theme();
-            let config = AppConfig {
+            let mut config = AppConfig {
                 path,
-                theme,
-                terminal_theme,
                 ..Default::default()
             };
-            // `remember_master_key` 由 `Default::default()` 补为 `true`，与首次启动语义一致。
+            config.appearance.theme = theme;
+            config.terminal.theme = terminal_theme;
+            // `security.remember_master_key` 由默认值补为 `true`，与首次启动语义一致。
             if let Err(e) = config.save() {
                 warn!("Failed to write back default config on first launch: {e}");
             } else {
                 info!(
                     "First launch: app theme {} / terminal theme {} based on system theme",
-                    config.theme, config.terminal_theme
+                    config.appearance.theme, config.terminal.theme
                 );
             }
             return Ok(config);
         }
         let content = fs::read_to_string(&path)
             .map_err(|e| ConfigError::Store(format!("读取配置文件失败: {e}")))?;
-        let mut config: AppConfig = toml::from_str(&content)
-            .map_err(|e| ConfigError::Store(format!("解析配置文件失败: {e}")))?;
+        let (mut config, migrated) = parse_config(&content)?;
         // `path` 字段标记了 `#[serde(skip)]`，反序列化不会填充它，必须在此回填，
         // 否则 `save()` 将向空路径写入而失败，导致配置（含主题）无法持久化。
-        config.path = path;
+        config.path = path.clone();
+        if migrated {
+            // 旧扁平格式：先备份旧文件，再落盘新分组格式。备份 / 写入失败均不致命——
+            // 旧文件仍在磁盘上，下次启动会再次尝试迁移；本次以内存中的转换结果继续运行。
+            let backup = backup_path(&path);
+            match fs::copy(&path, &backup) {
+                Ok(_) => info!(
+                    "Migrated legacy flat config to sectioned format, backup at {}",
+                    backup.display()
+                ),
+                Err(e) => warn!(
+                    "Failed to back up legacy config to {}: {e}",
+                    backup.display()
+                ),
+            }
+            if let Err(e) = config.save() {
+                warn!("Failed to write migrated config: {e}");
+            }
+        }
         debug!(
-            "App config loaded (timeout {}s, font size {})",
-            config.connect_timeout, config.font_size
+            "App config loaded (timeout {}s, terminal font size {})",
+            config.connection.timeout, config.terminal.font_size
         );
         Ok(config)
     }
@@ -371,10 +679,10 @@ impl AppConfig {
     /// 当「记住窗口大小」关闭、字段缺失或数值非法（非正 / 非有限）时返回 `None`，
     /// 由调用方回退到内置默认尺寸。
     pub fn remembered_size(&self) -> Option<(f32, f32)> {
-        if !self.remember_window_size {
+        if !self.window.remember_size {
             return None;
         }
-        match (self.window_width, self.window_height) {
+        match (self.window.width, self.window.height) {
             (Some(w), Some(h)) if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => {
                 Some((w, h))
             }
@@ -384,11 +692,11 @@ impl AppConfig {
 
     /// 清除已保存的窗口尺寸（不影响当前窗口，仅使下次启动回到默认尺寸）。
     pub fn clear_window_size(&mut self) {
-        self.window_width = None;
-        self.window_height = None;
+        self.window.width = None;
+        self.window.height = None;
     }
 
-    /// 把当前配置写回 `self.path`（序列化为 TOML）。
+    /// 把当前配置写回 `self.path`（序列化为分组 TOML）。
     ///
     /// # 错误
     /// 当序列化或写入失败时返回 [`ConfigError::Store`]。
@@ -405,50 +713,186 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 串行化会改写进程环境变量（`XDG_CONFIG_HOME`）的测试。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn remembered_size_requires_valid_positive_values() {
         // 默认无记录 -> 回退默认尺寸。
         assert_eq!(AppConfig::default().remembered_size(), None);
         // 记录有效尺寸后返回该值。
-        let mut config = AppConfig {
-            window_width: Some(1280.0),
-            window_height: Some(720.0),
-            ..Default::default()
-        };
+        let mut config = AppConfig::default();
+        config.window.width = Some(1280.0);
+        config.window.height = Some(720.0);
         assert_eq!(config.remembered_size(), Some((1280.0, 720.0)));
         // 非法值（非正 / 非有限）视为无记录。
-        config.window_width = Some(0.0);
+        config.window.width = Some(0.0);
         assert_eq!(config.remembered_size(), None);
-        config.window_width = Some(f32::NAN);
-        config.window_height = Some(720.0);
+        config.window.width = Some(f32::NAN);
+        config.window.height = Some(720.0);
         assert_eq!(config.remembered_size(), None);
     }
 
     #[test]
     fn remembered_size_respects_toggle() {
-        let mut config = AppConfig {
-            window_width: Some(1280.0),
-            window_height: Some(720.0),
-            remember_window_size: false,
-            ..Default::default()
-        };
+        let mut config = AppConfig::default();
+        config.window.width = Some(1280.0);
+        config.window.height = Some(720.0);
+        config.window.remember_size = false;
         // 关闭开关时不恢复尺寸，但已记录值仍在，重新开启后可用。
         assert_eq!(config.remembered_size(), None);
-        config.remember_window_size = true;
+        config.window.remember_size = true;
         assert_eq!(config.remembered_size(), Some((1280.0, 720.0)));
     }
 
     #[test]
     fn clear_window_size_erases_record() {
-        let mut config = AppConfig {
-            window_width: Some(1280.0),
-            window_height: Some(720.0),
-            ..Default::default()
-        };
+        let mut config = AppConfig::default();
+        config.window.width = Some(1280.0);
+        config.window.height = Some(720.0);
         config.clear_window_size();
-        assert_eq!(config.window_width, None);
-        assert_eq!(config.window_height, None);
+        assert_eq!(config.window.width, None);
+        assert_eq!(config.window.height, None);
         assert_eq!(config.remembered_size(), None);
+    }
+
+    #[test]
+    fn legacy_flat_config_is_migrated_field_by_field() {
+        let legacy = r#"
+connect_timeout = 45
+font_size = 18.0
+theme = "Dracula"
+ui_font = "Noto Sans"
+terminal_font = "JetBrains Mono"
+terminal_theme = "One Dark"
+log_level = "debug"
+language = "zh-CN"
+scrollback = 5000
+auto_check_updates = false
+last_update_check_unix = 1700000000
+remember_master_key = false
+trim_trailing_whitespace = false
+cwd_bootstrap = false
+suppress_bootstrap_echo = false
+remember_window_size = false
+window_width = 1280.0
+window_height = 720.0
+"#;
+        let (config, migrated) = parse_config(legacy).expect("解析旧配置应成功");
+        assert!(migrated, "旧扁平格式应被识别为迁移");
+        assert_eq!(config.connection.timeout, 45);
+        assert_eq!(config.terminal.font, "JetBrains Mono");
+        assert_eq!(config.terminal.font_size, 18.0);
+        assert_eq!(config.terminal.theme, "One Dark");
+        assert_eq!(config.terminal.scrollback, 5000);
+        assert!(!config.terminal.cwd_bootstrap);
+        assert!(!config.terminal.suppress_bootstrap_echo);
+        assert!(!config.terminal.trim_trailing_whitespace);
+        assert_eq!(config.appearance.theme, "Dracula");
+        assert_eq!(config.appearance.ui_font, "Noto Sans");
+        assert_eq!(config.appearance.language, Language::ZhCn);
+        assert_eq!(config.logging.level, LogLevel::Debug);
+        assert!(!config.updates.auto_check);
+        assert_eq!(config.updates.last_check_unix, Some(1_700_000_000));
+        assert!(!config.security.remember_master_key);
+        assert!(!config.window.remember_size);
+        assert_eq!(config.window.width, Some(1280.0));
+        assert_eq!(config.window.height, Some(720.0));
+    }
+
+    #[test]
+    fn sectioned_config_parses_without_migration_and_fills_defaults() {
+        let sectioned = r#"
+[connection]
+timeout = 12
+
+[terminal]
+font = "Fira Code"
+font_size = 20.0
+
+[appearance]
+theme = "Light"
+"#;
+        let (config, migrated) = parse_config(sectioned).expect("解析新配置应成功");
+        assert!(!migrated, "新分组格式不应触发迁移");
+        assert_eq!(config.connection.timeout, 12);
+        assert_eq!(config.terminal.font, "Fira Code");
+        assert_eq!(config.terminal.font_size, 20.0);
+        assert_eq!(config.appearance.theme, "Light");
+        // 未给出的段 / 字段回退默认。
+        assert!(config.window.remember_size);
+        assert_eq!(config.terminal.scrollback, 10_000);
+        assert_eq!(config.appearance.language, Language::System);
+    }
+
+    #[test]
+    fn empty_config_falls_back_to_defaults() {
+        let (config, migrated) = parse_config("").expect("空配置应成功");
+        assert!(!migrated);
+        assert_eq!(config.connection.timeout, 30);
+        assert_eq!(config.terminal.font_size, 14.0);
+        assert_eq!(config.terminal.theme, "Default");
+        assert_eq!(config.appearance.theme, "Dark");
+    }
+
+    #[test]
+    fn backup_path_appends_bak_and_timestamps_on_collision() {
+        let dir = std::env::temp_dir().join(format!("rterm_cfg_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("应能创建临时目录");
+        let path = dir.join("config.toml");
+        assert_eq!(backup_path(&path), dir.join("config.toml.bak"));
+        // 已有备份时追加时间戳，避免覆盖。
+        fs::write(dir.join("config.toml.bak"), "old").expect("应能写旧备份");
+        let bp = backup_path(&path);
+        let name = bp.file_name().expect("应有文件名").to_string_lossy();
+        assert!(
+            name.starts_with("config.toml.bak."),
+            "已存在备份时应追加时间戳，实际为 {name}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_migrates_legacy_file_and_creates_backup() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("rterm_cfg_migrate_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("rterm")).expect("应能创建临时配置目录");
+        let cfg_path = dir.join("rterm").join("config.toml");
+        let legacy = "connect_timeout = 7\nfont_size = 22.0\nterminal_font = \"Hack\"\n";
+        fs::write(&cfg_path, legacy).expect("应能写入旧配置");
+
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: 由 `ENV_LOCK` 串行化，且本测试二进制内无其它测试读取该环境变量。
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let config = AppConfig::new().expect("加载并迁移旧配置应成功");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+
+        assert_eq!(config.connection.timeout, 7);
+        assert_eq!(config.terminal.font_size, 22.0);
+        assert_eq!(config.terminal.font, "Hack");
+
+        // 新文件应已写为分组格式，且旧文件被备份。
+        let new_content = fs::read_to_string(&cfg_path).expect("应能读取迁移后的配置");
+        assert!(
+            new_content.contains("[connection]") && new_content.contains("[terminal]"),
+            "应写为分组格式: {new_content}"
+        );
+        assert!(
+            !new_content.contains("connect_timeout"),
+            "不应再保留旧扁平键: {new_content}"
+        );
+        assert!(
+            dir.join("rterm").join("config.toml.bak").exists(),
+            "迁移应生成 config.toml.bak 备份"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

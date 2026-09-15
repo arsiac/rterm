@@ -658,7 +658,7 @@ mod tests {
                 Event::SetVault(v) => app.vault = Some(v),
                 Event::SetSessions(s) => app.session.sessions = s,
                 Event::SetRemember(v) => {
-                    app.config.remember_master_key = v;
+                    app.config.security.remember_master_key = v;
                     contexts::save_config(app);
                 }
                 Event::Toast(kind, msg) => contexts::set_toast(app, kind, msg),
@@ -1010,7 +1010,7 @@ mod tests {
         assert!(!app2.masterpw.setup, "自动解锁成功后不应停留在设置模式");
 
         // 关闭开关→删除钥匙串条目；再次重启应回退到弹窗（vault 为 None）。
-        app.config.remember_master_key = false;
+        app.config.security.remember_master_key = false;
         contexts::save_config(&mut app);
         crate::vault_keyring::delete_dek_quietly();
         let (app3, _task3) = crate::app::App::new();

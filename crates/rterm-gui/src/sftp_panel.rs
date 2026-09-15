@@ -121,7 +121,7 @@ fn panel(app: &App) -> Element<'_, Message> {
         crate::app::sftp::Message::SftpParent,
         Position::Bottom,
     )];
-    if app.config.cwd_bootstrap {
+    if app.config.terminal.cwd_bootstrap {
         btns.push(icon_button(
             Icon::ArrowEnter,
             ACTION_ICON_SIZE,

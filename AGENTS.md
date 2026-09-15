@@ -30,7 +30,7 @@ Entrypoint: `src/main.rs` → `rterm_gui::run()` (iced app).
 ## Architecture notes
 
 - **GUI architecture**: `App` struct in `crates/rterm-gui/src/app/mod.rs` delegates all message handling to sub-modules via `routing::update()`. Each module (session, tabs, sftp, transfer, settings, hostkey, masterpw, updates) owns its own state and communicates via typed `Message` variants. Never mutate `App` fields directly from sub-modules.
-- **Config persistence**: `~/.config/rterm/` on Linux, `dirs::config_dir()/rterm/` on other platforms. Files: `config.toml` (app prefs), `sessions.toml` (session configs with encrypted credentials).
+- **Config persistence**: `~/.config/rterm/` on Linux, `dirs::config_dir()/rterm/` on other platforms. Files: `config.toml` (app prefs, grouped into functional-domain TOML sections `[connection]`/`[terminal]`/`[appearance]`/`[logging]`/`[updates]`/`[security]`/`[window]`; legacy flat configs are auto-migrated on load with a `config.toml.bak` backup), `sessions.toml` (session configs with encrypted credentials).
 - **Log output**: platform cache dir (`~/.cache/rterm/logs/` on Linux), daily rotation, 7-day retention. All log messages should be in English.
 - **i18n**: `rust-i18n` with `locales/en.yml` and `locales/zh-CN.yml`. Use `t!("key")` macro (re-exported from crate root). Never hardcode Chinese or English strings in `rterm-gui` — always use translation keys.
 - **Master password modes**: Mode 0 (default, random DEK in system keychain, no sync), Mode 1 (master password derived DEK, syncable). Check `App::can_enable_sync()` to gate sync features.

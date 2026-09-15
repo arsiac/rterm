@@ -252,7 +252,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 container(terminal_elem)
                     .style(|_theme| container::Style {
                         background: Some(
-                            crate::theme::terminal_bg(&app.config.terminal_theme).into(),
+                            crate::theme::terminal_bg(&app.config.terminal.theme).into(),
                         ),
                         border: Border {
                             radius: 4.0.into(),

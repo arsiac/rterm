@@ -203,20 +203,20 @@ fn content_pane(app: &App) -> Element<'_, Message> {
 
 /// “通用”分类：连接超时、日志级别、界面语言。
 fn general_pane(app: &App) -> Element<'_, Message> {
-    let timeout_input = text_input("30", &app.config.connect_timeout.to_string())
+    let timeout_input = text_input("30", &app.config.connection.timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
         .style(crate::ui::text_input_style);
-    let scrollback_input = text_input("10000", &app.config.scrollback.to_string())
+    let scrollback_input = text_input("10000", &app.config.terminal.scrollback.to_string())
         .on_input(|s| Message::Settings(settings::Message::Scrollback(s)))
         .style(crate::ui::text_input_style);
-    let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.log_level), |lv| {
+    let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.logging.level), |lv| {
         Message::Settings(settings::Message::LogLevel(lv))
     })
     .style(theme::pick_list_style)
     .width(Length::Fill);
     let language_picker = pick_list(
         &LANGUAGE_OPTIONS[..],
-        Some(LanguageOption(app.config.language)),
+        Some(LanguageOption(app.config.appearance.language)),
         |lang| Message::Settings(settings::Message::Language(lang.0)),
     )
     .style(theme::pick_list_style)
@@ -253,7 +253,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             }),
         section_label(t!("settings.language")),
         language_picker,
-        checkbox(app.config.cwd_bootstrap)
+        checkbox(app.config.terminal.cwd_bootstrap)
             .label(t!("settings.cwd_bootstrap"))
             .on_toggle(|v| Message::Settings(settings::Message::CwdBootstrap(v)))
             .spacing(8),
@@ -262,7 +262,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .style(|theme: &Theme| iced::widget::text::Style {
                 color: Some(theme.extended_palette().background.weak.text),
             }),
-        checkbox(app.config.suppress_bootstrap_echo)
+        checkbox(app.config.terminal.suppress_bootstrap_echo)
             .label(t!("settings.suppress_bootstrap_echo"))
             .on_toggle(|v| Message::Settings(settings::Message::SuppressBootstrapEcho(v)))
             .spacing(8),
@@ -271,7 +271,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .style(|theme: &Theme| iced::widget::text::Style {
                 color: Some(theme.extended_palette().background.weak.text),
             }),
-        checkbox(app.config.trim_trailing_whitespace)
+        checkbox(app.config.terminal.trim_trailing_whitespace)
             .label(t!("settings.trim_trailing_whitespace"))
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))
             .spacing(8),
@@ -280,7 +280,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .style(|theme: &Theme| iced::widget::text::Style {
                 color: Some(theme.extended_palette().background.weak.text),
             }),
-        checkbox(app.config.remember_window_size)
+        checkbox(app.config.window.remember_size)
             .label(t!("settings.remember_window_size"))
             .on_toggle(|v| Message::Settings(settings::Message::RememberWindowSize(v)))
             .spacing(8),
@@ -301,7 +301,7 @@ fn updates_pane(app: &App) -> Element<'_, Message> {
     // 「前往下载」保持对话框中性样式（描边 + 次级文字）。
     let save_style = crate::session_panel::save_btn_style;
     let neutral_style = crate::sftp_dialogs::dialog_btn_style_neutral;
-    let auto_check = checkbox(app.config.auto_check_updates)
+    let auto_check = checkbox(app.config.updates.auto_check)
         .label(t!("settings.auto_check_updates"))
         .on_toggle(|v| Message::Settings(settings::Message::AutoCheckUpdates(v)))
         .spacing(8);
@@ -463,7 +463,7 @@ fn masterpw_pane(app: &App) -> Element<'_, Message> {
             )
             // 「本机记住主密码」开关：开启后把 DEK 存入系统钥匙串，下次启动自动解锁。
             .push(
-                checkbox(app.config.remember_master_key)
+                checkbox(app.config.security.remember_master_key)
                     .label(t!("masterpw.remember"))
                     .on_toggle(|v| Message::MasterPw(masterpw::Message::RememberToggled(v))),
             )
@@ -503,16 +503,16 @@ fn section_label(label: impl Into<String>) -> Element<'static, Message> {
 fn appearance_pane(app: &App) -> Element<'_, Message> {
     let theme_choice = pick_list(
         crate::theme::theme_names(),
-        Some(current_theme_label(&app.config.theme)),
+        Some(current_theme_label(&app.config.appearance.theme)),
         |label| Message::Settings(settings::Message::Theme(label.to_string())),
     )
     .style(theme::pick_list_style);
     // 下拉框显示「系统默认」而非空串；选中默认标签或键入该标签均映射为空字符串，
     // 从而回退到 iced 默认字体（见 `lib.rs` 启动期应用逻辑）。
-    let font_selection = if app.config.ui_font.trim().is_empty() {
+    let font_selection = if app.config.appearance.ui_font.trim().is_empty() {
         crate::font::default_font_label()
     } else {
-        app.config.ui_font.clone()
+        app.config.appearance.ui_font.clone()
     };
     let font_picker = combo_box(
         &app.settings.ui_font_combo,
@@ -526,16 +526,16 @@ fn appearance_pane(app: &App) -> Element<'_, Message> {
     // 终端配色主题下拉框：选项为预设名，选中即热切换到所有已打开的终端标签。
     let terminal_theme_picker = pick_list(
         crate::terminal_theme::TERMINAL_THEME_NAMES,
-        Some(app.config.terminal_theme.as_str()),
+        Some(app.config.terminal.theme.as_str()),
         |name: &str| Message::Settings(settings::Message::TerminalTheme(name.to_string())),
     )
     .style(theme::pick_list_style)
     .width(Length::Fill);
     // 终端字体下拉框：仅列出等宽字体（非等宽会破坏字符网格），选中即热切换所有终端。
-    let terminal_font_selection = if app.config.terminal_font.trim().is_empty() {
+    let terminal_font_selection = if app.config.terminal.font.trim().is_empty() {
         crate::font::default_font_label()
     } else {
-        app.config.terminal_font.clone()
+        app.config.terminal.font.clone()
     };
     let terminal_font_picker = combo_box(
         &app.settings.terminal_font_combo,
@@ -552,11 +552,11 @@ fn appearance_pane(app: &App) -> Element<'_, Message> {
     })
     .input_style(crate::ui::text_input_style)
     .width(Length::Fill);
-    let size_slider = slider(8.0..=32.0, app.config.font_size, |size| {
+    let size_slider = slider(8.0..=32.0, app.config.terminal.font_size, |size| {
         Message::Settings(settings::Message::FontSize(size))
     })
     .step(1.0_f32);
-    let size_value = text(format!("{:.0} px", app.config.font_size)).size(13);
+    let size_value = text(format!("{:.0} px", app.config.terminal.font_size)).size(13);
     column![
         pane_title(t!("settings.appearance")),
         section_label(t!("settings.theme")),
@@ -592,7 +592,7 @@ fn appearance_pane(app: &App) -> Element<'_, Message> {
 /// 族名由 `crate::font` 缓存并 `Box::leak` 为 `&'static str`（iced 的 `Family::Name` 只收
 /// `&'static str`），故每帧重建也只是查表、不会持续泄漏。
 fn font_preview(app: &App) -> Element<'_, Message> {
-    let font = crate::font::resolve_font(&app.config.ui_font);
+    let font = crate::font::resolve_font(&app.config.appearance.ui_font);
     container(
         column![
             text("The quick brown fox jumps over the lazy dog.")
@@ -610,7 +610,7 @@ fn font_preview(app: &App) -> Element<'_, Message> {
 /// 终端字体预览样本：使用等宽字体族展示含制表符与边框字形的示例，
 /// 直观验证字符网格是否对齐。族名同样由 `crate::font` 缓存为 `&'static str`。
 fn terminal_font_preview(app: &App) -> Element<'_, Message> {
-    let font = crate::font::resolve_terminal_font(&app.config.terminal_font);
+    let font = crate::font::resolve_terminal_font(&app.config.terminal.font);
     container(
         column![
             text("The quick brown fox jumps over the lazy dog.")

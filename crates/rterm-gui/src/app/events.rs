@@ -179,55 +179,55 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
     match e {
         // 以下各分支把模块上行的配置值写回 `AppConfig` 并落盘；模块绝不写父状态。
         settings::Event::ConnectTimeout(v) => {
-            app.config.connect_timeout = v;
+            app.config.connection.timeout = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::Scrollback(v) => {
             // 仅对新建终端标签生效（alacritty `scrolling_history` 为构造期参数，无法热替换）。
-            app.config.scrollback = v;
+            app.config.terminal.scrollback = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::FontSize(v) => {
-            app.config.font_size = v;
+            app.config.terminal.font_size = v;
             contexts::save_config(app);
             // 即时热替换到所有已打开的终端标签（沿用当前已选终端字体）。
-            terminal_bridge::apply_terminal_font(&mut app.tabs, &app.config.terminal_font, v);
+            terminal_bridge::apply_terminal_font(&mut app.tabs, &app.config.terminal.font, v);
             Task::none()
         }
         settings::Event::Theme(v) => {
-            app.config.theme = v;
+            app.config.appearance.theme = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::UiFont(v) => {
-            app.config.ui_font = v;
+            app.config.appearance.ui_font = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::TerminalFont(v) => {
             // 先按当前值热替换所有已打开的终端标签，再移动 `v` 写入配置。
-            terminal_bridge::apply_terminal_font(&mut app.tabs, &v, app.config.font_size);
-            app.config.terminal_font = v;
+            terminal_bridge::apply_terminal_font(&mut app.tabs, &v, app.config.terminal.font_size);
+            app.config.terminal.font = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::TerminalTheme(v) => {
             // 先按当前值解析调色板热替换所有已打开的终端标签，再移动 `v` 写入配置。
             terminal_bridge::apply_terminal_theme(&mut app.tabs, &v);
-            app.config.terminal_theme = v;
+            app.config.terminal.theme = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::LogLevel(v) => {
-            app.config.log_level = v;
+            app.config.logging.level = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::Language(v) => {
             // 即时切换全局 locale 并重绘（view 每帧重建）；下拉框重建已在模块内完成。
-            app.config.language = v;
+            app.config.appearance.language = v;
             rust_i18n::set_locale(v.as_locale());
             contexts::save_config(app);
             Task::none()
@@ -235,27 +235,27 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
         // 打开日志目录为纯副作用，已在模块内完成，此处仅需确认（无状态需写）。
         settings::Event::OpenLogFolder => Task::none(),
         settings::Event::AutoCheckUpdates(v) => {
-            app.config.auto_check_updates = v;
+            app.config.updates.auto_check = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::CwdBootstrap(v) => {
-            app.config.cwd_bootstrap = v;
+            app.config.terminal.cwd_bootstrap = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::SuppressBootstrapEcho(v) => {
-            app.config.suppress_bootstrap_echo = v;
+            app.config.terminal.suppress_bootstrap_echo = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::TrimTrailingWhitespace(v) => {
-            app.config.trim_trailing_whitespace = v;
+            app.config.terminal.trim_trailing_whitespace = v;
             contexts::save_config(app);
             Task::none()
         }
         settings::Event::RememberWindowSize(v) => {
-            app.config.remember_window_size = v;
+            app.config.window.remember_size = v;
             // 关闭「记住窗口大小」时顺带清除已保存尺寸（一次），避免下次启动仍恢复旧尺寸；
             // 重新开启后从当前会话的下一次关闭重新记录。
             if !v {
@@ -272,7 +272,7 @@ pub(crate) fn apply_updates_event(app: &mut App, e: updates::Event) -> Task<Mess
     match e {
         // 确立节流窗口：写回「上次检查时间戳」并落盘（模块绝不写配置）。
         updates::Event::SetLastCheck(ts) => {
-            app.config.last_update_check_unix = ts;
+            app.config.updates.last_check_unix = ts;
             contexts::save_config(app);
             Task::none()
         }
@@ -302,9 +302,9 @@ pub(crate) fn apply_window_event(app: &mut App, e: window::Event) -> Task<Messag
         window::Event::Close(id) => iced::window::close(id),
         // 写回非最大化尺寸后关闭窗口。
         window::Event::PersistAndClose(id, size) => {
-            if app.config.remember_window_size {
-                app.config.window_width = Some(size.width);
-                app.config.window_height = Some(size.height);
+            if app.config.window.remember_size {
+                app.config.window.width = Some(size.width);
+                app.config.window.height = Some(size.height);
                 contexts::save_config(app);
             }
             iced::window::close(id)
@@ -324,7 +324,7 @@ pub(crate) fn apply_masterpw_event(app: &mut App, e: masterpw::Event) -> Task<Me
             Task::none()
         }
         masterpw::Event::SetRemember(v) => {
-            app.config.remember_master_key = v;
+            app.config.security.remember_master_key = v;
             contexts::save_config(app);
             // 同步钥匙串 DEK：开启且保险库就绪 → 存入（下次自动解锁）；关闭 → 删除，
             // 回到每次启动输入主密码（钥匙串不可用时的错误被静默忽略）。
@@ -346,7 +346,7 @@ pub(crate) fn apply_masterpw_event(app: &mut App, e: masterpw::Event) -> Task<Me
 /// 同步钥匙串中的 DEK：开启且保险库就绪 → 存入（下次自动解锁）；关闭 → 删除，
 /// 回到每次启动输入主密码（钥匙串不可用时的错误被静默忽略）。
 pub(crate) fn sync_keyring(app: &mut App) {
-    if app.config.remember_master_key {
+    if app.config.security.remember_master_key {
         if let Some(vault) = app.vault.as_ref() {
             vault_keyring::store_dek_quietly(&vault.dek_bytes());
         }

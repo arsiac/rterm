@@ -128,7 +128,7 @@ pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Mess
     // 连接超时取自应用配置；0 表示不限制。
     // 用 stream 而非 perform：握手可能在主机密钥弹窗处中途暂停，需要向 GUI
     // 发送中途消息后再等用户决定，perform 只有唯一最终输出无法胜任。
-    let timeout = app.config.connect_timeout;
+    let timeout = app.config.connection.timeout;
     Task::stream(iced::stream::channel(
         8,
         move |mut output: futures::channel::mpsc::Sender<Message>| async move {

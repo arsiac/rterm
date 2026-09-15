@@ -40,9 +40,11 @@ impl State {
         Self {
             show_settings: false,
             category: SettingsCategory::General,
-            ui_font_combo: combo_box::State::new(crate::font::ui_font_options(&config.ui_font)),
+            ui_font_combo: combo_box::State::new(crate::font::ui_font_options(
+                &config.appearance.ui_font,
+            )),
             terminal_font_combo: combo_box::State::new(crate::font::terminal_font_options(
-                &config.terminal_font,
+                &config.terminal.font,
             )),
         }
     }
@@ -167,10 +169,11 @@ impl State {
                 // 重建两个字体下拉框：选项含翻译后的「系统默认」标签，须按新 locale 重建，
                 // 否则列表仍为旧语言标签，用户选中后 `map_default_font` 无法识别。
                 // 选项列表依赖当前已选字体（来自只读 ctx），故在模块内完成重建。
-                self.ui_font_combo =
-                    combo_box::State::new(crate::font::ui_font_options(&ctx.config.ui_font));
+                self.ui_font_combo = combo_box::State::new(crate::font::ui_font_options(
+                    &ctx.config.appearance.ui_font,
+                ));
                 self.terminal_font_combo = combo_box::State::new(
-                    crate::font::terminal_font_options(&ctx.config.terminal_font),
+                    crate::font::terminal_font_options(&ctx.config.terminal.font),
                 );
                 Task::done(Event::Language(lang))
             }

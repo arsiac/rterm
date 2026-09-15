@@ -49,7 +49,7 @@ pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
                 .and_then(|s| s.load().ok())
                 .unwrap_or_default();
             let try_keyring = if h.master_password_set {
-                config.remember_master_key
+                config.security.remember_master_key
             } else {
                 true
             };
@@ -90,8 +90,8 @@ pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
         .unwrap_or(crate::DEFAULT_WINDOW_WIDTH);
     let panes = panes::State::new(initial_window_width);
 
-    // 设置弹窗模块状态须在 `config` move 进结构体之前构建，因其读取 `config.ui_font` /
-    // `config.terminal_font` 构建下拉框选项。
+    // 设置弹窗模块状态须在 `config` move 进结构体之前构建，因其读取 `config.appearance.ui_font` /
+    // `config.terminal.font` 构建下拉框选项。
     let settings = settings::State::new(&config);
 
     let mut app = App {

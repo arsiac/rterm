@@ -55,12 +55,12 @@ macro_rules! t {
 /// 应用入口：接收已加载的应用配置，初始化语言、字体与窗口图标，启动 iced 应用。
 pub fn run(config: AppConfig) -> Result {
     // 按持久化的语言偏好（默认跟随系统）设定全局 locale，供 `t!` 取用。
-    rust_i18n::set_locale(config.language.as_locale());
+    rust_i18n::set_locale(config.appearance.language.as_locale());
 
-    let font = if config.ui_font.is_empty() {
+    let font = if config.appearance.ui_font.is_empty() {
         Font::DEFAULT
     } else {
-        crate::font::resolve_font(&config.ui_font)
+        crate::font::resolve_font(&config.appearance.ui_font)
     };
 
     // 恢复窗口尺寸：仅当「记住窗口大小」开启且存在有效记录时使用，否则回退默认尺寸。
@@ -111,7 +111,7 @@ fn platform_specific_settings() -> iced::window::settings::PlatformSpecific {
 /// 依据应用配置中的主题显示名解析出 iced 内置主题；切换会触发整窗重绘。
 /// 兼容旧版配置值 `"dark"` / `"light"`，其余按显示名在可用主题表中查找。
 fn app_theme(state: &app::App) -> iced::Theme {
-    crate::theme::resolve_theme(&state.config.theme)
+    crate::theme::resolve_theme(&state.config.appearance.theme)
 }
 
 /// 应用窗口标题回调，固定返回 `rterm`。
