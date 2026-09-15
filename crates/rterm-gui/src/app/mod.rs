@@ -99,9 +99,17 @@ pub struct App {
 }
 
 impl App {
-    /// 应用启动：委托 [`crate::app::boot`] 完成存储 / 配置 / 保险库的加载与初始装配。
+    /// 应用启动：自行加载应用配置，委托 [`crate::app::boot`] 完成装配。
+    ///
+    /// 主要供测试与默认入口使用；正式启动路径应走 [`App::with_config`]，
+    /// 以复用入口处已加载的配置、避免重复读盘。
     pub fn new() -> (App, Task<Message>) {
-        boot::new()
+        boot::new(AppConfig::new().unwrap_or_default())
+    }
+
+    /// 应用启动：接收调用方已加载的应用配置，委托 [`crate::app::boot`] 完成装配。
+    pub fn with_config(config: AppConfig) -> (App, Task<Message>) {
+        boot::new(config)
     }
 
     /// iced `update`：委托 [`crate::app::routing`] 完成消息路由与事件落地。

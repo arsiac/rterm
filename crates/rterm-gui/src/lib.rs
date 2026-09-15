@@ -52,48 +52,43 @@ macro_rules! t {
     }};
 }
 
-/// 应用入口：初始化配置、字体与窗口图标，启动 iced 应用。
-pub fn run() -> Result {
-    let config = AppConfig::new().ok();
+/// 应用入口：接收已加载的应用配置，初始化语言、字体与窗口图标，启动 iced 应用。
+pub fn run(config: AppConfig) -> Result {
     // 按持久化的语言偏好（默认跟随系统）设定全局 locale，供 `t!` 取用。
-    if let Some(c) = &config {
-        rust_i18n::set_locale(c.language.as_locale());
-    }
+    rust_i18n::set_locale(config.language.as_locale());
 
-    let font = config
-        .as_ref()
-        .and_then(|c| {
-            if c.ui_font.is_empty() {
-                None
-            } else {
-                Some(crate::font::resolve_font(&c.ui_font))
-            }
-        })
-        .unwrap_or(Font::DEFAULT);
+    let font = if config.ui_font.is_empty() {
+        Font::DEFAULT
+    } else {
+        crate::font::resolve_font(&config.ui_font)
+    };
 
     // 恢复窗口尺寸：仅当「记住窗口大小」开启且存在有效记录时使用，否则回退默认尺寸。
     let (window_width, window_height) = config
-        .as_ref()
-        .and_then(|c| c.remembered_size())
+        .remembered_size()
         .unwrap_or((DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
 
     let window_icon = iced::window::icon::from_file_data(crate::icons::WINDOW_ICON, None).ok();
 
-    iced::application(app::App::new, app::App::update, app::App::view)
-        .subscription(app::App::subscription)
-        .theme(app_theme)
-        .default_font(font)
-        .title(app_title)
-        .window(iced::window::Settings {
-            size: iced::Size::new(window_width, window_height),
-            icon: window_icon,
-            platform_specific: platform_specific_settings(),
-            // 关闭请求改由 `app::window` 模块接管：先查询是否最大化并落盘非最大化尺寸，再关闭窗口。
-            // 必须写在 Settings 字面量里——`window(...)` 会整体覆盖之前的设置。
-            exit_on_close_request: false,
-            ..Default::default()
-        })
-        .run()
+    iced::application(
+        move || app::App::with_config(config.clone()),
+        app::App::update,
+        app::App::view,
+    )
+    .subscription(app::App::subscription)
+    .theme(app_theme)
+    .default_font(font)
+    .title(app_title)
+    .window(iced::window::Settings {
+        size: iced::Size::new(window_width, window_height),
+        icon: window_icon,
+        platform_specific: platform_specific_settings(),
+        // 关闭请求改由 `app::window` 模块接管：先查询是否最大化并落盘非最大化尺寸，再关闭窗口。
+        // 必须写在 Settings 字面量里——`window(...)` 会整体覆盖之前的设置。
+        exit_on_close_request: false,
+        ..Default::default()
+    })
+    .run()
 }
 
 /// 平台相关窗口设置：Linux 下设定 `application_id`，使窗口管理器按应用归类并关联 `.desktop`。

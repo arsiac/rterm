@@ -16,18 +16,15 @@ use rterm_config::{AppConfig, SessionStore};
 use rterm_crypto::Vault;
 use std::sync::Arc;
 
-/// 应用启动：加载会话存储与配置，返回初始状态与任务。
-pub(crate) fn new() -> (App, Task<Message>) {
+/// 应用启动：加载会话存储与保险库，使用调用方传入的应用配置，返回初始状态与任务。
+pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
     let store = SessionStore::new()
         .map_err(|e| error!("failed to initialize session store: {e}"))
         .ok();
     // 读取加密文件头（含模式标志），判断首启动 / 解锁 / 自动解锁。
     let header = store.as_ref().and_then(|s| s.load_crypto_header().ok());
 
-    // 加载应用级偏好配置；失败则回退到默认值（path 为空，后续保存会被跳过并记录日志）。
-    let config = AppConfig::new()
-        .map_err(|e| error!("failed to initialize app config: {e}"))
-        .unwrap_or_default();
+    // 应用级偏好配置由调用方加载并传入，此处不再重复读盘。
 
     // 解析首启动 / 自动解锁，得到初始保险库与会话列表：
     // - 无文件头（首次运行）：生成随机密钥（模式 0）存入钥匙串并落盘，零弹窗、零配置。
