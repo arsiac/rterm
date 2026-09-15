@@ -35,6 +35,9 @@ pub type CwdTracker = Option<Arc<Mutex<Option<String>>>>;
 ///
 /// 兼容 bash 与 zsh：分别挂到 `PROMPT_COMMAND` / `precmd_functions`，且用
 /// `BASH_VERSION` / `ZSH_VERSION` 守卫，非对应 shell 时静默跳过、绝不报错。
+/// 赋值前用 `declare -p` / `typeset -p` 探测目标变量是否被声明为只读（部分发行版
+/// 的 `/etc/profile.d` 会 `readonly PROMPT_COMMAND`），只读时跳过注入以避免打印
+/// 「只读变量」错误；正则仅匹配属性标志段，故 `-r` / `-rx` / `-ar` 均可识别。
 /// 末尾 `:` 为无害空命令，确保整段以换行执行；`$PWD` 本身以 `/` 开头，故
 /// 输出形如 `file:///home/user`，桥接侧按 `file://` 后内容解析即可。
 const CWD_BOOTSTRAP: &[u8] = b"\
@@ -42,10 +45,14 @@ const CWD_BOOTSTRAP: &[u8] = b"\
         printf '\\033]7;file://%s\\033\\\\' \"$PWD\"; \
     }; \
     case \"$BASH_VERSION\" in \
-        ?*) PROMPT_COMMAND=\"__rterm_cwd${PROMPT_COMMAND:+;${PROMPT_COMMAND}}\" ;; \
+        ?*) if [[ ! \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" =~ ^declare\\ -[a-zA-Z]*r ]]; then \
+                PROMPT_COMMAND=\"__rterm_cwd${PROMPT_COMMAND:+;${PROMPT_COMMAND}}\"; \
+            fi ;; \
     esac; \
     case \"$ZSH_VERSION\" in \
-        ?*) precmd_functions+=(__rterm_cwd) ;; \
+        ?*) if [[ ! \"$(typeset -p precmd_functions 2>/dev/null)\" =~ ^typeset\\ -[a-zA-Z]*r ]]; then \
+                precmd_functions+=(__rterm_cwd); \
+            fi ;; \
     esac; \
     :\n";
 
