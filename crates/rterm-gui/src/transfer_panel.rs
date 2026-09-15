@@ -228,16 +228,21 @@ fn thin_bar(fill: f32, color: Color) -> Element<'static, Message> {
             background: Some(color.into()),
             ..Default::default()
         });
+    // 空占位：与填充条共同按 `FillPortion` 比例分配轨道宽度。
+    let placeholder = |portion: u16| {
+        container("")
+            .width(Length::FillPortion(portion))
+            .height(Length::Fixed(5.0))
+    };
     let track = container(
-        if pct >= 100 {
+        if pct == 0 {
+            // 排队中：仅渲染空轨道。不可用 `FillPortion(0)` 表示 0 宽——iced 会把它当作
+            // 非流式元素并按可用全宽解析，导致空条被误绘为满条。
+            row![placeholder(100)]
+        } else if pct >= 100 {
             row![bar]
         } else {
-            row![
-                bar,
-                container("")
-                    .width(Length::FillPortion(100 - pct))
-                    .height(Length::Fixed(5.0))
-            ]
+            row![bar, placeholder(100 - pct)]
         }
         .spacing(0),
     )
