@@ -15,7 +15,7 @@ use crate::theme;
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{Space, column, container, row, scrollable, text};
+use iced::widget::{column, container, row, scrollable, text};
 use iced::{Color, Element, Length, Padding};
 
 /// 传输项方向（上传 / 下载）图标尺寸（像素）。
@@ -98,7 +98,6 @@ fn transfer_item(t: &Transfer) -> Element<'_, Message> {
     let mut header_row: Vec<Element<'_, Message>> = Vec::new();
     header_row.push(dir_icon.svg(ITEM_ICON_SIZE).into());
     header_row.push(name_clip.into());
-    header_row.push(Space::new().width(Length::Fill).into());
     match t.status {
         TransferStatus::Done => {
             header_row.push(
