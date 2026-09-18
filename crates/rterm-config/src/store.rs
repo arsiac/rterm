@@ -1,9 +1,9 @@
 //! 会话配置的加载与保存。
 //!
-//! 使用 [`dirs`] 按 XDG 规范定位配置目录，并以 TOML 格式读写 `sessions.toml`。
+//! 配置目录经 [`crate::paths`] 解析（按 XDG 规范定位，开发沙箱下为 `.dev/config`），
+//! 并以 TOML 格式读写 `sessions.toml`。
 
 use crate::{ConfigError, SessionConfig};
-use dirs::config_dir;
 use log::debug;
 use rterm_crypto::CryptoHeader;
 use serde::{Deserialize, Serialize};
@@ -43,12 +43,13 @@ struct SessionsFile {
 impl SessionStore {
     /// 创建存储实例，定位并准备好配置目录。
     ///
+    /// 目录由 [`crate::paths::config_dir`] 解析（开发沙箱下为 `.dev/config`）。
+    ///
     /// # 错误
     /// 当无法定位配置目录或创建目录失败时返回 [`ConfigError::ConfigDir`] / [`ConfigError::Store`]。
     pub fn new() -> Result<Self, ConfigError> {
-        let base =
-            config_dir().ok_or_else(|| ConfigError::ConfigDir("无法定位 XDG 配置目录".into()))?;
-        let dir = base.join("rterm");
+        let dir = crate::paths::config_dir()
+            .ok_or_else(|| ConfigError::ConfigDir("无法定位 XDG 配置目录".into()))?;
         fs::create_dir_all(&dir)
             .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
         let path = dir.join("sessions.toml");

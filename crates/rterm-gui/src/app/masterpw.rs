@@ -613,12 +613,12 @@ mod tests {
     use futures::StreamExt;
     use std::sync::Mutex;
 
-    /// 串行化涉及「真实文件系统（XDG 配置目录）」的测试。
+    /// 串行化涉及「真实文件系统（状态根）」的测试。
     ///
-    /// 这些测试都会改写进程级环境变量 `XDG_CONFIG_HOME` 并读写 `sessions.toml`，
-    /// 若并行执行会相互覆盖会话文件，导致「重启」后读到的加密头与设置时的不一致。
-    /// 用一把模块级互斥锁保证同一时刻只有一个此类测试在跑。
-    static XDG_LOCK: Mutex<()> = Mutex::new(());
+    /// 这些测试都会改写进程级全局状态根（`rterm_config::paths::set_test_root`）并读写
+    /// `sessions.toml`，若并行执行会相互覆盖会话文件，导致「重启」后读到的加密头与设置时
+    /// 的不一致。用一把模块级互斥锁保证同一时刻只有一个此类测试在跑。
+    static STATE_LOCK: Mutex<()> = Mutex::new(());
 
     /// 在临时 tokio 运行时里把 `Task<Event>` 跑完并收集产出的事件。
     ///
@@ -687,19 +687,20 @@ mod tests {
         let _ = step(app, m);
     }
 
-    /// 在临时 XDG 配置目录下隔离测试，避免触碰真实 `~/.config/rterm`。
+    /// 在临时状态根下隔离测试，避免触碰真实 `~/.config/rterm` 与 `~/.cache/rterm`。
     ///
+    /// 状态根经 `set_test_root` 重定向到临时目录，覆盖 `debug` 构建默认的工作区 `.dev`；
     /// 同时把钥匙串读写切到隔离账户（`RTERM_TEST_KEYRING_ACCOUNT`），避免测试删写的
-    /// DEK 污染开发者本机真实钥匙串条目（`rterm`/`vault-dek`）——否则跑完测试后
-    /// 真实环境的自动解锁会失效、甚至被卡在「解锁」弹窗。
-    fn use_temp_config_home() {
+    /// DEK 污染开发者本机真实钥匙串条目——否则跑完测试后真实环境的自动解锁会失效、
+    /// 甚至被卡在「解锁」弹窗。
+    fn use_temp_state_root() {
         let tmp = std::env::temp_dir().join(format!("rterm_mpw_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+        rterm_config::paths::set_test_root(Some(tmp.clone()));
         unsafe { std::env::set_var("RTERM_TEST_KEYRING_ACCOUNT", "rterm-test-vault-dek") };
         // 清空可能已存在的会话文件，确保「首次运行」设置模式。
-        let _ = std::fs::remove_file(tmp.join("rterm").join("sessions.toml"));
+        let _ = std::fs::remove_file(tmp.join("config").join("sessions.toml"));
     }
 
     /// 首次运行（无加密头）应进入**模式 0**：随机密钥保险库就绪、`setup=false`、
@@ -708,8 +709,8 @@ mod tests {
     fn mode0_startup_creates_random_key_and_self_unlocks() {
         use rterm_config::SessionStore;
 
-        let _guard = XDG_LOCK.lock().unwrap();
-        use_temp_config_home();
+        let _guard = STATE_LOCK.lock().unwrap();
+        use_temp_state_root();
         if crate::vault_keyring::available() {
             crate::vault_keyring::delete_dek_quietly();
         }
@@ -749,8 +750,8 @@ mod tests {
     fn setup_mode0_to_mode1_persists_and_round_trips() {
         use rterm_config::SessionStore;
 
-        let _guard = XDG_LOCK.lock().unwrap();
-        use_temp_config_home();
+        let _guard = STATE_LOCK.lock().unwrap();
+        use_temp_state_root();
         if crate::vault_keyring::available() {
             crate::vault_keyring::delete_dek_quietly();
         }
@@ -816,8 +817,9 @@ mod tests {
     /// 存储不可用（store 为 `None`）时，设置提交必须报错并保留设置弹窗，不得静默“成功”。
     #[test]
     fn setup_without_store_reports_error_instead_of_silent_skip() {
-        // 隔离钥匙串，避免删写污染开发者真实条目。
-        unsafe { std::env::set_var("RTERM_TEST_KEYRING_ACCOUNT", "rterm-test-vault-dek") };
+        // 隔离状态根与钥匙串，避免读写开发者真实配置目录与真实钥匙串条目。
+        let _guard = STATE_LOCK.lock().unwrap();
+        use_temp_state_root();
         // 构造一个 store 为 None 的 App 状态，验证提交不会静默“成功”
         // （此前会在内存建立 vault、关闭弹窗，却什么都不落盘）。
         let mut app = crate::app::App {
@@ -852,8 +854,8 @@ mod tests {
     fn change_master_password_rekeys_all_credentials() {
         use rterm_config::{AuthMethod, SessionConfig};
 
-        let _guard = XDG_LOCK.lock().unwrap();
-        use_temp_config_home();
+        let _guard = STATE_LOCK.lock().unwrap();
+        use_temp_state_root();
         if crate::vault_keyring::available() {
             crate::vault_keyring::delete_dek_quietly();
         }
@@ -925,8 +927,8 @@ mod tests {
     /// 更改主密码时若当前口令错误，必须拒绝且不应改动任何凭据 / 加密头。
     #[test]
     fn change_master_password_rejects_wrong_current() {
-        let _guard = XDG_LOCK.lock().unwrap();
-        use_temp_config_home();
+        let _guard = STATE_LOCK.lock().unwrap();
+        use_temp_state_root();
         if crate::vault_keyring::available() {
             crate::vault_keyring::delete_dek_quietly();
         }
@@ -976,8 +978,8 @@ mod tests {
         }
         crate::vault_keyring::delete_dek_quietly();
 
-        let _guard = XDG_LOCK.lock().unwrap();
-        use_temp_config_home();
+        let _guard = STATE_LOCK.lock().unwrap();
+        use_temp_state_root();
 
         // 首次运行模式 0：应自动解锁（vault 就绪），无需弹窗。
         let (app, _task) = crate::app::App::new();

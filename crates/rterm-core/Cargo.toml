@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
-dirs.workspace = true
 log.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true

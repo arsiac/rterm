@@ -1,7 +1,6 @@
 //! 应用级偏好配置（GUI 设置）的加载与保存。
 
 use crate::ConfigError;
-use dirs::config_dir;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -128,13 +127,10 @@ impl fmt::Display for Language {
 
 /// 日志文件所在目录：平台缓存目录下的 `rterm/logs` 子目录（Linux 为 `~/.cache/rterm/logs`）。
 ///
-/// 缓存目录不可定位时回退当前目录，与日志初始化（`main.rs`）保持一致，避免打开失败；
-/// 该计算逻辑集中于此，供 `main.rs` 与 GUI 共用，避免散落重复。
+/// 实际解析委托 [`crate::paths::log_dir`]，使开发沙箱下整体改落 `.dev/cache/logs`。
+/// 保留此函数作为对外入口，供 `main.rs` 与 GUI 共用，避免调用方感知路径来源变化。
 pub fn log_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rterm")
-        .join("logs")
+    crate::paths::log_dir()
 }
 
 /// `[connection]` 段：连接相关设置。
@@ -608,6 +604,7 @@ fn backup_path(path: &Path) -> PathBuf {
 impl AppConfig {
     /// 创建配置实例：定位并准备好配置目录，加载已有文件或回退到默认配置。
     ///
+    /// 目录由 [`crate::paths::config_dir`] 解析（开发沙箱下为 `.dev/config`）。
     /// 首次启动（文件缺失）按系统外观写入默认主题并落盘新格式；检测到旧扁平格式时
     /// 转换、备份旧文件并落盘新格式，实现透明迁移。
     ///
@@ -615,9 +612,8 @@ impl AppConfig {
     /// 无法定位配置目录时返回 [`ConfigError::ConfigDir`]；创建目录失败、读取或解析
     /// 配置文件失败时返回 [`ConfigError::Store`]。
     pub fn new() -> Result<Self, ConfigError> {
-        let base =
-            config_dir().ok_or_else(|| ConfigError::ConfigDir("无法定位系统配置目录".into()))?;
-        let dir = base.join("rterm");
+        let dir = crate::paths::config_dir()
+            .ok_or_else(|| ConfigError::ConfigDir("无法定位系统配置目录".into()))?;
         fs::create_dir_all(&dir)
             .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
         let path = dir.join("config.toml");
@@ -715,7 +711,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// 串行化会改写进程环境变量（`XDG_CONFIG_HOME`）的测试。
+    /// 串行化会改写全局状态根（`paths::set_test_root`）的测试。
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -860,19 +856,16 @@ theme = "Light"
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("rterm_cfg_migrate_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("rterm")).expect("应能创建临时配置目录");
-        let cfg_path = dir.join("rterm").join("config.toml");
+        fs::create_dir_all(dir.join("config")).expect("应能创建临时配置目录");
+        let cfg_path = dir.join("config").join("config.toml");
         let legacy = "connect_timeout = 7\nfont_size = 22.0\nterminal_font = \"Hack\"\n";
         fs::write(&cfg_path, legacy).expect("应能写入旧配置");
 
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: 由 `ENV_LOCK` 串行化，且本测试二进制内无其它测试读取该环境变量。
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        // 状态根重定向到临时目录，覆盖 debug 构建默认的工作区 `.dev`，
+        // 避免测试读写开发者真实配置。
+        crate::paths::set_test_root(Some(dir.clone()));
         let config = AppConfig::new().expect("加载并迁移旧配置应成功");
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
+        crate::paths::set_test_root(None);
 
         assert_eq!(config.connection.timeout, 7);
         assert_eq!(config.terminal.font_size, 22.0);
@@ -889,7 +882,7 @@ theme = "Light"
             "不应再保留旧扁平键: {new_content}"
         );
         assert!(
-            dir.join("rterm").join("config.toml.bak").exists(),
+            dir.join("config").join("config.toml.bak").exists(),
             "迁移应生成 config.toml.bak 备份"
         );
 

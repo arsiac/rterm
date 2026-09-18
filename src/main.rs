@@ -37,6 +37,16 @@ fn main() {
         .start()
         .expect("failed to start logger");
 
+    // 开发沙箱提示：debug 构建下配置、会话、known_hosts 与日志都改落在工作区 `.dev/` 内，
+    // 不会触碰真实配置。打在日志系统就绪之后，确保这行提示可见。
+    if rterm_config::paths::is_sandboxed() {
+        log::warn!(
+            "dev sandbox active; using {} instead of system directories",
+            rterm_config::paths::config_dir()
+                .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string())
+        );
+    }
+
     if let Err(e) = rterm_gui::run(config) {
         log::error!("GUI failed: {e}");
         std::process::exit(1);

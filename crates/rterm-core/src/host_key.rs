@@ -2,7 +2,8 @@
 //!
 //! 是否信任某主机的决策由用户在 GUI 弹窗中做出，本模块只提供只读校验与
 //! 用户确认后的落盘能力：指纹以纯文本 `host:port SHA256:xxxx` 逐行存于
-//! `<缓存目录>/rterm/known_hosts`，不依赖额外序列化库。
+//! `<缓存目录>/rterm/known_hosts`（开发沙箱下为 `<工作区>/.dev/cache/known_hosts`），
+//! 不依赖额外序列化库。
 
 use crate::{CoreError, CoreErrorKind};
 use log::info;
@@ -35,11 +36,13 @@ pub fn key_type(key: &PublicKeyOrCertificate) -> String {
     key.public_key().algorithm().as_str().to_string()
 }
 
-/// 解析 known_hosts 文件的完整路径：取系统缓存目录下的 `rterm/known_hosts`，必要时创建目录。
+/// 解析 known_hosts 文件的完整路径：取缓存目录下的 `known_hosts`，必要时创建目录。
+///
+/// 目录由 [`rterm_config::paths::cache_dir`] 统一解析（开发沙箱下为 `.dev/cache`），
+/// 使开发期不会写入真实的 known_hosts。
 fn path() -> Result<PathBuf, CoreError> {
-    let base =
-        dirs::cache_dir().ok_or_else(|| CoreError::ssh_msg(CoreErrorKind::CacheDirUnknown))?;
-    let dir = base.join("rterm");
+    let dir = rterm_config::paths::cache_dir()
+        .ok_or_else(|| CoreError::ssh_msg(CoreErrorKind::CacheDirUnknown))?;
     fs::create_dir_all(&dir).map_err(|e| CoreError::ssh(CoreErrorKind::CreateCacheDir, e))?;
     Ok(dir.join("known_hosts"))
 }

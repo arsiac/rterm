@@ -4,8 +4,9 @@
 //! 但持久化（读盘 / 写盘）不在此处。
 //!
 //! 依赖面刻意收窄：异步运行时（tokio）、SSH 栈（russh / russh-sftp）、日志、
-//! `zeroize`（擦除明文凭据）、`dirs`（known_hosts 定位）、`chrono`（SFTP 时间戳格式化），
-//! 以及配置层 [`rterm_config`]（只取会话模型，不含持久化），便于独立单元测试。
+//! `zeroize`（擦除明文凭据）、`chrono`（SFTP 时间戳格式化），
+//! 以及配置层 [`rterm_config`]（会话模型与 [`paths`](rterm_config::paths) 目录解析，
+//! 不含持久化本身），便于独立单元测试。
 //! Windows 上额外用 `windows-sys` 建命名管道做终端桥接。
 //! 后续的 GUI 层（`rterm-gui`）通过本 crate 提供的类型与连接管理接口与底层 SSH 交互。
 //! 配置与持久化（应用偏好、会话 TOML）由 [`rterm_config`] 负责。

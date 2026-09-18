@@ -5,13 +5,31 @@
 //! 钥匙串由系统登录口令保护（macOS Keychain / GNOME Keyring / Windows 凭据管理器）。
 //! 无可用后端（如无图形界面的服务器）时调用方忽略错误：模式 0 会在启动阶段就地重生随机密钥
 //! 让应用可用（既有凭据可能失效），而非弹主密码框——模式 0 本就无主密码可弹。
+//!
+//! 开发沙箱（`debug` 构建）下服务名改用 `rterm-dev`，与真实条目 `rterm` 并存：
+//! 沙箱内重新初始化保险库只影响沙箱自己的条目，真实会话的凭据仍可正常解密。
 
 use log::error;
 
 /// 钥匙串服务名。
 const SERVICE: &str = "rterm";
+/// 开发沙箱下的钥匙串服务名：与真实条目并存且互不影响。
+const SERVICE_DEV: &str = "rterm-dev";
 /// 钥匙串账户名（单保险库，固定账户，避免多保险库留下孤儿条目）。
 const ACCOUNT: &str = "vault-dek";
+
+/// 实际使用的服务名：开发沙箱下改用 [`SERVICE_DEV`]。
+///
+/// 沙箱的配置与会话都在 `.dev/` 下，若钥匙串仍写真实条目，一旦沙箱重新生成保险库
+/// 就会覆盖真实 DEK，使真实 `sessions.toml` 中的凭据永久无法解密。这类损坏不可逆，
+/// 因此服务名必须随沙箱一起切换。
+fn service() -> &'static str {
+    if rterm_config::paths::is_sandboxed() {
+        SERVICE_DEV
+    } else {
+        SERVICE
+    }
+}
 
 /// 实际使用的账户名。
 ///
@@ -31,7 +49,7 @@ const DEK_LEN: usize = 32;
 ///
 /// 失败（如后端不可用）仅记录日志并返回错误，调用方应忽略并回退到主密码解锁。
 pub fn store_dek(dek: &[u8; DEK_LEN]) -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(SERVICE, account())?;
+    let entry = keyring::Entry::new(service(), account())?;
     entry.set_secret(dek)?;
     Ok(())
 }
@@ -43,7 +61,7 @@ pub fn store_dek(dek: &[u8; DEK_LEN]) -> Result<(), keyring::Error> {
 /// - 条目长度不合法 → 视为无有效缓存，返回 `Ok(None)`；
 /// - 后端不可用（`NoDefaultStore`）等 → 向上传 `Err`，由调用方决定重生随机密钥或提示。
 pub fn load_dek() -> Result<Option<[u8; DEK_LEN]>, keyring::Error> {
-    let entry = keyring::Entry::new(SERVICE, account())?;
+    let entry = keyring::Entry::new(service(), account())?;
     match entry.get_secret() {
         Ok(bytes) => {
             if bytes.len() == DEK_LEN {
@@ -64,7 +82,7 @@ pub fn load_dek() -> Result<Option<[u8; DEK_LEN]>, keyring::Error> {
 ///
 /// 失败仅记录日志；条目本就不存在（`NoEntry`）视为成功。
 pub fn delete_dek() -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(SERVICE, account())?;
+    let entry = keyring::Entry::new(service(), account())?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),

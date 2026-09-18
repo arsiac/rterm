@@ -11,5 +11,8 @@ cab1.cab
 # WiX
 .wix/
 
+# Dev sandbox (debug builds keep state here instead of the user's real config)
+/.dev/
+
 # Other
 TODO.md
