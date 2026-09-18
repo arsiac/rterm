@@ -65,6 +65,8 @@ session:
   delete: 删除
   open_files: 打开文件管理
   ungrouped: 未分组
+  empty_title: 暂无会话
+  empty_hint: 点击右上角 + 新建会话
   editor_new: 新建会话
   editor_edit: 编辑会话
   name: 名称(选填)

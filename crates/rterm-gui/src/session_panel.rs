@@ -145,13 +145,39 @@ fn list_view(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .align_x(iced::alignment::Horizontal::Right);
 
-    column![
-        toolbar,
-        column![scrollable(column(items).spacing(4)).height(Length::Fill),],
+    // 列表主体：有会话时铺可滚动列表；完全无会话时显示居中空状态提示。
+    let body: Element<'_, Message> = if app.session.sessions.is_empty() {
+        empty_state()
+    } else {
+        scrollable(column(items).spacing(4))
+            .height(Length::Fill)
+            .into()
+    };
+
+    column![toolbar, body].spacing(8).padding(10).into()
+}
+
+/// 会话列表为空时的占位提示
+fn empty_state<'a>() -> Element<'a, Message> {
+    let content = column![
+        text(t!("session.empty_title"))
+            .size(15)
+            .wrapping(Wrapping::Word),
+        text(t!("session.empty_hint"))
+            .size(13)
+            .wrapping(Wrapping::Word)
+            .style(|theme: &Theme| text::Style {
+                color: Some(crate::theme::custom_palette(theme).text_secondary),
+            }),
     ]
-    .spacing(8)
-    .padding(10)
-    .into()
+    .spacing(4)
+    .align_x(iced::alignment::Horizontal::Center);
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
 }
 
 /// 单条会话行：名称（主行）与 `user@host` 地址（次行），悬浮高亮，双击连接，右键菜单。

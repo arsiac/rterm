@@ -65,6 +65,8 @@ session:
   delete: Delete
   open_files: Open file manager
   ungrouped: Ungrouped
+  empty_title: No sessions yet
+  empty_hint: Click + in the top-right to create one.
   editor_new: New session
   editor_edit: Edit session
   name: Name (optional)
