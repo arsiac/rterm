@@ -81,10 +81,12 @@ fn transfer_item(t: &Transfer) -> Element<'_, Message> {
     let name_clip = container(name).width(Length::Fill).clip(true);
     let name_clip = crate::ui::hover_tooltip(name_clip, t.name.clone(), Position::FollowCursor);
 
-    let bar_color = match t.status {
-        TransferStatus::Done => crate::ui::SUCCESS,
-        TransferStatus::Error => crate::ui::ERROR,
-        _ => theme::ACCENT,
+    // 强调色分支走统一取色点 `accent_color`（随用户主题色 / 当前主题生效）；
+    // SUCCESS / ERROR 为固定语义色，不随主题漂移。
+    let bar_color: Box<dyn Fn(&iced::Theme) -> Color + 'static> = match t.status {
+        TransferStatus::Done => Box::new(|_t: &iced::Theme| crate::ui::SUCCESS),
+        TransferStatus::Error => Box::new(|_t: &iced::Theme| crate::ui::ERROR),
+        _ => Box::new(crate::theme::accent_color),
     };
     // 未知总量且进行中：以满条（低对比）表示“进行中但无法量化”，避免空条误导为 stalled。
     let fill = if t.total > 0 {
@@ -226,13 +228,16 @@ fn detail_text(t: &Transfer) -> Element<'_, Message> {
 /// iced 0.14 的 `ProgressBar` 有 `girth()` 可调粗细，但它同时决定轨道与滑块样式、且与卡片内的
 /// 圆角背景不易对齐，故这里以两层容器自绘：外层铺满低对比灰底，内层按 `fill` 比例占据宽度，
 /// 用 `FillPortion` 配剩余占位实现比例填充。
-fn thin_bar(fill: f32, color: Color) -> Element<'static, Message> {
+fn thin_bar(
+    fill: f32,
+    color: impl Fn(&iced::Theme) -> Color + 'static,
+) -> Element<'static, Message> {
     let pct = (fill.clamp(0.0, 1.0) * 100.0) as u16;
     let bar = container("")
         .width(Length::FillPortion(pct))
         .height(Length::Fixed(5.0))
-        .style(move |_t| container::Style {
-            background: Some(color.into()),
+        .style(move |t| container::Style {
+            background: Some(color(t).into()),
             ..Default::default()
         });
     // 空占位：与填充条共同按 `FillPortion` 比例分配轨道宽度。

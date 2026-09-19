@@ -166,7 +166,7 @@ fn nav_item(
 /// 分类导航项样式：选中态以强调色高亮，悬停态浅色背景，文字颜色跟随主题。
 fn nav_item_style(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
     let background = if selected {
-        Some(theme::primary_active_bg(theme).into())
+        Some(theme::accent_active_bg(theme).into())
     } else {
         match status {
             button::Status::Hovered | button::Status::Pressed => {

@@ -158,8 +158,8 @@ fn update_banner(app: &App) -> Option<Element<'_, updates::Message>> {
     )
     .width(Length::Fill)
     .padding(6)
-    .style(|_t| container::Style {
-        background: Some(iced::Background::Color(crate::theme::ACCENT)),
+    .style(|theme| container::Style {
+        background: Some(iced::Background::Color(crate::theme::accent_color(theme))),
         ..container::Style::default()
     });
     Some(banner.into())

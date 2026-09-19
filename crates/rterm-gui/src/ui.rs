@@ -231,7 +231,7 @@ pub fn dialog_panel<'a, M: Clone + 'a>(
 /// 按 [`DialogBtnStyle`] 分派到具体的按钮样式函数。
 fn dialog_btn_style_for(style: DialogBtnStyle, theme: &Theme, st: button::Status) -> button::Style {
     match style {
-        DialogBtnStyle::Emphasis { danger } => dialog_btn_style(st, danger),
+        DialogBtnStyle::Emphasis { danger } => dialog_btn_style(theme, st, danger),
         DialogBtnStyle::Neutral => dialog_btn_style_neutral(theme, st),
     }
 }

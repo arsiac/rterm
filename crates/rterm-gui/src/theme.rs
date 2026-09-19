@@ -15,15 +15,24 @@ use iced::widget::scrollable;
 use rterm_core::ConnectionStatus;
 use std::sync::OnceLock;
 
-/// 强调色（按钮、选中态等）。
-pub const ACCENT: Color = Color::from_rgb(0.20, 0.55, 0.95);
+/// 强调色取色点：取当前 iced 主题的 primary
+pub fn accent_color(theme: &Theme) -> Color {
+    theme.extended_palette().primary.base.color
+}
 
-/// 选中态（活动栏当前视图 / 聚焦标签 / 设置导航当前项 / 设置弹窗当前分类）的强调底色：
-/// 主题强调色以低不透明度叠加，其上文本仍用默认文本色即可保持可读。
-pub fn primary_active_bg(theme: &Theme) -> Color {
+/// 选中态强调底色：强调色以 0.28 不透明度叠加，其上文本仍用默认文本色即可保持可读。
+pub fn accent_active_bg(theme: &Theme) -> Color {
     Color {
         a: 0.28,
-        ..theme.extended_palette().primary.base.color
+        ..accent_color(theme)
+    }
+}
+
+/// 深选中态强调底色。
+pub fn accent_strong_bg(theme: &Theme) -> Color {
+    Color {
+        a: 0.45,
+        ..accent_color(theme)
     }
 }
 
@@ -36,7 +45,7 @@ pub const TAB_RADIUS: f32 = 8.0;
 /// 终端背景兜底色（`#181818`），与终端配色板 `ColorPalette::default()` 的背景一致。
 ///
 /// 仅作 [`terminal_bg`] 解析失败时的兜底：终端留白实际取当前终端主题的 `background`，
-/// 故本常量与「选中标签底色」无关（活动标签底色走 [`primary_active_bg`] / `hover`）。
+/// 故本常量与「选中标签底色」无关（活动标签底色走 [`accent_active_bg`] / `hover`）。
 pub const TERMINAL_BG: Color = Color::from_rgb(0.094, 0.094, 0.094);
 
 /// 根据终端配色主题名返回终端背景色（解析调色板 `background` 字段的 `#RRGGBB` 十六进制）。
@@ -256,7 +265,7 @@ fn row_base_bg(theme: &Theme, status: ConnectionStatus) -> Color {
 /// 悬浮；`status` 用于错误态底色。会话列表无选中概念时传 `selected = false`，SFTP 无连接
 /// 错误态时传 [`ConnectionStatus::Disconnected`]。
 ///
-/// 选中态背景取 [`primary_active_bg`]（当前主题强调色以 0.28 不透明度叠加），与设置弹窗选中
+/// 选中态背景取 [`accent_active_bg`]（当前主题强调色以 0.28 不透明度叠加），与设置弹窗选中
 /// 分类一致、淡而克制；文本色沿用主题默认文本色，确保淡底上文字清晰可读。
 pub fn list_row_bg(
     theme: &Theme,
@@ -265,7 +274,7 @@ pub fn list_row_bg(
     status: ConnectionStatus,
 ) -> iced::widget::container::Style {
     if selected {
-        plain_background(primary_active_bg(theme))
+        plain_background(accent_active_bg(theme))
     } else if hovered {
         plain_background(custom_palette(theme).hover)
     } else {
@@ -283,7 +292,7 @@ pub fn icon_button_style(
     active: bool,
 ) -> iced::widget::button::Style {
     let background = if active {
-        Some(primary_active_bg(theme).into())
+        Some(accent_active_bg(theme).into())
     } else {
         match status {
             button::Status::Hovered | button::Status::Pressed => {
@@ -334,23 +343,23 @@ pub fn tooltip_style(theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
-/// `pane_grid` 样式：分隔条以 [`ACCENT`] 着色，悬停 / 拖拽时高亮，与整体主题一致。
+/// `pane_grid` 样式：分隔条以 [`accent_color`] 着色，悬停 / 拖拽时高亮，与整体主题一致。
 pub fn pane_grid_style(_theme: &Theme) -> iced::widget::pane_grid::Style {
     iced::widget::pane_grid::Style {
         hovered_region: iced::widget::pane_grid::Highlight {
             background: iced::Background::Color(iced::Color::TRANSPARENT),
             border: iced::Border {
                 width: 2.0,
-                color: ACCENT,
+                color: accent_color(_theme),
                 ..Default::default()
             },
         },
         picked_split: iced::widget::pane_grid::Line {
-            color: ACCENT,
+            color: accent_color(_theme),
             width: 3.0,
         },
         hovered_split: iced::widget::pane_grid::Line {
-            color: ACCENT,
+            color: accent_color(_theme),
             width: 3.0,
         },
     }
@@ -392,7 +401,7 @@ pub fn tab_style(
     let background = if active {
         // 活动标签常亮高亮，不再叠加悬浮反馈。
         if focused {
-            Some(primary_active_bg(theme).into())
+            Some(accent_active_bg(theme).into())
         } else {
             Some(custom_palette(theme).hover.into())
         }
@@ -427,15 +436,12 @@ pub fn tab_list_row_style(
     let background = match status {
         button::Status::Hovered | button::Status::Pressed if active => {
             // 活动行加深：强调色不透明度由 0.28 提到 0.45，文本色不变仍可读。
-            Some(Color {
-                a: 0.45,
-                ..theme.extended_palette().primary.base.color
-            })
+            Some(accent_strong_bg(theme))
         }
         button::Status::Hovered | button::Status::Pressed => {
             Some(custom_palette(theme).hover_raised)
         }
-        _ if active => Some(primary_active_bg(theme)),
+        _ if active => Some(accent_active_bg(theme)),
         _ => None,
     };
     iced::widget::button::Style {

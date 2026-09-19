@@ -16,7 +16,7 @@ use iced::widget::tooltip::Position;
 use iced::widget::{
     button, column, container, mouse_area, pick_list, row, rule, scrollable, text, text_input,
 };
-use iced::{Border, Element, Length, Theme};
+use iced::{Border, Color, Element, Length, Theme};
 use iced_aw::widget::context_menu::ContextMenu;
 use rterm_config::SessionConfig;
 use rterm_core::ConnectionStatus;
@@ -496,16 +496,20 @@ fn labeled_input<'a>(
     .into()
 }
 
-/// 保存按钮样式：作为弹窗主操作按钮，悬浮 / 按下切换为主题强调色。
+/// 保存按钮样式：作为弹窗主操作按钮，悬浮 / 按下切换为强调色（统一取色点）。
 ///
 /// 不能用背景微调做反馈：自定义调色板的 `hover` 与 `surface_raised` 恒等
-/// （均为背景 ±0.08/0.10），切换后无任何可见变化。
+/// （均为背景 ±0.08/0.10），切换后无任何可见变化。强调色背景上文字恒为白色。
 pub(crate) fn save_btn_style(theme: &Theme, status: button::Status) -> button::Style {
     let p = crate::theme::custom_palette(theme);
     let pal = theme.extended_palette();
+    let accent = crate::theme::accent_color(theme);
     let (bg, text_color) = match status {
-        button::Status::Pressed => (pal.primary.strong.color, pal.primary.strong.text),
-        button::Status::Hovered => (pal.primary.base.color, pal.primary.base.text),
+        button::Status::Pressed => (accent, Color::WHITE),
+        button::Status::Hovered => (
+            Color::from_rgba(accent.r, accent.g, accent.b, 0.85),
+            Color::WHITE,
+        ),
         _ => (p.surface_raised, pal.background.base.text),
     };
     button::Style {

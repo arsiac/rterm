@@ -171,11 +171,17 @@ fn dialog_panel<'a>(
 }
 
 /// 对话框危险（确认）按钮样式：常态为纯色，悬停 / 按下降到 85% 不透明度，文字恒为白色。
-pub(crate) fn dialog_btn_style(status: button::Status, danger: bool) -> button::Style {
+///
+/// 强调色分支走统一取色点 [`crate::theme::accent_color`]（随用户主题色 / 当前主题生效）。
+pub(crate) fn dialog_btn_style(
+    theme: &Theme,
+    status: button::Status,
+    danger: bool,
+) -> button::Style {
     let base = if danger {
         crate::ui::DANGER
     } else {
-        crate::theme::ACCENT
+        crate::theme::accent_color(theme)
     };
     let bg = match status {
         button::Status::Hovered | button::Status::Pressed => {
