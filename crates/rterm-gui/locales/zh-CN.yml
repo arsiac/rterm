@@ -202,6 +202,8 @@ transfer:
   retry_wait: 等待重试（第 %{attempt}/%{max} 次） · %{secs}s 后重试
   retrying: 正在重试（第 %{attempt}/%{max} 次） · 尚未收到数据
   retried_of: 已重试 %{attempt}/%{max} 次
+  # 失败行的按钮文案：下载失败会保留 .part，下一轮从断点接着写，故说「继续下载」而不是「重试」。
+  resume: 继续下载
   partial_left: 半成品文件未能自动清理，请手动处理：%{path}
   rename_failed: 下载已完成但重命名失败，内容保留在：%{path}
   eta: " · 剩 %{time}"
@@ -294,6 +296,7 @@ errors:
   sftp_close_remote_file: "关闭远端文件失败: %{detail}"
   sftp_open_remote_file: "打开远端文件失败: %{detail}"
   sftp_read_remote: "读取远端失败: %{detail}"
+  sftp_remote_metadata: "读取远端文件信息失败: %{detail}"
   # 会话已终结（russh-sftp 的 session closed / sender dropped 一族）。刻意不带引擎原文：
   # 对用户有用的信息是「连接没了、要重连」，而不是通道内部的术语。
   session_gone: "连接已断开，需重新连接后再试"

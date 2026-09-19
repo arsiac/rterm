@@ -180,7 +180,13 @@ fn transfer_item(t: &Transfer, retry_limit: u32) -> Element<'_, Message> {
             ));
         }
         TransferStatus::Error => {
-            let label = t!("common.retry");
+            // 「继续下载」而不是「重试」：下载失败后暂存仍在，下一轮从断点接着写。两者发的是
+            // 同一条消息（`RetryTransfer`），差别只在用户是否知道自己不必从头再来。
+            let label = if can_continue(t) {
+                t!("transfer.resume")
+            } else {
+                t!("common.retry")
+            };
             header_row.push(icon_button(
                 Icon::ArrowClockwise,
                 ACTION_ICON_SIZE,
@@ -295,6 +301,16 @@ fn tone_of(t: &Transfer) -> Tone {
 /// 首次尝试（`attempts == 0`）不适用：那只是「刚启动」，不该报成重试，否则每次下载起手都闪琥珀。
 fn is_retrying_without_data(t: &Transfer) -> bool {
     t.status == TransferStatus::Active && t.attempts > 0 && t.transferred == 0
+}
+
+/// 该行是否有可接着写的半成品——决定失败行的按钮说「继续下载」还是「重试」。
+///
+/// 判据是上一轮尝试留下的记录：它既带着源端指纹（下一轮的校验基准），也记着那一轮的起点。
+/// 起点为 0 时说明上一轮本就是从零开始写的，此时「继续」与「重试」是同一件事，用朴素的那个
+/// 更不容易让人误会。**注意这只是文案判据**：真正能不能续传由下一轮的 stat 结果说了算
+/// （源端变了照样从头写），这里给出的是「有多大可能不用重下」的提示。
+fn can_continue(t: &Transfer) -> bool {
+    t.resume.is_some_and(|r| r.offset > 0)
 }
 
 /// 基调对应的语义色；`Accent` 无固定色（走 `theme::accent_color`）。固定常量不随主题漂移，
@@ -452,6 +468,9 @@ fn progress_line(t: &Transfer) -> String {
     };
     let mut s = String::new();
     for part in [pct, size_part] {
+        if part.is_empty() {
+            continue;
+        }
         if !s.is_empty() {
             s.push(' ');
         }
@@ -560,7 +579,8 @@ fn format_eta(sec: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Transfer, TransferDirection};
+    use crate::state::{ResumeState, Transfer, TransferDirection};
+    use rterm_core::Fingerprint;
     use std::path::PathBuf;
     use std::time::Instant;
 
@@ -581,6 +601,7 @@ mod tests {
             error: None,
             speed: 0.0,
             client: None,
+            resume: None,
             keep_staging: false,
         }
     }
@@ -763,5 +784,58 @@ mod tests {
         let line = detail_line(&moving, 5);
         assert!(line.contains("50%"), "数据到了就显示进度：{line}");
         assert!(!line.contains("1/5"), "数据到了计数就该收走：{line}");
+    }
+
+    /// 造一份指纹（只有大小有意义时 `modified` 取 `None`）。
+    fn fingerprint(len: u64) -> Fingerprint {
+        Fingerprint {
+            len,
+            modified: None,
+        }
+    }
+
+    #[test]
+    fn only_a_row_with_a_real_breakpoint_offers_to_continue() {
+        // 失败行的按钮文案由它决定：有断点说「继续下载」，否则说「重试」。
+        // 两者发的是**同一条消息**（`RetryTransfer`），差别只在用户能否预期「不用从头再来」。
+        let plain = transfer(TransferStatus::Error, 0, 1000);
+        assert!(!can_continue(&plain), "没有续传记录 → 只能说「重试」");
+
+        let mut from_zero = transfer(TransferStatus::Error, 0, 1000);
+        from_zero.resume = Some(ResumeState {
+            source: fingerprint(1000),
+            offset: 0,
+        });
+        assert!(
+            !can_continue(&from_zero),
+            "上一轮本就是从 0 写的 → 「继续」与「重试」是同一件事，用朴素的那个"
+        );
+
+        let mut midway = transfer(TransferStatus::Error, 450, 1000);
+        midway.resume = Some(ResumeState {
+            source: fingerprint(1000),
+            offset: 450,
+        });
+        assert!(can_continue(&midway), "断点在 45% → 按钮说「继续下载」");
+    }
+
+    #[test]
+    fn a_resumed_retry_is_not_amber_because_data_is_already_there() {
+        // 续传的重试天然不显琥珀：`AttemptStarted` 已把 `transferred` 置为断点（> 0），
+        // 那一轮行是「已经有数据」的正常样子——琥珀只属于「一个字节都还没拿到」的等待。
+        let mut resumed = transfer(TransferStatus::Active, 450, 1000);
+        resumed.attempts = 1;
+        resumed.resume = Some(ResumeState {
+            source: fingerprint(1000),
+            offset: 450,
+        });
+        assert!(!is_retrying_without_data(&resumed));
+        assert_eq!(tone_of(&resumed), Tone::Accent);
+
+        // 对照：同样是重试，但从 0 起（不可续传）时仍是琥珀。
+        let mut from_zero = transfer(TransferStatus::Active, 0, 1000);
+        from_zero.attempts = 1;
+        assert!(is_retrying_without_data(&from_zero));
+        assert_eq!(tone_of(&from_zero), Tone::Retry);
     }
 }

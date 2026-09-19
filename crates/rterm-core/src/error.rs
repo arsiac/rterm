@@ -103,6 +103,11 @@ pub enum CoreErrorKind {
     OpenRemoteFile,
     /// 读取远端失败。
     ReadRemote,
+    /// 读取远端文件属性（大小 / 修改时间）失败。
+    ///
+    /// 单独一档是因为它的调用场景特殊：读取远端元数据失败只影响续传判定（退化为从 0 开始），
+    /// 用户看到的往往仍是一次成功的传输——不该与「读取远端内容失败」共用同一句话。
+    RemoteMetadata,
 }
 
 impl CoreError {

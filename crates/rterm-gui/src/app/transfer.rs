@@ -38,6 +38,41 @@
 //! - **I3**：同一 `tid` 任一时刻最多一个在跑的 worker，故只有「不在 `running` 中」的排队项
 //!   才能被启动；否则旧 worker 迟到的 `TransferDone` 会错误释放新 worker 的额度（见
 //!   [`State::next_queued`] 的过滤条件与 [`State::admit`]）。
+//! - **I4**：同一时刻至多一个在跑的传输使用同一个**写靶**（下载 = 目标的 `.part` 暂存，
+//!   上传 = 远端目标路径 + 标签）。两个 worker 交叠写同一个暂存文件产出的是拼接垃圾；
+//!   在续传落地前这已经坏了（只是表现为「内容错乱」这种明显失败），而续传会把它升级成
+//!   「大小正确、内容拼接」——**看起来成功**。故由调度器自己执行互斥（见 [`WriteTarget`]）。
+//! - **I5**：删除某个暂存文件前，必须确认该写靶不再被任何其它存活行占用。同靶两行共存
+//!   （一行失败留着等继续、一行正在写）时，删掉前者会连带删掉后者正在写的文件——
+//!   Unix 上 `unlink` 并不报错，随后改名才失败。
+//!
+//! # 断点续传
+//!
+//! 失败之后的下一轮**从已落盘的字节继续**，而不是从 0 重来（见设计文档
+//! `.workbuddy/resumable-transfer-design.md`）。三件事共同构成它：
+//!
+//! 1. **`.part` 暂存**（本模块既有）是地基：暂存文件与源端一一对应，且只可能由本模块创建；
+//! 2. **源端指纹**：每轮尝试开始时 stat 源端（大小 + 修改时间）与暂存长度，交给纯函数
+//!    [`resume_offset`] 判定起点，并把结果经 [`Message::AttemptStarted`] 记回行上；
+//! 3. **暂存的寿命**：自动重试期间本来就在，**最终失败后也保留**（见下）。
+//!
+//! 判定基准是「上一轮记录的指纹」而不是「这次看到的大小」：只比大小时，源端被换成
+//! 一个**更长**的同名文件会被判为可续传，于是产出「旧文件前半 + 新文件后半」。重新下载
+//! 只浪费带宽，静默损坏不可接受，故宁可误判为不可续传。
+//!
+//! # 最终失败时暂存的去留
+//!
+//! **下载的失败行保留 `.part`**，这是续传唯一的「行为变更」，理由是默认重试预算
+//! （1.5s + 3s ≈ 4.5s）远短于它要救的那类故障（酒店 Wi-Fi、VPN 重连、合盖）：预算在断网
+//! 尚未恢复时就烧光了，失败那一刻才是用户想接着下的时刻，此时删掉 45% 的暂存，「重试」
+//! 就退化成重下整个文件。代价是失败行还在面板时下载目录里会有一个 `.part`——与浏览器的
+//! `.crdownload` 同款，且行上「已下载 n%」与「继续」按钮都指向它。
+//!
+//! **上传不在此列**：上传侧目前写的是**真名**（阶段 B 才会改成远端 `.part` 暂存），
+//! 失败留下的是一份被截断的真名文件，用户会以为「文件在这儿」，故仍然清理。
+//! 取消（两侧）与关标签 / 移除行（下载）也一律清理——行消失即代表缓存失效。清理统一经
+//! [`cleanup_partial`]，并受 I5 约束。
+//!
 //! # 失败重试
 //!
 //! 失败的分类来自核心层 [`CoreError::class`]，映射为 [`FailureKind`]。**可自动重试**的是
@@ -79,12 +114,12 @@ use iced::{Subscription, Task};
 
 use crate::app::tasks::{ensure_remote_dir, join_path, parent_path};
 use crate::i18n::localize_error;
-use crate::state::{ToastKind, Transfer, TransferDirection, TransferStatus};
+use crate::state::{ResumeState, ToastKind, Transfer, TransferDirection, TransferStatus};
 use crate::t;
 use futures::{SinkExt, StreamExt};
 use log::{debug, warn};
 use rterm_config::{MAX_CONCURRENT, MIN_CONCURRENT};
-use rterm_core::{CoreError, ErrorClass, SftpClient};
+use rterm_core::{CoreError, ErrorClass, Fingerprint, ResumeAt, SftpClient};
 use std::path::Path;
 use tokio::task::AbortHandle;
 
@@ -225,6 +260,8 @@ struct Job {
     remote: String,
     /// 执行该传输的客户端；`None` 只可能出现在测试用宽松判定下（生产判定要求其存在）。
     client: Option<Arc<SftpClient>>,
+    /// 上一轮记录下来的源端指纹，作为本轮续传判定的基准（`None` = 无基准，从 0 开始）。
+    prior_source: Option<Fingerprint>,
 }
 
 /// 由一条传输记录 + 其所属标签构造 [`Job`]。
@@ -236,6 +273,7 @@ fn job_from(tab_id: u64, t: &Transfer) -> Job {
         local: t.local.clone(),
         remote: t.remote.clone(),
         client: t.client.clone(),
+        prior_source: t.resume.map(|r| r.source),
     }
 }
 
@@ -302,6 +340,9 @@ impl State {
                         error: None,
                         speed: 0.0,
                         client: Some(client.clone()),
+                        // 新入队的行没有续传基准：即便磁盘上躺着同名 `.part`，也无从判断它
+                        // 是不是这个文件的（`resume_offset` 会据此从 0 开始并顺手截断它）。
+                        resume: None,
                         keep_staging: false,
                     };
                     self.per_tab.entry(tab_id).or_default().push(transfer);
@@ -341,6 +382,27 @@ impl State {
                     if t.status == TransferStatus::Active && transferred > 0 {
                         t.error = None;
                     }
+                }
+                Task::none()
+            }
+            Message::AttemptStarted {
+                tab_id,
+                tid,
+                source,
+                offset,
+            } => {
+                // 只在该行**仍在跑**时落地：worker 起步到这条消息回到 `update` 之间，用户完全
+                // 可能已经取消了它、或点了重试让行回到排队态——迟到的元信息不该覆盖新状态
+                // （与 `TransferDone` 的落地条件同一条纪律）。
+                if let Some(tab) = self.per_tab.get_mut(&tab_id)
+                    && let Some(t) = tab.iter_mut().find(|t| t.id == tid)
+                    && t.status == TransferStatus::Active
+                {
+                    t.resume = Some(ResumeState { source, offset });
+                    // 把读数校正到断点：偏移为 0 时等于清零（本轮确实从头写），大于 0 时立刻
+                    // 显示断点比例。上一轮清零 `transferred` 的做法正是「重试后进度掉回 0」
+                    // 的来源，现在改由这里给出**权威**值。
+                    t.transferred = offset;
                 }
                 Task::none()
             }
@@ -393,6 +455,7 @@ impl State {
                                 // 「暂存里是完整数据」这件事要落到行上：关标签 / 移除行等清理
                                 // 路径据此跳过它（见 `leaves_partial_on_disk`）。
                                 t.keep_staging = f.keep_staging;
+                                // **下载的失败行刻意保留 `.part`**——它就是续传的地基，删掉等于
                                 // 让「继续」退化成重下整个文件（见模块文档「最终失败时暂存的去留」）。
                                 // 上传侧不在保留之列：它失败留下的是一份被截断的**真名**远端文件
                                 // （阶段 B 才会改成远端 `.part` 暂存），留着会被误认为「文件在这儿」。
@@ -408,7 +471,12 @@ impl State {
                     }
                 }
                 let mut tasks = vec![self.pump(ctx)];
-                if let Some(job) = cleanup {
+                // I5：同靶还有别的存活行时不删——那个暂存可能正被它续传。判定刻意放在
+                // `pump` **之后**：上面那一步可能刚启动一个同靶的排队项，而它正是最容易被
+                // 这次删除毁掉的对象。
+                if let Some(job) = cleanup
+                    && !self.target_busy(&job_target(&job), Some(job.tid))
+                {
                     tasks.push(cleanup_partial(job));
                 }
                 if let Some((delay, tid)) = retry {
@@ -446,9 +514,10 @@ impl State {
                     return Task::none();
                 }
                 let status = self.find(id).map(|t| t.status);
-                let cleanup = self
-                    .job_of(id)
-                    .filter(|_| self.find(id).is_some_and(leaves_partial_on_disk));
+                let cleanup = self.job_of(id).filter(|job| {
+                    self.find(id).is_some_and(leaves_partial_on_disk)
+                        && !self.target_busy(&job_target(job), Some(id))
+                });
                 // 只对「排队中 / 等待重试」的行落地。`Done` / `Error` 的行本就不该有取消按钮，
                 // 但消息可能迟到（连点 / 与服务端竞态），此时把已完成的任务改写成「已取消」
                 // 是货真价实的错误显示，故在此收口。
@@ -469,15 +538,19 @@ impl State {
                 }
             }
             Message::RetryTransfer(id) => {
-                // 手动重试 = 重新开始：回到排队态、清零进度，并立即补位（与自动重试走同一条调度路径）。
+                // 手动重试 = 「尽量继续」：保留 `transferred` 与 `resume`（指纹基准），让下一轮
+                // 仍能从断点接着写；只清掉属于「这一次尝试」的东西——自动重试计数（故手动重试
+                // 次数不限）、失败原因、退避时刻与清理提示。
+                //
+                // 它与自动重试的区别**不再是语义上的**：早先这里是「用户重新开始」故清零进度，
+                // 续传落地后两条路径走同一段判定（`run_transfer` 的 stat + `resume_offset`），
+                // 能不能接着写由指纹说了算，而不是由「谁点的重试」决定。指纹不符时照样从 0 开始。
                 if let Some(t) = self.find_mut(id) {
                     t.status = TransferStatus::Queued;
                     t.attempts = 0;
                     t.not_before = None;
                     t.partial = None;
                     t.error = None;
-                    t.transferred = 0;
-                    t.total = 0;
                     t.speed = 0.0;
                 }
                 // 若该行仍在运行（用户在取消后立刻点了重试），`next_queued` 会因 I3 跳过它，
@@ -496,9 +569,13 @@ impl State {
                     debug!("refused to remove a running transfer: {id}");
                     return Task::none();
                 }
-                let cleanup = self
-                    .job_of(id)
-                    .filter(|_| self.find(id).is_some_and(leaves_partial_on_disk));
+                // 该行在磁盘上留有暂存（等待重试中、或失败但刻意保留了 `.part`）时，移除即等于
+                // 放弃该传输，与「最终失败」同样清理一次——否则半个文件会无声无息地留在本地。
+                // 但同靶还有别的存活行时不能删（I5）：那个文件可能正是它要续传的。
+                let cleanup = self.job_of(id).filter(|job| {
+                    self.find(id).is_some_and(leaves_partial_on_disk)
+                        && !self.target_busy(&job_target(job), Some(id))
+                });
                 self.remove(id);
                 let mut tasks = vec![self.pump(ctx)];
                 if let Some(job) = cleanup {
@@ -520,6 +597,14 @@ impl State {
                 if let Some(t) = self.find_mut(tid) {
                     t.status = TransferStatus::Queued;
                     t.not_before = None;
+                    // 失败原因**刻意保留**（早先这里会清空）：退避到点后这一行仍是琥珀态——
+                    // 从「等待重试」无缝接到「重试中尚无数据」，面板要在这整段里回答
+                    // 「为什么在重试」。首个数据到达时由 `Message::Progress` 清掉。
+                    t.partial = None;
+                    // `transferred` 与 `total` **刻意保留**：续传的下一轮大概率正是从这个读数
+                    // 接着走，清零会让行在「退避结束 → 本轮起步」之间从 45% 掉回 0%——那是假
+                    // 跳变。权威值来自下一轮的 `Message::AttemptStarted`（它带着 stat 出来的真实
+                    // 偏移），若指纹已变、只能从 0 开始时，那一条会把它校正为 0。
                     t.speed = 0.0;
                 }
                 self.pump(ctx)
@@ -555,14 +640,27 @@ impl State {
                 // 其任务不会再有任何事件送回来。迟到的 `TransferDone` 只会再 remove 一次
                 // 已不存在的 id（幂等），不会重新占额度。
                 //
-                // 在磁盘上留有痕迹的行（在跑 / 等待重试）在关标签即放弃该
+                // 在磁盘上留有痕迹的行（在跑 / 等待重试 / **失败的下载行**）在关标签即放弃该
                 // 传输时都要清理——否则用户下次打开下载目录会看到一堆 `.part`。
+                // 唯一的例外是 `keep_staging`（暂存里是完整数据），见 `leaves_partial_on_disk`。
                 let rows = self.per_tab.remove(&tab_id).unwrap_or_default();
                 // 先把「清理所需参数」取出来（后面 `rows` 会被消费），再逐行归还额度。
+                //
+                // 两道过滤：
+                // 1. **同靶去重**：同一目标的两行都留下痕迹时删两次是多余的（第二次必然
+                //    `NotFound`）。`seen.insert` 在 `filter` 里做副作用是为了让去重与判定处在同
+                //    一趟遍历中，读的时候记住这一点即可。
+                // 2. **I5**：别的标签可能正拿着同一个本地暂存（下载的写靶是本地路径，跨标签共享），
+                //    删掉会毁掉它的数据。本标签的行已从表里摘掉，故 `except` 传 `None`。
+                let mut seen: HashSet<WriteTarget> = HashSet::new();
                 let cleanups: Vec<Job> = rows
                     .iter()
                     .filter(|t| leaves_partial_on_disk(t))
                     .map(|t| job_from(tab_id, t))
+                    .filter(|job| {
+                        let target = job_target(job);
+                        seen.insert(target.clone()) && !self.target_busy(&target, None)
+                    })
                     .collect();
                 for t in &rows {
                     if let Some(handle) = self.abort_handles.remove(&t.id) {
@@ -615,6 +713,7 @@ impl State {
                     client,
                     s.local,
                     s.remote,
+                    s.prior_source,
                 ));
             }
         }
@@ -629,19 +728,32 @@ impl State {
     ///
     /// 除调用方给的判定之外，这里还**自带**不变量 I4：写靶已被占用的候选一律跳过。它属于调度
     /// 规则而非业务条件，故写在调度器里——两个 worker 交叠写同一个暂存文件的产物是拼接垃圾，
+    /// 而续传会让它从「明显失败」变成「看起来成功」（大小正确、内容错位）。
     fn admit(&mut self, limit: usize, startable: impl Fn(u64, &Transfer) -> bool) -> Vec<Job> {
         let limit = limit.clamp(MIN_CONCURRENT, MAX_CONCURRENT);
         let mut starts = Vec::new();
         let mut skipped: HashSet<u64> = HashSet::new();
+        // I4 的初始占用：所有 `Active` 行都已经拿着自己的写靶。此后每启动一项就把它加进来，
+        // 因此**同一轮**里的两个同靶候选（比如连点两次下载同一个文件）也只有一个能启动。
+        let mut busy = self.active_targets();
         while self.running.len() < limit {
             let Some((tab_id, tid)) = self.next_queued(&skipped) else {
                 break;
             };
+            if self
+                .find(tid)
+                .is_some_and(|t| busy.contains(&write_target(tab_id, t)))
+            {
+                debug!("skipping transfer {tid}: another worker is writing the same target");
+                skipped.insert(tid);
+                continue;
+            }
             let Some(start) = self.take_startable(tid, tab_id, &startable) else {
                 // 不可启动（如客户端缺失）：本轮跳过，继续找下一个候选。
                 skipped.insert(tid);
                 continue;
             };
+            busy.insert(job_target(&start));
             self.running.insert(tid);
             starts.push(start);
         }
@@ -649,6 +761,38 @@ impl State {
     }
 
     /// 当前 `Active` 行占用的写靶集合（不变量 I4 的初始占用）。
+    fn active_targets(&self) -> HashSet<WriteTarget> {
+        self.per_tab
+            .iter()
+            .flat_map(|(tab_id, queue)| queue.iter().map(move |t| (*tab_id, t)))
+            .filter(|(_, t)| t.status == TransferStatus::Active)
+            .map(|(tab_id, t)| write_target(tab_id, t))
+            .collect()
+    }
+
+    /// 该写靶是否仍被**别的**存活行占用（不变量 I5：删除暂存文件前的前提）。
+    ///
+    /// 「占用」的定义是：那一行自己在磁盘上留有痕迹（[`leaves_partial_on_disk`]），于是这个
+    /// 暂存文件既是它正在写的，也可能是它下一轮要接着写的。`except` 是即将被清理的那一行
+    /// （若它已经被从表里删掉，传 `None`）。
+    ///
+    /// 不判这一条就会出现「删掉别人正在写的文件」：同靶两行共存时，移除 / 关闭其中一行会连带
+    /// 删掉另一行的暂存——Unix 上 `unlink` 并不报错，要等随后改名失败才暴露。
+    fn target_busy(&self, target: &WriteTarget, except: Option<u64>) -> bool {
+        self.per_tab
+            .iter()
+            .flat_map(|(tab_id, queue)| queue.iter().map(move |t| (*tab_id, t)))
+            .any(|(tab_id, t)| {
+                Some(t.id) != except
+                    && leaves_partial_on_disk(t)
+                    && &write_target(tab_id, t) == target
+            })
+    }
+
+    /// 取「排队中且本轮未被跳过」的候选，按 id 升序（即跨标签全局 FIFO）。
+    ///
+    /// 排除 `running` 中已有任务的 id 是不变量 I3 的落地：同一 `tid` 不得有两个在跑 worker，
+    /// 否则旧 worker 迟到的 `TransferDone` 会错误释放新 worker 占用的额度。
     fn next_queued(&self, skipped: &HashSet<u64>) -> Option<(u64, u64)> {
         self.per_tab
             .iter()
@@ -767,6 +911,7 @@ impl State {
             error: None,
             speed: 0.0,
             client: Some(client),
+            resume: None,
             keep_staging: false,
         };
         self.per_tab.entry(tab_id).or_default().push(transfer);
@@ -796,6 +941,22 @@ pub enum Message {
     Download(u64, String, PathBuf),
     /// 传输进度（携带标签 id + 传输任务 id + 已传字节 + 总字节 + 瞬时速度字节/秒）。
     Progress(u64, u64, u64, u64, f64),
+    /// 本轮尝试的元信息（携带标签 id + 任务 id + 源端指纹 + 起始偏移），由 worker 在拉起
+    /// 核心层**之前**发回。
+    ///
+    /// 用途有二：写入续传状态（`Transfer.resume`，下一轮的校验基准），以及把行上读数校正到
+    /// 真实起点——首个进度回调之前 UI 就能显示正确比例，而不是停在上一轮的残留值上。
+    /// 「能不能接着写」的判定在 worker 侧完成（见 [`resume_offset`]），这里只负责落地结果。
+    AttemptStarted {
+        /// 所属标签 id。
+        tab_id: u64,
+        /// 传输任务 id。
+        tid: u64,
+        /// 本轮的源端指纹（下一轮的校验基准）。
+        source: Fingerprint,
+        /// 本轮起始偏移（`0` = 从头，目标已被截断）。
+        offset: u64,
+    },
     /// 传输（上传 / 下载）完成（携带标签 id + 传输任务 id + 结果）。
     TransferDone(u64, u64, Result<(), Failure>),
     /// 后台传输 worker 的取消句柄已就绪（携带传输任务 id + 句柄）。
@@ -958,6 +1119,69 @@ fn staging_path(local: &Path) -> PathBuf {
     staged.push(".part");
     PathBuf::from(staged)
 }
+
+/// 决定这次尝试从第几个字节开始（`0` = 从头，且目标会被截断）。
+///
+/// 三个条件缺一不可：
+///
+/// 1. **有上一轮的指纹**（`prev.is_some()`）。没有基准就无从判断磁盘上那个半成品属于谁——
+///    应用重启后重新发起下载（行也已不在），或用户手工放了一个 `.part`，都属于这一类，
+///    一律从 0 开始；
+/// 2. **源端未变**（`prev == now`，大小与修改时间都一致）；
+/// 3. **半成品不比源端长**（`partial <= now.len`）。恰好相等也按续传处理：拷贝循环会立刻读到
+///    EOF 并正常收尾，于是「已下完、只是改名失败」那条路径的重试**瞬间**成功，
+///    而不是把整个文件重下一遍。
+///
+/// 源端大小未知（`now.len == 0`，服务端不返回 `size`）时条件 3 只在 `partial == 0` 时成立，
+/// 自然退化为「不可续传」，无需特判。
+///
+/// 这是纯函数（有单测），也是唯一的判定入口：自动重试与手动重试走的是同一段代码。
+fn resume_offset(prev: Option<Fingerprint>, now: Fingerprint, partial: u64) -> u64 {
+    match prev {
+        Some(prev) if prev == now && partial <= now.len => partial,
+        _ => 0,
+    }
+}
+
+/// 一次写入的**靶子**：不变量 I4（同靶互斥）与 I5（删除前提）都键在它上面。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum WriteTarget {
+    /// 下载：本地的 `.part` 暂存文件。
+    ///
+    /// 刻意用**暂存路径**而不是最终目标：两个下载同时写同一个暂存才会互相破坏内容，
+    /// 而「两行指向同一个目标文件」正是它要拦下的情形。
+    Local(PathBuf),
+    /// 上传：远端路径 **+ 所属标签**。
+    ///
+    /// 必须带 `tab_id`：两个标签可以连到不同的服务器，它们的远端路径字符串完全可能相同，
+    /// 而那是两个不同的文件。
+    Remote(u64, String),
+}
+
+/// 该传输写入的靶子。
+fn write_target(tab_id: u64, t: &Transfer) -> WriteTarget {
+    match t.direction {
+        TransferDirection::Download => WriteTarget::Local(staging_path(&t.local)),
+        TransferDirection::Upload => WriteTarget::Remote(tab_id, t.remote.clone()),
+    }
+}
+
+/// 收尾作业对应的写靶（[`Job`] 与 [`Transfer`] 在此信息重合，单给一个入口免得先造临时记录）。
+fn job_target(job: &Job) -> WriteTarget {
+    match job.direction {
+        TransferDirection::Download => WriteTarget::Local(staging_path(&job.local)),
+        TransferDirection::Upload => WriteTarget::Remote(job.tab_id, job.remote.clone()),
+    }
+}
+
+/// 该行是否在磁盘上（本地 `.part` 暂存 / 远端半成品）留有未收尾的痕迹，即关标签 / 移除行时
+/// 是否值得清理一次。
+///
+/// - `Active`：正在写，`abort()` 后必然留下半成品；
+/// - `WaitingRetry`：上一轮真跑过并失败了，半成品还在；
+/// - `Queued`：从未启动，磁盘上没有它的东西；
+/// - `Done`：下载的暂存文件已改名到目标文件；
+/// - `Error`：**下载**侧刻意保留暂存（续传的地基，见模块文档「最终失败时暂存的去留」），
 ///   故要清理；上传侧在失败那一刻已删过远端残留，这里再判一次是空操作（删除失败只记日志）。
 ///
 /// `keep_staging` 的行**一概为假**：那时暂存里是**完整数据**（下载已落全、只是改名失败），
@@ -1011,6 +1235,7 @@ fn retry_timer(delay: Duration, tid: u64) -> Task<Event> {
 
 /// 清理取消 / 移除 / 关标签之后留下的半成品文件，结果经 [`Message::CleanupDone`] 回到模块自身。
 ///
+/// **调用时机**（注意不是「所有失败」）：下载的失败行刻意**不**清理——那个 `.part` 是续传的
 /// 起点，由行上的「继续下载」接着用；只有取消、移除行、关标签这三类「这条传输到此为止」的
 /// 路径才清理（见模块文档「最终失败时暂存的去留」）。
 ///
@@ -1025,6 +1250,7 @@ fn retry_timer(delay: Duration, tid: u64) -> Task<Event> {
 /// 「留下痕迹」的行清理一次的底气，见 [`Message::TabClosed`]。
 ///
 /// 本函数**只应在「该任务确实跑过一轮」时调用**（排队中被取消的任务从未碰过任何文件），
+/// 且调用方必须先过不变量 I5（[`State::target_busy`]）：同靶还有别的存活行时，那个文件是它的。
 fn cleanup_partial(job: Job) -> Task<Event> {
     let tid = job.tid;
     Task::perform(
@@ -1078,6 +1304,8 @@ fn cleanup_partial(job: Job) -> Task<Event> {
 ///
 /// - 在独立 tokio 任务里调用核心层 `upload_with_progress` / `download_with_progress`，
 ///   进度回调经 mpsc 通道回传；
+/// - 下载侧起步时先做**续传判定**：stat 源端与半成品，[`resume_offset`] 给出本轮起点，
+///   经 [`Message::AttemptStarted`] 记回行上；
 /// - 流任务按真实 I/O 间隔估算瞬时速度，逐条发射 `Progress`；
 /// - 启动时先发射 `TransferHandle` 以登记取消句柄，结束发射 `TransferDone`。
 ///
@@ -1090,6 +1318,7 @@ fn run_transfer(
     client: Arc<SftpClient>,
     local: PathBuf,
     remote: String,
+    prior_source: Option<Fingerprint>,
 ) -> Task<Event> {
     Task::stream(iced::stream::channel(
         64,
@@ -1144,6 +1373,9 @@ fn run_transfer(
                 let client = client.clone();
                 let local = local.clone();
                 let remote = remote.clone();
+                // 续传判定在 worker 内部完成，其结果（指纹 + 起点）要经**事件流**回到模块，
+                // 故另拿一个发送端：`output` 随后仍要用于登记取消句柄与转发进度。
+                let mut meta_tx = output.clone();
                 let cb = cb;
                 tokio::spawn(async move {
                     // 两个分支都直接产出 `Result<(), Failure>`：错误分类必须在跨界前保留，
@@ -1173,7 +1405,51 @@ fn run_transfer(
                             // 「下载到一半的文件」因此不会以真实文件名出现。暂存文件也是清理的靶子，
                             // 而它只可能由本模块创建（见 `staging_path`）。
                             let staged = staging_path(&local);
-                            match client.download_with_progress(&remote, &staged, cb).await {
+                            // 续传判定：源端有没有变、半成品能不能用，只看这三样东西（上一轮记下的
+                            // 指纹、这次 stat 到的指纹、暂存的长度）。判定与「从第几字节开始」的
+                            // 规则本身在 `resume_offset`（纯函数、有单测）。
+                            //
+                            // 指纹读不到（权限 / 会话已终结 / 服务端不支持）时不另造一条错误路径：
+                            // 当作「不可续传」从 0 开始，让随后的真实读写给出准确的分类与文案。
+                            //
+                            // 这条路径**不更新** `resume`：保留上一轮的基准反而更有利——本轮从 0
+                            // 重下后暂存会重新长到某个长度，下一轮仍可从这里接着写。
+                            let mut start = 0u64;
+                            match client.remote_fingerprint(&remote).await {
+                                Ok(now) => {
+                                    let partial = tokio::fs::metadata(&staged)
+                                        .await
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    start = resume_offset(prior_source, now, partial);
+                                    debug!(
+                                        "download {remote}: resuming at {start} (partial {partial}, total {})",
+                                        now.len
+                                    );
+                                    let _ = meta_tx
+                                        .send(Event::Emit(Box::new(Message::AttemptStarted {
+                                            tab_id,
+                                            tid,
+                                            source: now,
+                                            offset: start,
+                                        })))
+                                        .await;
+                                }
+                                Err(e) => debug!(
+                                    "no fingerprint for {remote}, starting from the beginning: {e}"
+                                ),
+                            }
+                            // `Offset(0)` 与 `Start` 等价（核心层按 0 走截断路径），此处显式区分
+                            // 只是让意图清楚：起点为 0 就是「从头下」。
+                            let resume = if start == 0 {
+                                ResumeAt::Start
+                            } else {
+                                ResumeAt::Offset(start)
+                            };
+                            match client
+                                .download_with_progress(&remote, &staged, resume, cb)
+                                .await
+                            {
                                 Ok(()) => match finalize_download(&staged, &local).await {
                                     Ok(()) => Ok(()),
                                     Err(e) => {
@@ -1309,8 +1585,17 @@ mod tests {
             error: None,
             speed: 0.0,
             client: None,
+            resume: None,
             keep_staging: false,
         }
+    }
+
+    /// 造一条与 `like` **写同一个靶**的记录（I4 同靶互斥 / I5 删除前提的用例专用）。
+    fn same_target_as(id: u64, like: &Transfer) -> Transfer {
+        let mut t = make_transfer(id, like.direction);
+        t.local = like.local.clone();
+        t.remote = like.remote.clone();
+        t
     }
 
     /// 把若干条传输记录入队到指定标签，返回其 id 序列。
@@ -2069,6 +2354,7 @@ mod tests {
         });
         assert_eq!(retry_due, Some(1), "退避到点应回一条 RetryDue");
 
+        // 回派该消息：转回排队态并清空退避，进度从 0 重新计（不做断点续传）。
         // **失败原因刻意保留**：接下来那一段仍是琥珀态（重试中尚无数据），行上要能回答
         // 「为什么在重试」；它由首个数据到达时的 `Progress` 收走。
         let _ = run_events(s.update(Message::RetryDue(1), &no_client_ctx(7)));
@@ -2323,6 +2609,7 @@ mod tests {
             local: target.clone(),
             remote: "/remote/half.bin".to_string(),
             client: None,
+            prior_source: None,
         }));
 
         assert!(!staged.exists(), "暂存的半成品必须被删除");
@@ -2357,6 +2644,7 @@ mod tests {
                 local: local.clone(),
                 remote: "/remote/x".to_string(),
                 client: None,
+                prior_source: None,
             }));
         }
 
@@ -2379,6 +2667,7 @@ mod tests {
             local: PathBuf::from("/tmp/f.txt"),
             remote: "/home/user/f.txt".to_string(),
             client: None,
+            prior_source: None,
         }));
 
         assert!(
@@ -2407,6 +2696,7 @@ mod tests {
 
     #[test]
     fn a_failed_download_keeps_its_partial_but_a_failed_upload_cleans_up() {
+        // 本方案唯一的「行为变更」：下载失败**保留** `.part`（续传的地基——默认预算 4.5s 远短于
         // 它要救的那类故障，失败那一刻才是用户想接着下的时刻）；上传失败仍清理，因为它留下的是
         // 半个**真名**远端文件，用户会以为「文件在这儿」。
         let mut s = State::new();
@@ -2503,6 +2793,7 @@ mod tests {
         };
         assert!(leaves_partial_on_disk(&dl(TransferStatus::Active)));
         assert!(leaves_partial_on_disk(&dl(TransferStatus::WaitingRetry)));
+        // 下载失败**刻意保留** `.part`（续传的地基），故它也算「留有痕迹」。
         assert!(leaves_partial_on_disk(&dl(TransferStatus::Error)));
         // 排队中从未碰过文件；完成态的暂存已改名到目标。
         assert!(!leaves_partial_on_disk(&dl(TransferStatus::Queued)));
@@ -2526,6 +2817,255 @@ mod tests {
         let mut keep_waiting = dl(TransferStatus::WaitingRetry);
         keep_waiting.keep_staging = true;
         assert!(!leaves_partial_on_disk(&keep_waiting));
+    }
+
+    #[test]
+    fn removing_a_failed_download_cleans_up_its_staging() {
+        // 行消失 = 缓存失效：失败行被移除时它的 `.part` 必须一起走（没有别的行在用它）。
+        let mut s = State::new();
+        let mut failed = make_transfer(1, TransferDirection::Download);
+        failed.status = TransferStatus::Error;
+        s.per_tab.entry(7).or_default().push(failed);
+
+        let events = run_events(s.update(Message::RemoveTransfer(1), &no_client_ctx(7)));
+
+        assert!(s.find(1).is_none(), "行应已被移除");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Emit(m) if matches!(**m, Message::CleanupDone(1, _)))),
+            "移除失败行应清理它留下的暂存"
+        );
+    }
+
+    #[test]
+    fn removing_a_failed_row_keeps_the_staging_of_a_live_row_on_the_same_target() {
+        // I5：同靶还有别的存活行时**不许删**——那个文件可能正是它要续传的。
+        // 场景：A 失败（下载刻意保留 `.part` 等继续），B 与它同靶、正在写。
+        let mut s = State::new();
+        let mut failed = make_transfer(1, TransferDirection::Download);
+        failed.status = TransferStatus::Error;
+        let running = same_target_as(2, &failed);
+        s.per_tab.entry(7).or_default().extend([failed, running]);
+        s.admit(3, |_, _| true);
+        assert_eq!(status_of(&s, 2), Some(TransferStatus::Active));
+
+        let events = run_events(s.update(Message::RemoveTransfer(1), &no_client_ctx(7)));
+
+        assert!(s.find(1).is_none(), "被移除的是失败的那一行");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Emit(m) if matches!(**m, Message::CleanupDone(_, _)))),
+            "同靶还有在跑的行，不得删掉它们共用的暂存"
+        );
+    }
+
+    #[test]
+    fn two_rows_writing_the_same_target_never_run_together() {
+        // I4：同靶互斥。两个 worker 交叠写同一个暂存文件产出的是拼接垃圾，而续传会让它从
+        // 「明显错误」升级成「看起来成功」（大小正确、内容错位），故由调度器自己拦下。
+        let mut s = State::new();
+        let first = make_transfer(1, TransferDirection::Download);
+        let second = same_target_as(2, &first);
+        let independent = make_transfer(3, TransferDirection::Download);
+        s.per_tab
+            .entry(7)
+            .or_default()
+            .extend([first, second, independent]);
+
+        let started = s.admit(3, |_, _| true);
+
+        assert_eq!(
+            started.iter().map(|x| x.tid).collect::<Vec<_>>(),
+            vec![1, 3],
+            "同靶的第 2 条必须被跳过，且**不阻塞**其后的候选补位"
+        );
+        assert_eq!(
+            status_of(&s, 2),
+            Some(TransferStatus::Queued),
+            "它只是排队等待，不是失败"
+        );
+    }
+
+    #[test]
+    fn a_queued_row_starts_once_the_conflicting_worker_is_done() {
+        // I4 的收敛：互斥是「不同时」，不是「不准跑」——占用者结束、额度空出后它照常启动。
+        let mut s = State::new();
+        let first = make_transfer(1, TransferDirection::Download);
+        let second = same_target_as(2, &first);
+        s.per_tab.entry(7).or_default().extend([first, second]);
+        s.admit(3, |_, _| true);
+        assert_eq!(status_of(&s, 2), Some(TransferStatus::Queued));
+
+        dispatch(
+            &mut s,
+            Message::TransferDone(7, 1, Ok(())),
+            &no_client_ctx(7),
+        );
+        let started = s.admit(3, |_, _| true);
+        assert_eq!(started.iter().map(|x| x.tid).collect::<Vec<_>>(), vec![2]);
+    }
+
+    // ===== 用户实测反馈的回归用例（A / C / F 与 `.part` 暂存）=====
+
+    #[test]
+    fn retry_keeps_the_known_total_and_the_progress_reading() {
+        // A：断开后重试时，旧实现把 `total` 一起清零 → 「0 B / 未知」＋满条，用户误读为已完成。
+        // 总量是远端文件的真实大小，两次尝试之间不会变，必须保留。
+        //
+        // 读数（`transferred`）同样保留：续传的下一轮大概率正是从这个位置接着写，清零会让行在
+        // 「退避结束 → 本轮起步」之间从 40% 掉回 0%——那是假跳变。权威值由下一轮的
+        // `Message::AttemptStarted` 给出（它带着 stat 出来的真实偏移，指纹变了就校正为 0）。
+        let mut s = State::new();
+        let mut t = make_transfer(1, TransferDirection::Download);
+        t.status = TransferStatus::Active;
+        t.transferred = 400;
+        t.total = 1000;
+        t.speed = 1234.0;
+        s.per_tab.entry(7).or_default().push(t);
+
+        dispatch(
+            &mut s,
+            Message::TransferDone(7, 1, Err(failure(FailureKind::Transient))),
+            &no_client_ctx(7),
+        );
+        let t = s.find(1).expect("行应仍在");
+        assert_eq!(t.status, TransferStatus::WaitingRetry);
+        assert_eq!((t.transferred, t.total), (400, 1000), "等待重试应保留进度");
+
+        dispatch(&mut s, Message::RetryDue(1), &no_client_ctx(7));
+        let t = s.find(1).expect("行应仍在");
+        assert_eq!(
+            (t.transferred, t.total),
+            (400, 1000),
+            "退避到点后读数与总量都保留，由下一轮的 AttemptStarted 校正"
+        );
+        assert_eq!(t.speed, 0.0, "速率是瞬时量，重排后必须清零");
+    }
+
+    #[test]
+    fn attempt_started_records_the_breakpoint_and_corrects_the_reading() {
+        // 续传状态的**唯一**写入点，同时也是行上读数的权威校正。
+        let mut s = State::new();
+        let mut t = make_transfer(1, TransferDirection::Download);
+        t.status = TransferStatus::Active;
+        t.transferred = 400;
+        t.total = 1000;
+        s.per_tab.entry(7).or_default().push(t);
+
+        let source = Fingerprint {
+            len: 1000,
+            modified: None,
+        };
+        dispatch(
+            &mut s,
+            Message::AttemptStarted {
+                tab_id: 7,
+                tid: 1,
+                source,
+                offset: 400,
+            },
+            &no_client_ctx(7),
+        );
+        let t = s.find(1).expect("行应仍在");
+        assert_eq!(t.transferred, 400, "断点即本轮起点");
+        assert_eq!(
+            t.resume,
+            Some(ResumeState {
+                source,
+                offset: 400
+            }),
+            "指纹与偏移都要落下来，供下一轮判定"
+        );
+
+        // 指纹变了（只能从头）：偏移为 0 时读数必须被校正回 0，否则行会一直停在 40%。
+        let other = Fingerprint {
+            len: 2000,
+            modified: None,
+        };
+        dispatch(
+            &mut s,
+            Message::AttemptStarted {
+                tab_id: 7,
+                tid: 1,
+                source: other,
+                offset: 0,
+            },
+            &no_client_ctx(7),
+        );
+        let t = s.find(1).expect("行应仍在");
+        assert_eq!(t.transferred, 0, "不可续传时读数校正为 0");
+        assert_eq!(t.resume.map(|r| r.source), Some(other), "基准换成新指纹");
+    }
+
+    #[test]
+    fn a_late_attempt_started_does_not_clobber_a_state_the_user_just_changed() {
+        // 与 `TransferDone` 同一条纪律：worker 起步到消息回到 `update` 之间，用户完全可能已经
+        // 取消 / 重试了这一行，迟到的元信息不该把它按回「正在跑」的样子。
+        let mut s = State::new();
+        let mut t = make_transfer(1, TransferDirection::Download);
+        t.status = TransferStatus::Error;
+        s.per_tab.entry(7).or_default().push(t);
+
+        dispatch(
+            &mut s,
+            Message::AttemptStarted {
+                tab_id: 7,
+                tid: 1,
+                source: Fingerprint {
+                    len: 1000,
+                    modified: None,
+                },
+                offset: 400,
+            },
+            &no_client_ctx(7),
+        );
+        let t = s.find(1).expect("行应仍在");
+        assert!(t.resume.is_none(), "非 Active 的行不得被写入续传状态");
+        assert_eq!(t.transferred, 0, "也不得改动读数");
+    }
+
+    #[test]
+    fn resume_offset_restarts_unless_the_source_is_unchanged_and_the_partial_fits() {
+        // 判定表——整个续传方案的唯一决策点。三个条件缺一不可。
+        let now = Fingerprint {
+            len: 1000,
+            modified: None,
+        };
+        // 1. 无基准（首次尝试 / 应用重启后重新发起）：一律从 0。
+        assert_eq!(resume_offset(None, now, 400), 0, "没有基准就无从判断归属");
+        // 2. 源端未变 + 半成品更短：从半成品长度接着写。
+        assert_eq!(resume_offset(Some(now), now, 400), 400);
+        // 3. 恰好相等：按续传处理（循环立刻 EOF），「下完仅改名失败」的重试因此瞬间完成。
+        assert_eq!(resume_offset(Some(now), now, 1000), 1000);
+        // 4. 半成品更长：对不上（源端变小了 / 换了文件），重下。
+        assert_eq!(resume_offset(Some(now), now, 1200), 0);
+        // 5. 指纹变（大小）：**必须**判为不可续传——只比大小时更长的同名文件会被判成可续传，
+        //    于是产出「旧文件前半 + 新文件后半」这种看起来完整的损坏文件。
+        let longer = Fingerprint {
+            len: 2000,
+            modified: None,
+        };
+        assert_eq!(resume_offset(Some(now), longer, 400), 0);
+        // 6. 指纹变（只有修改时间变）：同样不可续传，哪怕大小一模一样。
+        let touched = Fingerprint {
+            len: 1000,
+            modified: Some(std::time::SystemTime::UNIX_EPOCH),
+        };
+        assert_eq!(resume_offset(Some(now), touched, 400), 0);
+        // 7. 源端大小未知（服务端不返回 size）：`partial > 0` 时自然退化（部分 > 0 = len），
+        //    无需特判；`partial == 0` 时等价于从 0 开始。
+        let unknown = Fingerprint {
+            len: 0,
+            modified: None,
+        };
+        assert_eq!(resume_offset(Some(unknown), unknown, 0), 0);
+        assert_eq!(
+            resume_offset(Some(unknown), unknown, 400),
+            0,
+            "对不上就重下"
+        );
     }
 
     #[test]
@@ -2653,5 +3193,24 @@ mod tests {
         );
         assert!(s.all_transfers().is_empty(), "关标签后不应留下任何僵尸行");
         assert!(s.running.is_empty(), "关标签必须归还全部并发额度");
+    }
+
+    #[test]
+    fn cleanup_failure_for_a_vanished_row_falls_back_to_a_toast() {
+        // 关标签时发起的清理没有行可以承载提示，改用 toast——否则「有文件没删掉」会完全无声。
+        let mut s = State::new();
+
+        let events = run_events(s.update(
+            Message::CleanupDone(4242, Some("/tmp/left.part".to_string())),
+            &no_client_ctx(7),
+        ));
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::Toast(ToastKind::Error, msg) if msg.contains("/tmp/left.part")
+            )),
+            "行已消失时清理失败必须弹 toast 告知路径"
+        );
     }
 }

@@ -21,5 +21,5 @@ pub mod terminal_bridge;
 pub use connection::{HostKeyPrompt, HostKeyReply, SessionSecrets, SshConnection};
 pub use error::{CoreError, CoreErrorKind, ErrorClass};
 pub use model::{ConnectionStatus, FileEntry};
-pub use sftp::SftpClient;
+pub use sftp::{Fingerprint, ResumeAt, SftpClient};
 pub use terminal_bridge::spawn_terminal_bridge;

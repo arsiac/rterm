@@ -138,7 +138,15 @@ pub enum TransferStatus {
 
 /// 单个 SFTP 文件传输任务（上传 / 下载）的进度与状态。
 ///
+/// 传输按「全局并发 N」调度（跨标签、跨方向共享同一份额度），同一条 SFTP 通道可同时承载
+/// 多个请求——russh-sftp 的会话内部按请求 id 多路复用回执，`SftpSession` 的操作全为 `&self`，
+/// 故多个传输任务可同时持有同一客户端（详见 `app::transfer` 的调度器说明）。左侧面板聚合
+/// 所有标签的传输。状态变更由 `Message::Progress` / `Message::TransferDone` 驱动；瞬时速度随
+/// 进度消息由 `run_transfer` 的 `stream` 任务按真实 I/O 间隔估算并携带（核心层只回传累计字节，
+/// 不提供速率），UI 在上游速度基础上做滑动平均后用于显示与 ETA 估算。失败后按
 /// `[transfer] retry_attempts` 指数退避自动重试，**下一轮从上次落盘的字节继续**（源端指纹未变
+/// 时，见 `Transfer::resume`）；半成品只在取消 / 移除 / 关标签时清理，下载的失败行刻意保留它
+/// 作为续传起点（详见 `app::transfer` 的重试、续传与清理说明）。
 #[derive(Clone)]
 pub struct Transfer {
     /// 传输唯一标识，用于取消 / 重试 / 移除消息路由。
@@ -175,6 +183,7 @@ pub struct Transfer {
     ///
     /// 清理只发生在**取消、移除行与关标签**三处（下载的 `.part` 暂存 / 上传的远端残留），
     /// 失败时把路径留在这里提示用户手动处理。**下载的失败行不在清理之列**：它刻意保留 `.part`
+    /// 作为续传的起点（见 `app::transfer` 的「最终失败时暂存的去留」），行上「继续下载」按钮
     /// 就是冲它去的。上传侧的清理失败只记日志（残留不致命，重传的 `create()` 会截断），
     /// 不进此字段。
     ///
@@ -192,8 +201,26 @@ pub struct Transfer {
     /// 旧会话上。为 `Option` 仅用于「客户端已失效 / 尚未建立」的边界情形（以及无需真实连接的
     /// 单元测试），正常入队时恒为 `Some`。
     pub client: Option<std::sync::Arc<rterm_core::SftpClient>>,
+    /// 续传状态（上一轮记录的源端指纹 + 该轮起始偏移），`None` = 尚无可用半成品。
+    ///
+    /// 由每次尝试开始时的 `Message::AttemptStarted` 写入，是下一轮「能不能接着写」的**唯一**
+    /// 校验基准（判定见 `app::transfer::resume_offset`）。排队中 / 从未跑过 / 已收尾（`Done`）
+    /// 时为 `None`；失败与被取消**不清**它——那正是续传要用的东西。
+    pub resume: Option<ResumeState>,
+    /// 该行的暂存文件里是**完整数据**（下载内容已落全、只是改名失败）。
+    ///
+    /// 语义是「任何清理路径都必须跳过它」：它不是半成品，而是用户唯一的一份数据。由
     /// `Failure::keep_staging` 在最终失败时落到这里，供关标签 / 移除等清理路径判定。
     pub keep_staging: bool,
+}
+
+/// 一次传输的续传状态：下一轮尝试的校验基准。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeState {
+    /// 上一轮记录下来的源端指纹（大小 + 修改时间），用于确认「还是同一个文件」。
+    pub source: rterm_core::Fingerprint,
+    /// 上一轮尝试的起始偏移（= 该轮开始时暂存文件的长度）。
+    pub offset: u64,
 }
 
 /// SFTP 文件管理视图的临时状态。

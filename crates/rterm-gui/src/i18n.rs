@@ -73,6 +73,9 @@ pub fn localize_error(err: &CoreError) -> String {
                     t!("errors.sftp_open_remote_file", detail => detail)
                 }
                 CoreErrorKind::ReadRemote => t!("errors.sftp_read_remote", detail => detail),
+                CoreErrorKind::RemoteMetadata => {
+                    t!("errors.sftp_remote_metadata", detail => detail)
+                }
             }
         }
     }

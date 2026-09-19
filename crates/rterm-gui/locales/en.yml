@@ -202,6 +202,9 @@ transfer:
   retry_wait: "Retry %{attempt}/%{max} · retrying in %{secs}s"
   retrying: "Retrying %{attempt}/%{max} · no data yet"
   retried_of: "%{attempt}/%{max} retries used"
+  # Label of the failed row's action: a failed download keeps its .part, so the next attempt
+  # continues from the breakpoint — hence "Continue" rather than "Retry".
+  resume: Continue download
   partial_left: "A partial file could not be removed automatically; please remove it manually: %{path}"
   rename_failed: "The download finished but could not be renamed; the file is kept at: %{path}"
   eta: " · %{time} left"
@@ -294,6 +297,7 @@ errors:
   sftp_close_remote_file: "Failed to close remote file: %{detail}"
   sftp_open_remote_file: "Failed to open remote file: %{detail}"
   sftp_read_remote: "Failed to read remote file: %{detail}"
+  sftp_remote_metadata: "Failed to read remote file info: %{detail}"
   # The session is gone (russh-sftp's "session closed" / "sender dropped" family). Deliberately
   # without the engine's raw text: what helps the user is "reconnect", not channel internals.
   session_gone: "Connection closed — reconnect, then retry"
