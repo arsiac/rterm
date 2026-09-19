@@ -11,10 +11,12 @@ use crate::t;
 
 use crate::app::App;
 use crate::app::masterpw::{Message, MpwStage};
-use crate::session_panel::panel_style;
 use crate::sftp_dialogs::overlay_wrap;
-use crate::ui::DANGER;
-use iced::widget::{Space, button, checkbox, column, container, row, rule, text, text_input};
+use crate::ui::{
+    DialogBtnStyle, DialogButton, dialog_footer, dialog_panel, dialog_panel_style,
+    dialog_title_bar, field_label, hairline, hint_text, text_input_style,
+};
+use iced::widget::{checkbox, column, container, text, text_input};
 use iced::{Element, Length};
 
 /// 弹窗面板宽度（容纳说明与两个输入框）。
@@ -36,54 +38,121 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     Some(overlay_wrap(panel(app)))
 }
 
-/// 主密码弹窗主体：设置或解锁模式复用同一面板骨架。
-fn panel(app: &App) -> Element<'_, Message> {
-    let body = if app.masterpw.setup {
-        setup_body(app)
-    } else {
-        unlock_body(app)
-    };
-
-    // 标题行：设置模式下附带右上角关闭按钮（可中途取消，回到已就绪的随机密钥保险库）；
-    // 解锁模式不提供关闭，否则应用将处于无保险库状态。异步流程进行中禁止关闭，避免中途打断。
-    let busy = app.masterpw.stage != MpwStage::Idle;
-    let mut title_row = row![
-        text(if app.masterpw.setup {
-            t!("masterpw.set_title")
-        } else {
-            t!("masterpw.unlock_title")
-        })
-        .size(18),
-    ]
-    .spacing(8);
-    if app.masterpw.setup {
-        title_row = title_row
-            .push(Space::new().width(Length::Fill))
-            .push(close_button(busy));
+/// 「关闭主密码」二次确认弹窗遮罩层；未处于确认态时返回 `None`。
+///
+/// 与 [`view`] 相互独立：确认弹窗由**设置面板**发起（彼时保险库已就绪，[`view`] 返回 `None`），
+/// 二者不会同时出现。骨架与主机密钥弹窗一致——这是不可逆的降权操作，故**不加标题栏 ✕**，
+/// 只能通过显式的「取消 / 关闭主密码」二选一离开。
+pub fn confirm_disable_overlay(app: &App) -> Option<Element<'_, Message>> {
+    if !app.masterpw.confirm_disable {
+        return None;
+    }
+    let mut body = column![text(t!("masterpw.disable_confirm_body")).size(14)].spacing(10);
+    body = body.push(hint_text(t!("masterpw.disable_confirm_note")));
+    // 失败原因就地显示：`disable` 出错时确认框会保留（见 `masterpw::State::update`）。
+    if let Some(e) = &app.masterpw.error {
+        body = body.push(text(e.clone()).size(13).color(crate::ui::DANGER));
     }
 
-    container(
-        column![title_row, rule::horizontal(1), body,]
-            .spacing(14)
-            .padding(20),
-    )
+    Some(overlay_wrap(dialog_panel(
+        t!("masterpw.disable_confirm_title"),
+        body,
+        Some(crate::ui::DANGER),
+        PANEL_WIDTH,
+        Some(DialogButton {
+            label: t!("common.cancel"),
+            on_press: Message::DisableCancel,
+            style: DialogBtnStyle::Neutral,
+        }),
+        DialogButton {
+            label: t!("masterpw.disable"),
+            on_press: Message::Disable,
+            style: DialogBtnStyle::Emphasis { danger: true },
+        },
+    )))
+}
+
+/// 主密码弹窗主体：设置 / 解锁模式复用同一面板骨架（骨架与会话编辑器一致）。
+fn panel(app: &App) -> Element<'_, Message> {
+    // 异步流程进行中禁用关闭与提交，避免中途打断密钥派生 / 重加密。
+    let busy = app.masterpw.stage != MpwStage::Idle;
+    // 标题栏关闭按钮仅在设置模式下提供：解锁模式不提供，否则应用会停在「无保险库」状态。
+    let close = app
+        .masterpw
+        .setup
+        .then(|| if busy { Message::Noop } else { Message::Cancel });
+    let title = if app.masterpw.setup {
+        t!("masterpw.set_title")
+    } else {
+        t!("masterpw.unlock_title")
+    };
+
+    // 实时校验：设置模式下确认框已输入且与口令不一致时立即提示（与处理器写入的提交错误不重复）。
+    let error = if app.masterpw.setup
+        && app.masterpw.error.is_none()
+        && !app.masterpw.confirm.is_empty()
+        && app.masterpw.input != app.masterpw.confirm
+    {
+        Some(t!("masterpw.mismatch"))
+    } else {
+        app.masterpw.error.clone()
+    };
+
+    let (body, primary) = if app.masterpw.setup {
+        // 保存按钮：异步流程进行中显示进度文案，告诉用户程序在忙而非卡死。
+        let label = match app.masterpw.stage {
+            MpwStage::Idle => t!("masterpw.save"),
+            MpwStage::Deriving => t!("masterpw.deriving"),
+            MpwStage::Reencrypting => t!("masterpw.reencrypting"),
+        };
+        (
+            setup_body(app),
+            DialogButton {
+                label,
+                on_press: press_if(busy, Message::Submit),
+                style: DialogBtnStyle::Emphasis { danger: false },
+            },
+        )
+    } else {
+        let empty = app.masterpw.input.is_empty();
+        (
+            unlock_body(app),
+            DialogButton {
+                label: t!("masterpw.unlock"),
+                on_press: press_if(empty, Message::Submit),
+                style: DialogBtnStyle::Emphasis { danger: false },
+            },
+        )
+    };
+
+    // 设置模式补一个底部「取消」，与标题栏关闭按钮同语义 —— 与会话编辑器一致：
+    // 顶部 ✕ 与底部取消互为发现路径，两条路径必须指向同一个消息。
+    let secondary = app.masterpw.setup.then(|| DialogButton {
+        label: t!("masterpw.cancel"),
+        on_press: press_if(busy, Message::Cancel),
+        style: DialogBtnStyle::Neutral,
+    });
+
+    container(column![
+        dialog_title_bar(title, close),
+        hairline(),
+        container(body).width(Length::Fill).padding([16.0, 20.0]),
+        hairline(),
+        dialog_footer(error, secondary, primary),
+    ])
     .width(PANEL_WIDTH)
-    .style(panel_style)
+    .style(dialog_panel_style(None))
     .into()
 }
 
-/// 设置弹窗右上角的关闭按钮（✕）：取消「设置主密码」流程；`busy` 为异步流程进行中时禁用。
-fn close_button(busy: bool) -> Element<'static, Message> {
-    crate::ui::dialog_close_button(if busy { Message::Noop } else { Message::Cancel })
+/// 禁用态取 `Noop` 占位（按钮仍可点但无副作用），避免额外的 disabled 状态传递。
+fn press_if(disabled: bool, msg: Message) -> Message {
+    if disabled { Message::Noop } else { msg }
 }
 
-/// 设置模式主体：两次输入 + 「我已牢记」勾选 + 保存按钮。
-///
-/// 表单校验分两层：
-/// - 实时校验：确认框已输入且与口令不一致时，立刻在按钮上方给出红色提示（无需等到提交）；
-/// - 提交校验：空口令 / 未勾选「牢记」/ 存储或写入失败等由处理器写入 `masterpw.error` 后展示。
+/// 设置模式主体：两次输入 + 「我已牢记」勾选（错误与主操作按钮由 [`panel`] 统一置于底部）。
 fn setup_body(app: &App) -> Element<'_, Message> {
-    let mut col = column![
+    column![
         text(t!("masterpw.set_body")).size(14),
         labeled_secure(t!("masterpw.password"), &app.masterpw.input, Message::Input),
         labeled_secure(
@@ -96,88 +165,33 @@ fn setup_body(app: &App) -> Element<'_, Message> {
             .on_toggle(Message::Memorized)
             .spacing(8),
     ]
-    .spacing(10);
-
-    // 实时校验：确认框已输入且与口令不一致时立即提示（与下方提交错误不重复展示）。
-    if app.masterpw.error.is_none()
-        && !app.masterpw.confirm.is_empty()
-        && app.masterpw.input != app.masterpw.confirm
-    {
-        col = col.push(text(t!("masterpw.mismatch")).size(13).color(DANGER));
-    }
-
-    // 提交校验结果（空口令 / 未牢记 / 存储或写入失败等）由处理器写入 `masterpw.error`。
-    if let Some(e) = &app.masterpw.error {
-        col = col.push(text(e.clone()).size(13).color(DANGER));
-    }
-
-    // 保存按钮：异步流程进行中显示进度文案并禁用，告诉用户程序在忙而非卡死。
-    let busy = app.masterpw.stage != MpwStage::Idle;
-    let save_label = match app.masterpw.stage {
-        MpwStage::Idle => t!("masterpw.save"),
-        MpwStage::Deriving => t!("masterpw.deriving"),
-        MpwStage::Reencrypting => t!("masterpw.reencrypting"),
-    };
-
-    col = col.push(
-        container(
-            button(text(save_label).size(16))
-                .on_press(if busy { Message::Noop } else { Message::Submit })
-                .style(save_btn_style)
-                .padding([10, 24]),
-        )
-        .width(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Center),
-    );
-
-    col.into()
+    .spacing(12)
+    .into()
 }
 
-/// 解锁模式主体：单次输入 + 解锁按钮（非空即可点）。
+/// 解锁模式主体：单次输入（非空即可提交，空值由 [`panel`] 转为 `Noop`）。
 fn unlock_body(app: &App) -> Element<'_, Message> {
-    let can = !app.masterpw.input.is_empty();
-    let mut col = column![
+    column![
         text(t!("masterpw.unlock_body")).size(14),
         labeled_secure(t!("masterpw.password"), &app.masterpw.input, Message::Input),
     ]
-    .spacing(10);
-
-    if let Some(e) = &app.masterpw.error {
-        col = col.push(text(e.clone()).size(13).color(DANGER));
-    }
-
-    col = col.push(
-        container(
-            button(text(t!("masterpw.unlock")).size(16))
-                .on_press(if can { Message::Submit } else { Message::Noop })
-                .style(save_btn_style)
-                .padding([10, 24]),
-        )
-        .width(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Center),
-    );
-
-    col.into()
+    .spacing(12)
+    .into()
 }
 
-/// 带标签的密文（掩码）输入框。
+/// 带标签的密文（掩码）输入框；标签复用共享的 [`field_label`]。
 fn labeled_secure<'a>(
     label: impl Into<String>,
     value: &'a str,
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     column![
-        text(label.into()).size(14),
+        field_label(label),
         text_input("", value)
             .secure(true)
             .on_input(on_input)
-            .style(crate::ui::text_input_style),
+            .style(text_input_style),
     ]
-    .spacing(2)
+    .spacing(4)
     .into()
-}
-
-/// 保存按钮样式：复用会话编辑器主按钮样式。
-fn save_btn_style(theme: &iced::Theme, status: button::Status) -> button::Style {
-    crate::session_panel::save_btn_style(theme, status)
 }

@@ -47,6 +47,11 @@ pub struct State {
     pub change_memorized: bool,
     /// 更改弹窗错误提示。
     pub change_error: Option<String>,
+    /// 是否打开「关闭主密码」二次确认弹窗。
+    ///
+    /// 「关闭主密码」会重建随机密钥并重新加密全部凭据，且原口令派生密钥当场丢弃——
+    /// 是一次不可逆的降权操作，故必须先经确认弹窗，不允许从设置面板一键直达。
+    pub confirm_disable: bool,
 }
 
 impl Default for State {
@@ -71,6 +76,7 @@ impl State {
             change_new_confirm: String::new(),
             change_memorized: false,
             change_error: None,
+            confirm_disable: false,
         }
     }
 
@@ -151,7 +157,24 @@ impl State {
             Message::ChangeSubmit => change_submit(self, ctx),
             Message::ChangeDerive(res) => change_derive(self, res, ctx),
             Message::ChangeRekey(res) => change_rekey(self, res, ctx),
-            Message::Disable => disable(self, ctx),
+            // 「关闭主密码」先开二次确认（设置面板上只暴露 `DisableRequest`）。
+            Message::DisableRequest => {
+                self.error = None;
+                self.confirm_disable = true;
+                Task::none()
+            }
+            Message::DisableCancel => {
+                self.confirm_disable = false;
+                Task::none()
+            }
+            Message::Disable => {
+                let task = disable(self, ctx);
+                // 失败时保留确认框，让 `disable` 写入的错误就地可见；成功才关闭。
+                if self.error.is_none() {
+                    self.confirm_disable = false;
+                }
+                task
+            }
             Message::RememberToggled(v) => Task::done(Event::SetRemember(v)),
         }
     }
@@ -198,7 +221,13 @@ pub enum Message {
     ChangeDerive(Result<(Arc<Vault>, Arc<Vault>), String>),
     /// 更改主密码：凭据重加密 + 落盘完成。
     ChangeRekey(Result<(Arc<Vault>, Vec<SessionConfig>), String>),
+    /// 打开「关闭主密码」二次确认弹窗（设置面板上唯一暴露的入口）。
+    DisableRequest,
+    /// 取消「关闭主密码」确认弹窗。
+    DisableCancel,
     /// 关闭主密码（模式 1 → 模式 0）：重新用随机密钥加密全部凭据。
+    ///
+    /// 只应由确认弹窗的主按钮发出，不要直接接到设置面板的按钮上。
     Disable,
     /// 「本机记住主密码」开关切换（自动解锁用系统钥匙串）。
     RememberToggled(bool),

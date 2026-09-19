@@ -114,6 +114,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::masterpw_change_dialog::view(app) {
         layers.push(dialog.map(Message::MasterPw));
     }
+    // 「关闭主密码」二次确认：同样从设置面板进入，与更改弹窗同级。
+    if let Some(dialog) = crate::masterpw_dialog::confirm_disable_overlay(app) {
+        layers.push(dialog.map(Message::MasterPw));
+    }
     // 主机密钥确认弹窗永远最顶层：安全决策必须压过其他一切弹窗。
     if let Some(dialog) = crate::host_key_dialog::view(app) {
         layers.push(dialog.map(Message::HostKey));

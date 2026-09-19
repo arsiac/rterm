@@ -74,10 +74,6 @@ fn mismatch_dialog<'a>(p: &'a HostKeyPrompt, stored: &'a str) -> Element<'a, Mes
 }
 
 /// 主机密钥弹窗面板：复用 [`crate::ui::dialog_panel`]。
-///
-/// 与 SFTP 弹窗的差异仅为按钮消息与面板宽度（需容纳长指纹），故仅外置这些参数；
-/// 指纹变更时以 [`DANGER`] 加粗描边。`primary` 为右侧主决定按钮（信任 / 仍信任），
-/// `secondary` 为左侧中性按钮（拒绝 / 取消）。
 fn panel<'a>(
     title: impl Into<String>,
     border: Option<Color>,

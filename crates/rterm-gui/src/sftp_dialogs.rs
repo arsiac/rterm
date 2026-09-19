@@ -10,8 +10,8 @@ use crate::App;
 use crate::app::sftp::Message;
 use crate::sftp_panel;
 use crate::state::SftpDialog;
-use iced::widget::{button, column, container, row, text};
-use iced::{Border, Color, Element, Length, Theme};
+use iced::widget::{column, container, row, text};
+use iced::{Color, Element, Length, Theme};
 use rterm_core::FileEntry;
 
 /// 将子元素包装为全屏模态遮罩：半透明黑底 + 居中 + `opaque` 拦截事件穿透。
@@ -119,6 +119,7 @@ fn properties_dialog<'a>(entry: &'a FileEntry, path: &'a str) -> Element<'a, Mes
 
 /// 属性框中的单行“标签 : 值”；`label_width` 为标签列固定宽度（按最长标签调整）。
 ///
+/// 标签复用共享的 [`crate::ui::field_label`]（13px 次级色），与表单弹窗的字段标签同一层级；
 /// 与消息类型无关，故对消息类型 `M` 泛型（SFTP 属性框用 `sftp::Message`、主机密钥框用顶层
 /// `Message`，均可复用）。
 pub(crate) fn prop_row<'a, M: Clone + 'a>(
@@ -127,9 +128,7 @@ pub(crate) fn prop_row<'a, M: Clone + 'a>(
     label_width: f32,
 ) -> Element<'a, M> {
     row![
-        text(label.into())
-            .size(14)
-            .width(Length::Fixed(label_width)),
+        container(crate::ui::field_label(label)).width(Length::Fixed(label_width)),
         // WordOrGlyph：指纹这类无空格长 token 按词换行放不下时退化为字符级断行，
         // 否则整个 token 溢出面板。
         text(value)
@@ -142,10 +141,7 @@ pub(crate) fn prop_row<'a, M: Clone + 'a>(
     .into()
 }
 
-/// SFTP 文件操作确认 / 取消弹窗：复用 [`crate::ui::dialog_panel`]。
-///
-/// 确认按钮固定为 [`crate::app::sftp::Message::SftpDialogConfirm`]、取消为 [`crate::app::sftp::Message::SftpCancelDialog`]，
-/// 面板宽度 360、无加粗描边；`danger` 控制确认按钮是否为危险红。
+/// SFTP 文件操作确认 / 取消弹窗
 fn dialog_panel<'a>(
     title: impl Into<String>,
     body: impl Into<Element<'a, Message>>,
@@ -158,56 +154,14 @@ fn dialog_panel<'a>(
         None,
         360.0,
         Some(crate::ui::DialogButton {
-            label: confirm_label.into(),
-            on_press: crate::app::sftp::Message::SftpDialogConfirm,
-            style: crate::ui::DialogBtnStyle::Emphasis { danger },
-        }),
-        crate::ui::DialogButton {
             label: t!("common.cancel"),
             on_press: crate::app::sftp::Message::SftpCancelDialog,
             style: crate::ui::DialogBtnStyle::Neutral,
+        }),
+        crate::ui::DialogButton {
+            label: confirm_label.into(),
+            on_press: crate::app::sftp::Message::SftpDialogConfirm,
+            style: crate::ui::DialogBtnStyle::Emphasis { danger },
         },
     )
-}
-
-/// 对话框危险（确认）按钮样式：常态为纯色，悬停 / 按下降到 85% 不透明度，文字恒为白色。
-///
-/// 强调色分支走统一取色点 [`crate::theme::accent_color`]（随用户主题色 / 当前主题生效）。
-pub(crate) fn dialog_btn_style(
-    theme: &Theme,
-    status: button::Status,
-    danger: bool,
-) -> button::Style {
-    let base = if danger {
-        crate::ui::DANGER
-    } else {
-        crate::theme::accent_color(theme)
-    };
-    let bg = match status {
-        button::Status::Hovered | button::Status::Pressed => {
-            Color::from_rgba(base.r, base.g, base.b, 0.85)
-        }
-        _ => base,
-    };
-    button::Style {
-        background: Some(iced::Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: Border::default().rounded(6.0),
-        ..Default::default()
-    }
-}
-
-/// 对话框中性（取消）按钮样式。
-pub(crate) fn dialog_btn_style_neutral(theme: &Theme, _status: button::Status) -> button::Style {
-    let p = crate::theme::custom_palette(theme);
-    button::Style {
-        background: Some(iced::Background::Color(p.surface)),
-        text_color: p.text_secondary,
-        border: Border {
-            color: p.border,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..Default::default()
-    }
 }

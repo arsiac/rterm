@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
-use crate::app::{events, hostkey, session, settings, sftp, tabs, window};
+use crate::app::{events, hostkey, masterpw, session, settings, sftp, tabs, window};
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
 use crate::t;
@@ -117,15 +117,19 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::MasterPwEvent(e) => events::apply_masterpw_event(app, e),
     }
 }
-/// 处理 Esc：按层级优先关闭主机密钥弹窗、设置弹窗、会话编辑器或 SFTP 对话框。
-///
-/// 除主机密钥外，各分支都**经模块自身 `update` 派发**（`Toggle` / `CancelEdit` /
-/// `SftpCancelDialog`），父层不直接改子模块状态——关哪个、清什么由模块自己决定。
+
+/// 处理 Esc：按层级优先关闭弹窗。
 pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
     if !app.hostkey.is_empty() {
         app.hostkey
             .update(hostkey::Message::Dismiss)
             .map(Message::HostKeyEvent)
+    } else if app.masterpw.confirm_disable {
+        // 确认框压在设置弹窗之上，故必须先于设置分支处理，否则 Esc 会穿过它去关底下的弹窗。
+        let ctx = contexts::masterpw_ctx(app);
+        app.masterpw
+            .update(masterpw::Message::DisableCancel, &ctx)
+            .map(Message::MasterPwEvent)
     } else if app.settings.show_settings {
         let ctx = contexts::settings_ctx(app);
         app.settings

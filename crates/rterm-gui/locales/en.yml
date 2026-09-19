@@ -125,6 +125,9 @@ masterpw:
   status_random_desc: Credentials are encrypted with a system-generated key stored in the system keyring, so the app unlocks automatically on this device without a passphrase. This mode cannot be synced across devices; set a master passphrase before enabling sync.
   setup: Set master passphrase
   disable: Disable master passphrase
+  disable_confirm_title: Disable master passphrase?
+  disable_confirm_body: Disabling generates a new local random key and immediately re-encrypts every session credential with it. The key derived from your current passphrase is discarded.
+  disable_confirm_note: This cannot be undone. The app will then unlock automatically on this device without a passphrase, and syncing across devices stops working until you set a passphrase again.
   setup_hint: After setting a passphrase, credentials are re-encrypted with it and can be synced across devices; the re-encryption runs on this device and requires entering the new passphrase once.
   disabled: Master passphrase disabled; credentials are now encrypted with a local random key (sync unavailable)
   enable_sync_required: Set a master passphrase before enabling sync
