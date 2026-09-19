@@ -198,6 +198,12 @@ transfer:
   title: 传输 (%{count})
   empty: 暂无传输任务
   queued: 排队中
+  transferring: 传输中…
+  retry_wait: 等待重试（第 %{attempt}/%{max} 次） · %{secs}s 后重试
+  retrying: 正在重试（第 %{attempt}/%{max} 次） · 尚未收到数据
+  retried_of: 已重试 %{attempt}/%{max} 次
+  partial_left: 半成品文件未能自动清理，请手动处理：%{path}
+  rename_failed: 下载已完成但重命名失败，内容保留在：%{path}
   eta: " · 剩 %{time}"
   queue_full: 传输队列已满，部分文件未入队。
 terminal:
@@ -232,7 +238,6 @@ app:
   transfer_partial: 部分传输失败
   transfer_done: 传输完成
   canceled: 已取消
-  transfer_canceled: "传输任务被取消: %{err}"
   op_success: 操作成功
   op_failed: "操作失败: %{err}"
   exported: 已导出 %{count} 个会话到 %{path}

@@ -10,6 +10,7 @@ use rterm_core::{
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 /// 中心面板可显示的内容类型（由最左侧活动栏切换）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +124,12 @@ pub enum TransferStatus {
     Queued,
     /// 传输中。
     Active,
+    /// 等待自动重试：上一次尝试以瞬时故障告终，正在指数退避。
+    ///
+    /// **刻意独立于 [`Self::Queued`]**：退避期间不占用并发额度（否则 N 个任务同时失败会让
+    /// 整个队列空转最长 8 秒），也不参与调度序，故不能复用「排队中」——那会让面板把它算进
+    /// 排队数、并让调度器误以为它可以立即启动。到点后由 `Message::RetryDue` 转回 `Queued`。
+    WaitingRetry,
     /// 已完成。
     Done,
     /// 失败 / 已取消（含自动重试次数耗尽）。
@@ -131,10 +138,7 @@ pub enum TransferStatus {
 
 /// 单个 SFTP 文件传输任务（上传 / 下载）的进度与状态。
 ///
-/// 同一标签的 SFTP 客户端非并发安全，故单标签内传输顺序执行；左侧面板聚合所有标签的
-/// 传输。状态变更由 `Message::Progress` / `Message::TransferDone` 驱动；瞬时速度随进度消息
-/// 由 `run_transfer` 的 `stream` 任务按真实 I/O 间隔估算并携带（核心层只回传累计字节，
-/// 不提供速率），UI 在上游速度基础上做滑动平均后用于显示与 ETA 估算。
+/// `[transfer] retry_attempts` 指数退避自动重试，**下一轮从上次落盘的字节继续**（源端指纹未变
 #[derive(Clone)]
 pub struct Transfer {
     /// 传输唯一标识，用于取消 / 重试 / 移除消息路由。
@@ -153,6 +157,29 @@ pub struct Transfer {
     pub total: u64,
     /// 当前状态（排队 / 等待重试 / 传输中 / 完成 / 失败）。
     pub status: TransferStatus,
+    /// 已安排的自动重试次数（0 表示尚未自动重试过）。
+    ///
+    /// 每进入一次 [`TransferStatus::WaitingRetry`] 自增；手动重试会把计数清零（视为用户重新开始，
+    /// 故手动重试次数不限）。它同时是重试预算的消耗量（`attempts < retry_attempts`）。
+    ///
+    /// **只在「等待重试 / 最终失败」两态显示**（分母为 `[transfer] retry_attempts`）：重试一旦
+    /// 成功、行重新跑起来，就该回到干净的样子——否则一次网络抖动会留下永久徽标（实测反馈）。
+    /// 故该字段在成功路径上**不清零**，面板只是不显示它。
+    pub attempts: u32,
+    /// 下次自动重试的最早时刻（仅 [`TransferStatus::WaitingRetry`] 期间为 `Some`）。
+    ///
+    /// 面板用它渲染倒计时；调度器**不**依赖它（`WaitingRetry` 本身就不参与调度），
+    /// 到点由退避定时器发 `Message::RetryDue` 转回排队态。
+    pub not_before: Option<Instant>,
+    /// 半成品文件路径（仅当「该清理而清理失败」时为 `Some`）。
+    ///
+    /// 清理只发生在**取消、移除行与关标签**三处（下载的 `.part` 暂存 / 上传的远端残留），
+    /// 失败时把路径留在这里提示用户手动处理。**下载的失败行不在清理之列**：它刻意保留 `.part`
+    /// 就是冲它去的。上传侧的清理失败只记日志（残留不致命，重传的 `create()` 会截断），
+    /// 不进此字段。
+    ///
+    /// 关标签时发起的清理没有行可承载提示，失败时改弹 toast（见 `app::transfer`）。
+    pub partial: Option<String>,
     /// 错误信息（失败 / 取消时存在）。
     pub error: Option<String>,
     /// 瞬时速度（字节/秒），由进度消息按真实 I/O 间隔估算后携带，UI 做滑动平均用于显示与 ETA。
@@ -165,6 +192,8 @@ pub struct Transfer {
     /// 旧会话上。为 `Option` 仅用于「客户端已失效 / 尚未建立」的边界情形（以及无需真实连接的
     /// 单元测试），正常入队时恒为 `Some`。
     pub client: Option<std::sync::Arc<rterm_core::SftpClient>>,
+    /// `Failure::keep_staging` 在最终失败时落到这里，供关标签 / 移除等清理路径判定。
+    pub keep_staging: bool,
 }
 
 /// SFTP 文件管理视图的临时状态。
@@ -201,7 +230,8 @@ pub struct SftpView {
     pub busy: bool,
     /// 当前打开的模态对话框（`None` 表示无）：删除确认 / 下载覆盖确认 / 文件属性。
     pub dialog: Option<SftpDialog>,
-    /// 上次选择的下载目录：用作下载目录选择器的起始目录，首次取系统下载目录。
+    /// 上次选择的下载目录：用作下载目录选择器的起始目录，首次取系统下载目录
+    /// （`~/Downloads`，经 [`rterm_config::paths::download_dir`] 解析并逐级回退）。
     ///
     /// 不是「下载目标未指定时的回落」——`Message::SftpDownload` 总是自带目标目录。
     pub download_dir: String,
@@ -223,9 +253,9 @@ impl Default for SftpView {
             context_target: None,
             busy: false,
             dialog: None,
-            download_dir: dirs::download_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| ".".to_string()),
+            download_dir: rterm_config::paths::download_dir()
+                .to_string_lossy()
+                .to_string(),
         }
     }
 }

@@ -201,7 +201,7 @@ impl CoreError {
     /// 判定该错误的可重试性分类。
     ///
     /// 判定依据见各分支注释：本地 I/O 看 [`io::ErrorKind`]，SSH 层看是否为通道 / 子系统级故障，
-    /// SFTP 层按操作类型下钻到底层来源
+    /// SFTP 层先看是否为「会话已终结」，再按操作类型下钻到底层来源
     /// （结构化类型优先，退化为消息文本）。
     pub fn class(&self) -> ErrorClass {
         match self {
@@ -218,14 +218,24 @@ impl CoreError {
             },
             // 只有「传输过程中」的远端错误才谈得上重试：列目录 / 建目录 / 重命名等语义性失败
             // 即使瞬时也不该由传输层自动重放。
-            CoreError::Sftp { kind, source } => match kind {
-                CoreErrorKind::ReadRemote
-                | CoreErrorKind::WriteRemote
-                | CoreErrorKind::OpenRemoteFile
-                | CoreErrorKind::CreateRemoteFile
-                | CoreErrorKind::CloseRemoteFile => classify_remote(source.as_deref()),
-                _ => ErrorClass::Unknowable,
-            },
+            //
+            // 但**会话终结要先于操作类型判定**：它说的不是「这个操作失败了」，而是「承载它的
+            // 通道已经死了」—— 列目录、建目录、重命名……在这条通道上同样不可能有结果。上层的
+            // 传输任务会走 `ensure_remote_dir` 这类辅助操作，若只在传输类 kind 上识别，建目录
+            // 撞上死会话就会退化成「无法判定」（进而被当成可重试），与读写侧的表现不一致。
+            CoreError::Sftp { kind, source } => {
+                if classify_remote(source.as_deref()) == ErrorClass::SessionGone {
+                    return ErrorClass::SessionGone;
+                }
+                match kind {
+                    CoreErrorKind::ReadRemote
+                    | CoreErrorKind::WriteRemote
+                    | CoreErrorKind::OpenRemoteFile
+                    | CoreErrorKind::CreateRemoteFile
+                    | CoreErrorKind::CloseRemoteFile => classify_remote(source.as_deref()),
+                    _ => ErrorClass::Unknowable,
+                }
+            }
         }
     }
 }
@@ -281,10 +291,18 @@ fn classify_sftp_error(e: &russh_sftp::client::error::Error) -> ErrorClass {
     match e {
         SftpError::Status(s) => classify_status_code(s.status_code),
         // 超时、超出 limits@openssh.com 限制、协议层 I/O 断链：重试有意义。
+        //
+        // 这里**刻意**不把 `IO(_)` 归入 [`ErrorClass::SessionGone`]：它既可能是「会话已死」，
+        // 也可能只是一次可恢复的写超时，而两类误判的代价并不对称 —— 误当瞬时故障最多白等一次
+        // 退避（下一次尝试若真已断链就会拿到 `session closed`，随即被正确地判定为会话终结并停下），
+        // 误当会话终结却会剥夺一次本来能成功的自动重试。故宁可让它先走瞬时分支。
         SftpError::Timeout
         | SftpError::IO(_)
         | SftpError::Limited(_)
         | SftpError::UnexpectedPacket => ErrorClass::Transient,
+        // 该变体既囊括「本地通道管线已退出」（`session closed` / `sender dropped` / `SendError`
+        // / `RecvError`，由 [`classify_message`] 判为 [`ErrorClass::SessionGone`]）也囊括真正的
+        // 协议异常，故继续按文本细分，无法细分时留给调用方决定。
         SftpError::UnexpectedBehavior(msg) => classify_message(msg),
     }
 }
@@ -304,9 +322,25 @@ fn classify_status_code(code: russh_sftp::protocol::StatusCode) -> ErrorClass {
 
 /// 按消息文本判定分类：结构化类型不可得时的兜底。
 ///
-/// 匹配对象主要是 [`russh_sftp::protocol::StatusCode`] 的展示文本（`"Permission denied"` 等）。
+/// 匹配对象主要是 [`russh_sftp::protocol::StatusCode`] 的展示文本（`"Permission denied"` 等）
+/// 与 russh-sftp 在断链时产生的关键字（`sender dropped` 等）。由于「无法判定」在上层同样
+/// 被纳入自动重试，误判的代价最多是多退避重试一次，故宁可漏判也不误报「永久」。
 fn classify_message(msg: &str) -> ErrorClass {
     let lower = msg.to_ascii_lowercase();
+    // 「本地执行端已退出」优先判：这类文案全部出自 russh-sftp 的**本地通道管线**，与远端状态
+    // 无关，且一旦出现就意味着这个客户端对象已经死了（重试同一个它永远不会成功）。
+    // 四个来源：`RawSftpSession::send` 发现写入任务已退出（`session closed`）、向该任务投递
+    // 失败（`sender dropped` / `SendError`）、或等待回执的通道先关闭（`RecvError`）。
+    // 它们此前被并进瞬时故障，于是「会话已终结」会被当成网络抖动反复重试 —— 每次瞬间失败、
+    // 只有退避在空等，预算烧光后界面只剩一句引擎原文。实测反馈即「重试次数耗尽后再恢复网络
+    // 仍报 session closed」。
+    if lower.contains("session closed")
+        || lower.contains("sender dropped")
+        || lower.contains("senderror")
+        || lower.contains("recverror")
+    {
+        return ErrorClass::SessionGone;
+    }
     if lower.contains("permission denied")
         || lower.contains("no such file")
         || lower.contains("operation unsupported")
@@ -368,6 +402,11 @@ mod tests {
     #[test]
     fn ssh_channel_failures_are_transient() {
         assert_eq!(
+            CoreError::ssh(CoreErrorKind::SftpChannelOpen, io::Error::other("boom")).class(),
+            ErrorClass::Transient,
+            "通道级故障重开即可重试"
+        );
+        assert_eq!(
             CoreError::ssh_msg(CoreErrorKind::Connect).class(),
             ErrorClass::Transient
         );
@@ -427,6 +466,51 @@ mod tests {
             .class(),
             ErrorClass::Transient
         );
+        // 断链时 russh-sftp 的 oneshot 发送端被丢弃，表现为 UnexpectedBehavior。
+        // 它现在单列为「会话已终结」：读取端已退出，重试同一个客户端没有意义。
+        assert_eq!(
+            classify_sftp_error(&SftpError::UnexpectedBehavior(
+                "RecvError: sender dropped".to_string()
+            )),
+            ErrorClass::SessionGone
+        );
+    }
+
+    #[test]
+    fn session_gone_is_recognised_on_both_error_paths() {
+        // 实测反馈（设计文档 §18）：重试次数耗尽后再恢复网络，行上仍报 `session closed`。
+        // 这个文案由 `RawSftpSession::send` 在写入任务退出后产生，含义是「这个客户端已死」，
+        // 必须与网络抖动区分开，否则自动重试会把预算全烧在一具尸体上。
+        //
+        // 路径一：分块读写经由 AsyncRead/AsyncWrite，结构化类型被 `io::Error::other()` 抹平，
+        // 只剩展示文本（这是用户实际撞上的那条）。
+        assert_eq!(
+            CoreError::sftp(
+                CoreErrorKind::ReadRemote,
+                io::Error::other("session closed")
+            )
+            .class(),
+            ErrorClass::SessionGone,
+            "下载中途断链应判为会话终结"
+        );
+        // 路径二：`open` / `create` 等直接会话调用保留结构化类型。
+        assert_eq!(
+            CoreError::sftp(
+                CoreErrorKind::OpenRemoteFile,
+                SftpError::UnexpectedBehavior("session closed".to_string())
+            )
+            .class(),
+            ErrorClass::SessionGone
+        );
+        // 上传侧同一条链路，不该出现不对称。
+        assert_eq!(
+            CoreError::sftp(
+                CoreErrorKind::WriteRemote,
+                io::Error::other("session closed")
+            )
+            .class(),
+            ErrorClass::SessionGone
+        );
     }
 
     #[test]
@@ -441,6 +525,9 @@ mod tests {
             CoreError::sftp_msg(CoreErrorKind::WriteRemote).class(),
             ErrorClass::Unknowable
         );
+        // 语义性操作（列目录 / 建目录 / 重命名）即使报错也不该被自动重放 —— 但「会话已终结」
+        // 要先于操作类型判定：上传前的 `ensure_remote_dir` 撞上死会话时，若退回「无法判定」，
+        // 就会被当成可重试，与读写侧的表现不一致。
         assert_eq!(
             CoreError::sftp(
                 CoreErrorKind::CreateDir,
@@ -449,6 +536,15 @@ mod tests {
             .class(),
             ErrorClass::Unknowable,
             "建目录的语义性失败仍不该被自动重放"
+        );
+        assert_eq!(
+            CoreError::sftp(CoreErrorKind::CreateDir, io::Error::other("session closed")).class(),
+            ErrorClass::SessionGone,
+            "会话终结与具体操作无关，应优先识别"
+        );
+        assert_eq!(
+            CoreError::sftp(CoreErrorKind::ReadDir, io::Error::other("session closed")).class(),
+            ErrorClass::SessionGone
         );
     }
 }

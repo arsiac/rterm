@@ -138,6 +138,7 @@ pub(crate) fn transfer_ctx(app: &App) -> transfer::Ctx {
         // 的那一份（会话重建后同一标签会换上新客户端，旧记录必须能用上新通道）。
         clients: app.sftp.live_clients().collect(),
         max_concurrent: app.config.transfer.max_concurrent,
+        retry_attempts: app.config.transfer.retry_attempts,
     }
 }
 

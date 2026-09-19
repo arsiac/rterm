@@ -222,6 +222,17 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::RetryAttempts(v) => {
+            // 只写内存、不落盘（同并发数：拖动期间每个 step 都会触发本分支，落盘交给释放时）。
+            // 也**不**追加任何传输模块消息：该值在「失败那一刻」经 `transfer_ctx` 读取，
+            // 故下一次失败即生效，队列无需重排。
+            app.config.transfer.retry_attempts = v;
+            Task::none()
+        }
+        settings::Event::RetryAttemptsPersist => {
+            contexts::save_config(app);
+            Task::none()
+        }
         settings::Event::FontSize(v) => {
             app.config.terminal.font_size = v;
             contexts::save_config(app);

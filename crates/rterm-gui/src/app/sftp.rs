@@ -57,6 +57,7 @@ impl State {
             .iter()
             .filter_map(|(id, view)| view.client.clone().map(|c| (*id, c)))
     }
+
     /// 重新列举指定标签的当前目录，结果经 `SftpListed` 回流（自回路）。
     ///
     /// 供「上传成功」后由传输模块经父层请求刷新——传输模块只发 `transfer::Event::RefreshDir`，
@@ -588,22 +589,41 @@ impl State {
                     None => Event::Emit(Box::new(Message::SftpNoop)),
                 },
             ),
-            Message::SftpPickDownload(name) => Task::perform(
-                async move {
-                    rfd::AsyncFileDialog::new()
-                        .set_title(t!("sftp.download_title"))
-                        .pick_folder()
-                        .await
-                        .map(|handle| handle.path().to_path_buf())
-                },
-                move |dir| match dir {
-                    Some(dir) => {
-                        Event::Emit(Box::new(Message::SftpDownload(name, dir.to_path_buf())))
-                    }
-                    None => Event::Emit(Box::new(Message::SftpNoop)),
-                },
-            ),
+            Message::SftpPickDownload(name) => {
+                // 起始目录取「上次选择的下载目录」，首次为系统下载目录（`~/Downloads`）。
+                // 不传 `set_directory` 时 rfd 用平台默认值（通常是家目录），与用户预期不符。
+                let start = self
+                    .per_tab
+                    .get(&active_tab)
+                    .map(|tab| tab.download_dir.clone())
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| {
+                        rterm_config::paths::download_dir()
+                            .to_string_lossy()
+                            .to_string()
+                    });
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_title(t!("sftp.download_title"))
+                            .set_directory(&start)
+                            .pick_folder()
+                            .await
+                            .map(|handle| handle.path().to_path_buf())
+                    },
+                    move |dir| match dir {
+                        Some(dir) => {
+                            Event::Emit(Box::new(Message::SftpDownload(name, dir.to_path_buf())))
+                        }
+                        None => Event::Emit(Box::new(Message::SftpNoop)),
+                    },
+                )
+            }
             Message::SftpDownload(name, dir) => {
+                // 记住本次选定的目录，作为下次选择器的起始位置（字段语义见 `SftpView::download_dir`）。
+                if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+                    tab.download_dir = dir.to_string_lossy().to_string();
+                }
                 let local = dir.join(&name);
                 // 本地已存在同名文件：先弹覆盖确认框，确认后再上行给传输模块创建下载传输。
                 if local.exists() {

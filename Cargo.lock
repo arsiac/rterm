@@ -5146,7 +5146,6 @@ version = "0.3.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
- "dirs",
  "fontdb 0.24.0",
  "futures",
  "iced",

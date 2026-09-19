@@ -23,7 +23,7 @@ use iced::widget::{
     text_input,
 };
 use iced::{Border, Element, Length, Theme};
-use rterm_config::{Language, LogLevel, MAX_CONCURRENT, MIN_CONCURRENT};
+use rterm_config::{Language, LogLevel, MAX_CONCURRENT, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT};
 use std::fmt;
 
 /// 语言下拉框项的本地化展示名：随当前 UI 语言变化，避免英文界面仍显示「跟随系统」。
@@ -240,6 +240,16 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     .step(1.0_f32)
     .on_release(Message::Settings(settings::Message::MaxConcurrentPersist));
     let concurrency_value = text(app.config.transfer.max_concurrent.to_string()).size(13);
+    // 重试次数同为 0..=5 的小整数枚举（0 = 关闭自动重试），沿用滑块的交互约定：
+    // 拖动只写内存，松开才落盘。
+    let retry_slider = slider(
+        0.0_f32..=MAX_RETRY_ATTEMPTS as f32,
+        app.config.transfer.retry_attempts as f32,
+        |v| Message::Settings(settings::Message::RetryAttempts(v)),
+    )
+    .step(1.0_f32)
+    .on_release(Message::Settings(settings::Message::RetryAttemptsPersist));
+    let retry_value = text(app.config.transfer.retry_attempts.to_string()).size(13);
     let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.logging.level), |lv| {
         Message::Settings(settings::Message::LogLevel(lv))
     })
@@ -260,6 +270,11 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .spacing(12)
             .align_y(iced::alignment::Vertical::Center),
         crate::ui::hint_text(t!("settings.max_concurrent_hint")),
+        crate::ui::field_label(t!("settings.retry_attempts")),
+        row![retry_slider, retry_value]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+        crate::ui::hint_text(t!("settings.retry_attempts_hint")),
         crate::ui::field_label(t!("settings.scrollback")),
         scrollback_input,
         crate::ui::hint_text(t!("settings.scrollback_note")),

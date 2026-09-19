@@ -3,7 +3,9 @@
 use iced::Task;
 use iced::widget::combo_box;
 use log::error;
-use rterm_config::{AppConfig, Language, LogLevel, MAX_CONCURRENT, MIN_CONCURRENT};
+use rterm_config::{
+    AppConfig, Language, LogLevel, MAX_CONCURRENT, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT,
+};
 
 /// 设置弹窗的分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +69,10 @@ pub enum Message {
     MaxConcurrent(f32),
     /// 提交“最大并发传输数”设置（滑块释放时触发，仅落盘，避免拖动过程中反复写文件）。
     MaxConcurrentPersist,
+    /// 修改“失败自动重试次数”设置（携带滑块最新值，即时生效但不落盘）。
+    RetryAttempts(f32),
+    /// 提交“失败自动重试次数”设置（滑块释放时触发，仅落盘）。
+    RetryAttemptsPersist,
     /// 修改“终端字号”设置（携带滑块最新值）。
     FontSize(f32),
     /// 修改“程序主题”设置（携带主题标识，如 `dark` / `light`）。
@@ -108,6 +114,13 @@ pub enum Event {
     MaxConcurrent(usize),
     /// 把当前“最大并发传输数”落盘（滑块释放后调用，无重复调度）。
     MaxConcurrentPersist,
+    /// 写回“失败自动重试次数”配置（携带裁剪后的值）。
+    ///
+    /// 与并发数不同，此处**不**触发重调度：重试次数是在「失败那一刻」从上下文读取的，
+    /// 改动后下一次失败即用新值，队列无需重排。
+    RetryAttempts(u32),
+    /// 把当前“失败自动重试次数”落盘（滑块释放后调用）。
+    RetryAttemptsPersist,
     /// 写回“终端字号”配置（携带滑块值），并热替换到所有已打开的终端标签。
     FontSize(f32),
     /// 写回“程序主题”配置（携带主题标识）。
@@ -173,6 +186,13 @@ impl State {
                 Task::done(Event::MaxConcurrent(n as usize))
             }
             Message::MaxConcurrentPersist => Task::done(Event::MaxConcurrentPersist),
+            // 重试次数是 0..=5 的小整数枚举（0 = 关闭自动重试）：滑块已消除非法输入，
+            // 此处只做范围兜底。
+            Message::RetryAttempts(value) => {
+                let n = (value.round() as i64).clamp(0, MAX_RETRY_ATTEMPTS as i64);
+                Task::done(Event::RetryAttempts(n as u32))
+            }
+            Message::RetryAttemptsPersist => Task::done(Event::RetryAttemptsPersist),
             Message::FontSize(size) => Task::done(Event::FontSize(size)),
             Message::Theme(theme) => Task::done(Event::Theme(theme)),
             Message::UiFont(text) => Task::done(Event::UiFont(text)),

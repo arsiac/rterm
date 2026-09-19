@@ -210,6 +210,13 @@ pub const MIN_CONCURRENT: usize = 1;
 /// 反而降低总吞吐；同时配置被手工改成 `999` 时也需要一个兜底，避免瞬间拉起大批通道。
 pub const MAX_CONCURRENT: usize = 8;
 
+/// 单次传输自动重试次数的上限：5（即总尝试 6 次）。
+///
+/// 上限存在是为了兜住「手工把配置改成 999」的情形：退避是指数增长的，
+/// 次数越多末端等待越久（最长 8 秒一次），但真正需要限制的是「一个必然失败的任务被反复重放」
+/// 的时间成本，5 次已是容忍度的边界。
+pub const MAX_RETRY_ATTEMPTS: u32 = 5;
+
 /// `[transfer]` 段：文件传输设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferConfig {
@@ -220,12 +227,22 @@ pub struct TransferConfig {
     /// 「同时最多 N 个文件在动」；按标签分额度会让「3 并发」在开两个标签时变成 6。
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+
+    /// 单次传输的自动重试次数（`0` 表示关闭自动重试）。
+    ///
+    /// 只对**瞬时 / 无法判定**的失败生效（网络抖动、超时、通道断开）；用户取消与永久性错误
+    /// （权限不足、路径不存在）从不自动重试。加载后由 [`TransferConfig::normalize`] 裁剪到
+    /// `0..=`[`MAX_RETRY_ATTEMPTS`]`。
+    #[serde(default = "default_retry_attempts")]
+    pub retry_attempts: u32,
 }
 
 impl Default for TransferConfig {
+    /// 传输段默认值：并发数 3、自动重试 2 次。
     fn default() -> Self {
         Self {
             max_concurrent: default_max_concurrent(),
+            retry_attempts: default_retry_attempts(),
         }
     }
 }
@@ -234,8 +251,11 @@ impl TransferConfig {
     /// 把越界值裁剪到合法区间。
     ///
     /// 用户手工编辑 `config.toml` 写成 `0`（永不启动任何传输）或 `999`（瞬间开一堆通道），
+    /// 都会造成难以自查的异常，故解析之后、使用之前统一兜底。重试次数同理：`0` 是合法值
+    /// （表示关闭自动重试），无需裁剪，但上界必须收口。
     fn normalize(&mut self) {
         self.max_concurrent = self.max_concurrent.clamp(MIN_CONCURRENT, MAX_CONCURRENT);
+        self.retry_attempts = self.retry_attempts.min(MAX_RETRY_ATTEMPTS);
     }
 }
 
@@ -400,6 +420,11 @@ fn default_timeout() -> u64 {
 /// 全局最大并发传输数默认值：3。
 fn default_max_concurrent() -> usize {
     3
+}
+
+/// 自动重试次数默认值：2（总尝试 3 次）。
+fn default_retry_attempts() -> u32 {
+    2
 }
 
 /// 终端与界面默认字号（像素）：14.0。
@@ -885,7 +910,33 @@ theme = "Light"
         assert_eq!(config.terminal.font_size, 14.0);
         assert_eq!(config.terminal.theme, "Default");
         assert_eq!(config.appearance.theme, "Dark");
+        // 缺失的 [transfer] 段整体回退默认：并发 3、重试 2。
         assert_eq!(config.transfer.max_concurrent, 3);
+        assert_eq!(config.transfer.retry_attempts, 2);
+    }
+
+    #[test]
+    fn transfer_section_parses_concurrency_and_retries() {
+        let (config, migrated) =
+            parse_config("[transfer]\nmax_concurrent = 5\nretry_attempts = 4\n")
+                .expect("解析传输段应成功");
+        assert!(!migrated);
+        assert_eq!(config.transfer.max_concurrent, 5);
+        assert_eq!(config.transfer.retry_attempts, 4);
+    }
+
+    #[test]
+    fn missing_retry_attempts_falls_back_to_default() {
+        // 只写并发数的旧配置（阶段一产物）必须能继续加载，重试次数取默认 2。
+        let (config, _) =
+            parse_config("[transfer]\nmax_concurrent = 6\n").expect("解析传输段应成功");
+        assert_eq!(
+            config.transfer.retry_attempts, 2,
+            "缺少字段应回退默认重试次数"
+        );
+        // 显式写 0 表示关闭自动重试，是合法值而非「未设置」。
+        let (off, _) = parse_config("[transfer]\nretry_attempts = 0\n").expect("解析传输段应成功");
+        assert_eq!(off.transfer.retry_attempts, 0);
     }
 
     #[test]
@@ -907,6 +958,19 @@ theme = "Light"
             let config = AppConfig::new().expect("加载越界配置应成功");
             assert_eq!(
                 config.transfer.max_concurrent, expected,
+                "写入 {written} 应被裁剪为 {expected}"
+            );
+        }
+        // 重试次数：`0` 合法（关闭自动重试），上界必须收口。
+        for (written, expected) in [(0u32, 0), (99, MAX_RETRY_ATTEMPTS)] {
+            fs::write(
+                &cfg_path,
+                format!("[transfer]\nretry_attempts = {written}\n"),
+            )
+            .expect("应能写入越界配置");
+            let config = AppConfig::new().expect("加载越界配置应成功");
+            assert_eq!(
+                config.transfer.retry_attempts, expected,
                 "写入 {written} 应被裁剪为 {expected}"
             );
         }

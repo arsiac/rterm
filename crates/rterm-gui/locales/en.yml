@@ -198,6 +198,12 @@ transfer:
   title: Transfers (%{count})
   empty: No transfers yet
   queued: Queued
+  transferring: Transferring…
+  retry_wait: "Retry %{attempt}/%{max} · retrying in %{secs}s"
+  retrying: "Retrying %{attempt}/%{max} · no data yet"
+  retried_of: "%{attempt}/%{max} retries used"
+  partial_left: "A partial file could not be removed automatically; please remove it manually: %{path}"
+  rename_failed: "The download finished but could not be renamed; the file is kept at: %{path}"
   eta: " · %{time} left"
   queue_full: Transfer queue is full; some files were not enqueued.
 terminal:
@@ -233,7 +239,6 @@ app:
   transfer_partial: Some transfers failed
   transfer_done: Transfers complete
   canceled: Canceled
-  transfer_canceled: "Transfer canceled: %{err}"
   op_success: Operation succeeded
   op_failed: "Operation failed: %{err}"
   exported: Exported %{count} sessions to %{path}

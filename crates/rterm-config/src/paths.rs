@@ -15,6 +15,9 @@
 //!
 //! 沙箱根基于编译期常量推导，与进程当前工作目录无关；`release` 构建下相关代码被
 //! 条件编译移除，源码路径不会进入二进制。单元测试可用 [`set_test_root`] 注入临时根。
+//!
+//! 另有一类**用户数据**目录（目前只有 [`download_dir`]）也收在此处，但**不参与**沙箱
+//! 重定向——它只是「可以调 `dirs::` 的唯一入口」，不是应用状态。
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -117,6 +120,21 @@ pub fn cache_dir() -> Option<PathBuf> {
         Some(root) => Some(root.join(CACHE_SUBDIR)),
         None => Some(dirs::cache_dir()?.join(APP_DIR_NAME)),
     }
+}
+
+/// 用户下载目录（Linux 为 `~/Downloads`），用作下载目录选择器的起始位置。
+///
+/// 与配置 / 缓存目录不同，这里**刻意不参与开发沙箱重定向**：它是用户数据的落盘位置
+/// （下载下来的文件是用户要拿去用的），开发期也应落在用户预期的地方——否则 `cargo run`
+/// 下试下载会莫名消失在 `.dev/` 里。放在本模块只是为了守住「只有这里可以调 `dirs::`」
+/// 这条约定，不是因为它是应用状态。
+///
+/// 逐级回退：系统下载目录（Linux 依据 XDG，未配置时返回 `None`，这在精简桌面环境下很常见）
+/// → 家目录 → 当前目录，保证任何环境都有一个可用起点。
+pub fn download_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// 日志文件所在目录：缓存目录下的 `logs` 子目录。
