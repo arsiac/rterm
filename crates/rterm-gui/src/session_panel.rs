@@ -307,7 +307,7 @@ pub fn editor_overlay(app: &App) -> Option<Element<'_, Message>> {
 /// 弹窗主体：标题栏（含关闭按钮）+ 分隔线 + 可滚动表单。
 fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
     // 标题栏随新建 / 编辑切换，右侧关闭按钮复用「取消编辑」语义。
-    let is_new = draft.id.is_empty();
+    let is_new = draft.is_new();
     let header = row![
         text(if is_new {
             t!("session.editor_new")

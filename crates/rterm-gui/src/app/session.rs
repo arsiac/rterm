@@ -85,6 +85,14 @@ impl EditorDraft {
         }
     }
 
+    /// 是否为「新建会话」草稿：新建草稿不含原始认证（`orig_auth` 为 `None`），
+    /// 编辑草稿由 [`Self::from_config`] 构造、恒持有原始认证。
+    ///
+    /// 注意不能用 `id.is_empty()` 判断：[`Self::new`] 在构造时就分配了非空 id。
+    pub fn is_new(&self) -> bool {
+        self.orig_auth.is_none()
+    }
+
     /// 由会话配置构造草稿（用于「编辑」）。
     ///
     /// 凭据字段在编辑器内留空（占位「保持不变」），原始信封暂存于 `Self::orig_auth`；
