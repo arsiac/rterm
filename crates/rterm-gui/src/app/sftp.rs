@@ -48,6 +48,15 @@ impl State {
         self.per_tab.get(&tab_id).and_then(|s| s.session.clone())
     }
 
+    /// 各标签**当前**的 SFTP 客户端快照（父层在路由每条消息前交给传输模块）。
+    ///
+    /// 供传输模块在「启动 / 重试」时取最新客户端：传输记录里那份是入队时捕获的，会话重建后
+    /// 会过期，而这里永远反映此刻可用的通道（见设计文档 §19）。`Arc` 克隆，代价可忽略。
+    pub fn live_clients(&self) -> impl Iterator<Item = (u64, Arc<SftpClient>)> + '_ {
+        self.per_tab
+            .iter()
+            .filter_map(|(id, view)| view.client.clone().map(|c| (*id, c)))
+    }
     /// 重新列举指定标签的当前目录，结果经 `SftpListed` 回流（自回路）。
     ///
     /// 供「上传成功」后由传输模块经父层请求刷新——传输模块只发 `transfer::Event::RefreshDir`，

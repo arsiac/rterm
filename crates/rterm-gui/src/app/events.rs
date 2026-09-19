@@ -27,8 +27,14 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
         }
         session::Event::SessionDeleted(id) => {
             // 关闭该会话的全部终端标签（标签各自持有的连接随标签 drop 释放）。
-            connect::close_session_tabs(app, &id);
-            Task::none()
+            // 标签被整体移除，不会逐个走 `tabs::Event::RemoveHostKeyForTab`，故这里按返回值
+            // 补发传输清理，否则被关标签的队列记录与并发额度都会残留。
+            let closed = connect::close_session_tabs(app, &id);
+            let mut tasks = Vec::with_capacity(closed.len());
+            for tab_id in closed {
+                tasks.push(close_tab_transfers(app, tab_id));
+            }
+            Task::batch(tasks)
         }
         session::Event::Status(s) => {
             app.status = s;
@@ -81,10 +87,10 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
         tabs::Event::SpawnTerminal(tab_id, conout, conin, disc, resize) => {
             terminal_bridge::spawn_terminal_widget(app, tab_id, conout, conin, disc, resize)
         }
-        // 关闭标签时清理其挂起的主机密钥确认。
+        // 关闭标签时清理其挂起的主机密钥确认与传输态。
         tabs::Event::RemoveHostKeyForTab(tab_id) => {
             app.hostkey.remove_for_tab(tab_id);
-            Task::none()
+            close_tab_transfers(app, tab_id)
         }
         // 转发终端部件事件给父层（父层拥有的 widget 交互逻辑）。
         tabs::Event::TerminalEvent(ev) => terminal_bridge::handle_terminal_event(app, ev),
@@ -101,6 +107,18 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
             app.tabs.update(*m, &ctx, &app.sftp).map(Message::TabsEvent)
         }
     }
+}
+
+/// 通知传输模块某个标签已被关闭：中止其在跑任务、清空其队列并归还并发额度。
+///
+/// 标签被移除后，其传输不会再收到任何事件，故这是「额度只在 `TransferDone` 释放」的唯一例外。
+/// 两处调用：`tabs::Event::RemoveHostKeyForTab`（逐标签关闭）与 `session::Event::SessionDeleted`
+/// （删除会话，一次移除多个标签，不逐个走关闭事件）。
+pub(crate) fn close_tab_transfers(app: &mut App, tab_id: u64) -> Task<Message> {
+    let ctx = contexts::transfer_ctx(app);
+    app.transfer
+        .update(transfer::Message::TabClosed(tab_id), &ctx)
+        .map(Message::TransferEvent)
 }
 
 /// 终端挂载完成后强制重绘一次，避免 canvas 缓存停留在空白首帧。
@@ -186,6 +204,21 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
         settings::Event::Scrollback(v) => {
             // 仅对新建终端标签生效（alacritty `scrolling_history` 为构造期参数，无法热替换）。
             app.config.terminal.scrollback = v;
+            contexts::save_config(app);
+            Task::none()
+        }
+        settings::Event::MaxConcurrent(v) => {
+            // 写回内存值（已由模块裁剪到合法区间）后立即重新调度传输队列：调大即刻补位、
+            // 调小不打断在跑任务。刻意不在此落盘——拖动滑块期间每个 step 都可能触发本分支，
+            // 落盘交给滑块释放时的 `MaxConcurrentPersist`，避免反复写 `config.toml`。
+            app.config.transfer.max_concurrent = v;
+            // `transfer_ctx` 在此刻重建，读到的是**刚写入的新值**，故同一帧即生效。
+            let ctx = contexts::transfer_ctx(app);
+            app.transfer
+                .update(transfer::Message::ConcurrencyChanged, &ctx)
+                .map(Message::TransferEvent)
+        }
+        settings::Event::MaxConcurrentPersist => {
             contexts::save_config(app);
             Task::none()
         }

@@ -119,13 +119,13 @@ pub enum TransferDirection {
 /// 传输状态机，驱动左侧传输面板的图标与可操作按钮。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferStatus {
-    /// 排队中：等待同标签当前传输结束（SFTP 通道非并发安全，单标签顺序执行）。
+    /// 排队中：等待全局并发额度空出（并发上限见 `[transfer] max_concurrent`，默认 3）。
     Queued,
     /// 传输中。
     Active,
     /// 已完成。
     Done,
-    /// 失败 / 已取消。
+    /// 失败 / 已取消（含自动重试次数耗尽）。
     Error,
 }
 
@@ -151,17 +151,19 @@ pub struct Transfer {
     pub transferred: u64,
     /// 总字节数（已知时显示进度百分比，为 0 表示未知总量）。
     pub total: u64,
-    /// 当前状态（排队 / 传输中 / 完成 / 失败）。
+    /// 当前状态（排队 / 等待重试 / 传输中 / 完成 / 失败）。
     pub status: TransferStatus,
     /// 错误信息（失败 / 取消时存在）。
     pub error: Option<String>,
     /// 瞬时速度（字节/秒），由进度消息按真实 I/O 间隔估算后携带，UI 做滑动平均用于显示与 ETA。
     pub speed: f64,
-    /// 执行该传输所用的 SFTP 客户端（按标签独占，随传输一并保存，避免跨标签共用同一客户端）。
+    /// 该传输**入队时**捕获的 SFTP 客户端（回退用；权威值始终是标签此刻的客户端）。
     ///
-    /// 与 [`SftpView::client`] 同源：入队时由父层经上下文注入当前标签的客户端，
-    /// 使传输模块无需在每次启动时反向查询父状态。为 `Option` 仅用于「客户端已失效 /
-    /// 尚未建立」的边界情形（以及无需真实连接的单元测试），正常入队时恒为 `Some`。
+    /// 启动 / 重试时优先取父层经 `Ctx::client_for` 注入的「该标签当前客户端」，仅当标签此刻
+    /// 拿不到客户端时才回退到这一份（见 `app::transfer` 模块文档「传输用哪个客户端」）。
+    /// 会话重建后同一标签会换上新通道，若启动路径直接用这份记录，排队项与手动重试都会打在
+    /// 旧会话上。为 `Option` 仅用于「客户端已失效 / 尚未建立」的边界情形（以及无需真实连接的
+    /// 单元测试），正常入队时恒为 `Some`。
     pub client: Option<std::sync::Arc<rterm_core::SftpClient>>,
 }
 
@@ -170,7 +172,10 @@ pub struct SftpView {
     /// 当前正在管理的会话 id（未打开则为 `None`）。
     pub session: Option<String>,
     /// 该标签独占的 SFTP 客户端（每个标签各自基于自己的 SSH 连接开一条通道，
-    /// 避免多标签共用同一客户端造成的请求错乱与并发不安全）。
+    /// 使各标签的文件上下文互不干扰）。
+    ///
+    /// 同一客户端**可以**被多个传输任务并发调用：russh-sftp 的会话按请求 id 多路复用回执，
+    /// 并发安全由协议层保证（详见 `app::transfer` 模块文档）。
     pub client: Option<Arc<SftpClient>>,
     /// 当前远端路径。
     pub path: String,

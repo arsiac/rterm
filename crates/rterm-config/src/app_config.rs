@@ -201,6 +201,44 @@ impl Default for TerminalConfig {
     }
 }
 
+/// 全局最大并发传输数的下限：1（任何时刻至少允许一个传输在跑）。
+pub const MIN_CONCURRENT: usize = 1;
+
+/// 全局最大并发传输数的上限：8。
+///
+/// 上限存在是为了给远端 `sftp-server` 与磁盘留下余量：并发数过高会把服务端压成排队，
+/// 反而降低总吞吐；同时配置被手工改成 `999` 时也需要一个兜底，避免瞬间拉起大批通道。
+pub const MAX_CONCURRENT: usize = 8;
+
+/// `[transfer]` 段：文件传输设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferConfig {
+    /// 全局最大并发传输数（跨标签、跨方向共享同一份额度）。
+    ///
+    /// 加载后由 [`TransferConfig::normalize`] 裁剪到 [`MIN_CONCURRENT`]`..=`[`MAX_CONCURRENT`]。
+    /// 该值为应用级单值而非每标签一份：左侧传输面板本身就是全局聚合展示，用户的心智是
+    /// 「同时最多 N 个文件在动」；按标签分额度会让「3 并发」在开两个标签时变成 6。
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: usize,
+}
+
+impl Default for TransferConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent: default_max_concurrent(),
+        }
+    }
+}
+
+impl TransferConfig {
+    /// 把越界值裁剪到合法区间。
+    ///
+    /// 用户手工编辑 `config.toml` 写成 `0`（永不启动任何传输）或 `999`（瞬间开一堆通道），
+    fn normalize(&mut self) {
+        self.max_concurrent = self.max_concurrent.clamp(MIN_CONCURRENT, MAX_CONCURRENT);
+    }
+}
+
 /// `[appearance]` 段：程序外观与界面语言设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearanceConfig {
@@ -319,7 +357,7 @@ impl Default for WindowConfig {
 /// 应用级偏好配置（`config.toml` 根结构）。
 ///
 /// 除运行时字段外均可在 GUI 设置弹窗中修改并即时持久化。各功能域拆分为独立子段
-/// （见 [`ConnectionConfig`] / [`TerminalConfig`] / [`AppearanceConfig`] /
+/// （见 [`ConnectionConfig`] / [`TerminalConfig`] / [`TransferConfig`] / [`AppearanceConfig`] /
 /// [`LoggingConfig`] / [`UpdatesConfig`] / [`SecurityConfig`] / [`WindowConfig`]）。
 /// 文件路径在构造时确定并跳过序列化，因此不写入配置文件；`last_check_unix` 等由程序
 /// 内部写回、不出现在设置界面。
@@ -334,6 +372,9 @@ pub struct AppConfig {
     /// `[terminal]` 段：终端显示与目录追踪设置。
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// `[transfer]` 段：文件传输设置。
+    #[serde(default)]
+    pub transfer: TransferConfig,
     /// `[appearance]` 段：程序外观与界面语言设置。
     #[serde(default)]
     pub appearance: AppearanceConfig,
@@ -354,6 +395,11 @@ pub struct AppConfig {
 /// 连接超时默认值（秒）：30 秒（0 表示不限制）。
 fn default_timeout() -> u64 {
     30
+}
+
+/// 全局最大并发传输数默认值：3。
+fn default_max_concurrent() -> usize {
+    3
 }
 
 /// 终端与界面默认字号（像素）：14.0。
@@ -424,6 +470,7 @@ impl Default for AppConfig {
             path: PathBuf::new(),
             connection: ConnectionConfig::default(),
             terminal: TerminalConfig::default(),
+            transfer: TransferConfig::default(),
             appearance: AppearanceConfig::default(),
             logging: LoggingConfig::default(),
             updates: UpdatesConfig::default(),
@@ -512,6 +559,8 @@ impl From<LegacyAppConfig> for AppConfig {
                 suppress_bootstrap_echo: l.suppress_bootstrap_echo,
                 trim_trailing_whitespace: l.trim_trailing_whitespace,
             },
+            // 旧版没有传输段：一律取默认值（并发 3）。
+            transfer: TransferConfig::default(),
             appearance: AppearanceConfig {
                 theme: l.theme,
                 ui_font: l.ui_font,
@@ -645,6 +694,9 @@ impl AppConfig {
         // `path` 字段标记了 `#[serde(skip)]`，反序列化不会填充它，必须在此回填，
         // 否则 `save()` 将向空路径写入而失败，导致配置（含主题）无法持久化。
         config.path = path.clone();
+        // 用户手改配置可能写出越界并发数（0 / 999）：解析后立刻裁剪，
+        // 使内存值与磁盘值在本次落盘后一致（迁移分支紧随其后，会一并写入裁剪结果）。
+        config.transfer.normalize();
         if migrated {
             // 旧扁平格式：先备份旧文件，再落盘新分组格式。备份 / 写入失败均不致命——
             // 旧文件仍在磁盘上，下次启动会再次尝试迁移；本次以内存中的转换结果继续运行。
@@ -796,6 +848,8 @@ window_height = 720.0
         assert!(!config.window.remember_size);
         assert_eq!(config.window.width, Some(1280.0));
         assert_eq!(config.window.height, Some(720.0));
+        // 旧格式无传输段：迁移后取默认并发数。
+        assert_eq!(config.transfer.max_concurrent, 3);
     }
 
     #[test]
@@ -831,6 +885,34 @@ theme = "Light"
         assert_eq!(config.terminal.font_size, 14.0);
         assert_eq!(config.terminal.theme, "Default");
         assert_eq!(config.appearance.theme, "Dark");
+        assert_eq!(config.transfer.max_concurrent, 3);
+    }
+
+    #[test]
+    fn out_of_range_transfer_values_are_clamped_on_load() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("rterm_cfg_clamp_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("config")).expect("应能创建临时配置目录");
+        let cfg_path = dir.join("config").join("config.toml");
+
+        // 手改为 0（永不启动）与 999（瞬间开一堆通道）都必须在加载时被裁剪。
+        crate::paths::set_test_root(Some(dir.clone()));
+        for (written, expected) in [(0usize, MIN_CONCURRENT), (999, MAX_CONCURRENT)] {
+            fs::write(
+                &cfg_path,
+                format!("[transfer]\nmax_concurrent = {written}\n"),
+            )
+            .expect("应能写入越界配置");
+            let config = AppConfig::new().expect("加载越界配置应成功");
+            assert_eq!(
+                config.transfer.max_concurrent, expected,
+                "写入 {written} 应被裁剪为 {expected}"
+            );
+        }
+        crate::paths::set_test_root(None);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

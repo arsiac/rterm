@@ -11,6 +11,10 @@ settings:
   about: About
   masterpw: Master Password
   connect_timeout: Connect timeout (seconds, 0 = no limit)
+  max_concurrent: Maximum concurrent transfers
+  max_concurrent_hint: Takes effect immediately — raising it starts more queued transfers at once, while lowering it never interrupts transfers in progress and converges once they finish.
+  retry_attempts: Automatic retries on failure
+  retry_attempts_hint: Only transient failures (network blips, timeouts, dropped channels) are retried automatically, with exponential backoff (1.5s up to 8s); 0 disables automatic retries. Cancellations and permission errors are never retried.
   scrollback: Scrollback lines (0 = none)
   scrollback_note: Applies only to newly opened terminal tabs.
   log_level: Log level
@@ -195,6 +199,7 @@ transfer:
   empty: No transfers yet
   queued: Queued
   eta: " · %{time} left"
+  queue_full: Transfer queue is full; some files were not enqueued.
 terminal:
   empty: No terminal open yet. Connect in a session and the terminal opens automatically.
   close_tab: Close tab
@@ -284,3 +289,6 @@ errors:
   sftp_close_remote_file: "Failed to close remote file: %{detail}"
   sftp_open_remote_file: "Failed to open remote file: %{detail}"
   sftp_read_remote: "Failed to read remote file: %{detail}"
+  # The session is gone (russh-sftp's "session closed" / "sender dropped" family). Deliberately
+  # without the engine's raw text: what helps the user is "reconnect", not channel internals.
+  session_gone: "Connection closed — reconnect, then retry"

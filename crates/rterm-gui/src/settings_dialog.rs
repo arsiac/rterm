@@ -23,7 +23,7 @@ use iced::widget::{
     text_input,
 };
 use iced::{Border, Element, Length, Theme};
-use rterm_config::{Language, LogLevel};
+use rterm_config::{Language, LogLevel, MAX_CONCURRENT, MIN_CONCURRENT};
 use std::fmt;
 
 /// 语言下拉框项的本地化展示名：随当前 UI 语言变化，避免英文界面仍显示「跟随系统」。
@@ -221,7 +221,7 @@ fn content_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// “通用”分类：连接超时、日志级别、界面语言。
+/// “通用”分类：连接超时、最大并发传输数、日志级别、界面语言。
 fn general_pane(app: &App) -> Element<'_, Message> {
     let timeout_input = text_input("30", &app.config.connection.timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
@@ -229,6 +229,17 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     let scrollback_input = text_input("10000", &app.config.terminal.scrollback.to_string())
         .on_input(|s| Message::Settings(settings::Message::Scrollback(s)))
         .style(crate::ui::text_input_style);
+    // 并发数是 1..=8 的小整数枚举：滑块从交互上直接消除非法输入，故不用文本框
+    // （「连接超时」用文本框是因为它取值范围开放）。
+    // 拖动（`on_input`）只写内存并触发重调度，松开（`on_release`）才落盘一次。
+    let concurrency_slider = slider(
+        MIN_CONCURRENT as f32..=MAX_CONCURRENT as f32,
+        app.config.transfer.max_concurrent as f32,
+        |v| Message::Settings(settings::Message::MaxConcurrent(v)),
+    )
+    .step(1.0_f32)
+    .on_release(Message::Settings(settings::Message::MaxConcurrentPersist));
+    let concurrency_value = text(app.config.transfer.max_concurrent.to_string()).size(13);
     let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.logging.level), |lv| {
         Message::Settings(settings::Message::LogLevel(lv))
     })
@@ -244,6 +255,11 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     column![
         crate::ui::field_label(t!("settings.connect_timeout")),
         timeout_input,
+        crate::ui::field_label(t!("settings.max_concurrent")),
+        row![concurrency_slider, concurrency_value]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+        crate::ui::hint_text(t!("settings.max_concurrent_hint")),
         crate::ui::field_label(t!("settings.scrollback")),
         scrollback_input,
         crate::ui::hint_text(t!("settings.scrollback_note")),

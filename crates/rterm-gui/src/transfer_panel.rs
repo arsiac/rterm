@@ -33,7 +33,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .size(13)
             .style(secondary_text),
     ]
-    .spacing(6)
+    .spacing(8)
     .align_y(Vertical::Center);
 
     let body: Element<'_, Message> = if transfers.is_empty() {

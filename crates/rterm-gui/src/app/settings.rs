@@ -3,7 +3,7 @@
 use iced::Task;
 use iced::widget::combo_box;
 use log::error;
-use rterm_config::{AppConfig, Language, LogLevel};
+use rterm_config::{AppConfig, Language, LogLevel, MAX_CONCURRENT, MIN_CONCURRENT};
 
 /// 设置弹窗的分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +63,10 @@ pub enum Message {
     ConnectTimeout(String),
     /// 修改“历史缓冲行数”设置（携带输入框最新文本，解析失败则忽略）。
     Scrollback(String),
+    /// 修改“最大并发传输数”设置（携带滑块最新值，即时生效但不落盘）。
+    MaxConcurrent(f32),
+    /// 提交“最大并发传输数”设置（滑块释放时触发，仅落盘，避免拖动过程中反复写文件）。
+    MaxConcurrentPersist,
     /// 修改“终端字号”设置（携带滑块最新值）。
     FontSize(f32),
     /// 修改“程序主题”设置（携带主题标识，如 `dark` / `light`）。
@@ -100,6 +104,10 @@ pub enum Event {
     ConnectTimeout(u64),
     /// 写回“历史缓冲行数”配置（携带解析后的行数）。
     Scrollback(usize),
+    /// 写回“最大并发传输数”配置（携带裁剪后的值），并立即重新调度传输队列。
+    MaxConcurrent(usize),
+    /// 把当前“最大并发传输数”落盘（滑块释放后调用，无重复调度）。
+    MaxConcurrentPersist,
     /// 写回“终端字号”配置（携带滑块值），并热替换到所有已打开的终端标签。
     FontSize(f32),
     /// 写回“程序主题”配置（携带主题标识）。
@@ -159,6 +167,12 @@ impl State {
                 Ok(scrollback) => Task::done(Event::Scrollback(scrollback)),
                 Err(_) => Task::none(),
             },
+            // 并发数是 1..=8 的小整数枚举：滑块已消除非法输入，此处只做范围兜底。
+            Message::MaxConcurrent(value) => {
+                let n = (value.round() as i64).clamp(MIN_CONCURRENT as i64, MAX_CONCURRENT as i64);
+                Task::done(Event::MaxConcurrent(n as usize))
+            }
+            Message::MaxConcurrentPersist => Task::done(Event::MaxConcurrentPersist),
             Message::FontSize(size) => Task::done(Event::FontSize(size)),
             Message::Theme(theme) => Task::done(Event::Theme(theme)),
             Message::UiFont(text) => Task::done(Event::UiFont(text)),

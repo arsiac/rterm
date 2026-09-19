@@ -11,6 +11,10 @@ settings:
   appearance: 外观
   about: 关于
   connect_timeout: 连接超时（秒，0 表示不限制）
+  max_concurrent: 最大并发传输数
+  max_concurrent_hint: 即时生效：调大后立刻启动更多排队任务；调小不会打断进行中的传输，待其完成后收敛。
+  retry_attempts: 失败自动重试次数
+  retry_attempts_hint: 仅对瞬时故障（网络抖动、超时、通道断开）自动重试，退避间隔逐次翻倍（1.5s 起、最长 8s）；0 表示关闭自动重试，取消与权限类错误从不自动重试。
   scrollback: 历史缓冲行数（0 表示不保留历史）
   scrollback_note: 仅对新建的终端标签生效。
   log_level: 日志级别
@@ -195,6 +199,7 @@ transfer:
   empty: 暂无传输任务
   queued: 排队中
   eta: " · 剩 %{time}"
+  queue_full: 传输队列已满，部分文件未入队。
 terminal:
   empty: 尚未打开终端。请在会话中“连接”，终端将自动打开。
   close_tab: 关闭标签
@@ -284,3 +289,6 @@ errors:
   sftp_close_remote_file: "关闭远端文件失败: %{detail}"
   sftp_open_remote_file: "打开远端文件失败: %{detail}"
   sftp_read_remote: "读取远端失败: %{detail}"
+  # 会话已终结（russh-sftp 的 session closed / sender dropped 一族）。刻意不带引擎原文：
+  # 对用户有用的信息是「连接没了、要重连」，而不是通道内部的术语。
+  session_gone: "连接已断开，需重新连接后再试"

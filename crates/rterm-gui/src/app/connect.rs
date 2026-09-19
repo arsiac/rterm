@@ -100,9 +100,18 @@ pub(crate) fn open_files(app: &mut App, id: &str) -> Task<sftp::Message> {
 
 /// 关闭某会话的全部终端标签（标签各自持有的连接与 SFTP 通道随标签移除释放）。
 ///
-/// 由 `handle_delete_session` 在删除会话时调用。
-pub(crate) fn close_session_tabs(app: &mut App, id: &str) {
+/// 由 `handle_delete_session` 在删除会话时调用。返回被移除的标签 id，供调用方补做按标签的
+/// 清理（如通知传输模块中止任务并归还并发额度）——整体移除不会逐个走标签关闭事件。
+pub(crate) fn close_session_tabs(app: &mut App, id: &str) -> Vec<u64> {
+    let closed: Vec<u64> = app
+        .tabs
+        .list()
+        .iter()
+        .filter(|t| t.session_id == id)
+        .map(|t| t.id)
+        .collect();
     app.tabs.remove_by_session(id);
+    closed
 }
 
 /// 为指定标签发起 SSH 连接任务：解密凭据 → 生成连接配置 → 拉起异步握手。
