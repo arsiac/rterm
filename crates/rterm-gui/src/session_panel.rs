@@ -26,6 +26,14 @@ use std::fmt;
 /// 操作按钮（新建会话、刷新、导入、导出）图标尺寸（像素），与列表图标保持一致。
 const ACTION_ICON_SIZE: f32 = ICON_SIZE;
 
+/// 会话编辑弹窗面板尺寸（像素）：两栏排版后无需过高，压扁以贴近桌面弹窗比例。
+const EDITOR_W: f32 = 480.0;
+/// 会话编辑弹窗面板高度（像素）。
+const EDITOR_H: f32 = 560.0;
+
+/// 「主机 + 端口」一行两栏时端口列的固定宽度（像素），端口值短，无需占满半行。
+const PORT_FIELD_W: f32 = 96.0;
+
 /// 编辑器中的认证方式选项；显示名随语言翻译，但写回配置时映射回内部值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuthChoice {
@@ -297,24 +305,37 @@ fn group_header_style(theme: &Theme, _st: button::Status) -> button::Style {
 pub fn editor_overlay(app: &App) -> Option<Element<'_, Message>> {
     let draft = app.session.editor.as_ref()?;
     let panel = container(editor_body(draft))
-        .width(440.0)
-        .height(640.0)
+        .width(EDITOR_W)
+        .height(EDITOR_H)
         .style(panel_style)
         .padding(0);
     Some(crate::sftp_dialogs::overlay_wrap(panel.into()))
 }
 
-/// 弹窗主体：标题栏（含关闭按钮）+ 分隔线 + 可滚动表单。
+/// 弹窗主体：标题栏（含关闭按钮）+ 可滚动表单（分节）+ 固定底部按钮行。
 fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
-    // 标题栏随新建 / 编辑切换，右侧关闭按钮复用「取消编辑」语义。
+    // 标题栏随新建 / 编辑切换，右侧关闭按钮复用「取消编辑」语义；
+    // 标题左侧的强调条取统一取色点 accent_color，随当前主题即时适配。
     let is_new = draft.is_new();
+    let accent_bar = container(text("").size(16))
+        .width(3.0)
+        .height(16.0)
+        .style(|theme: &Theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(crate::theme::accent_color(theme))),
+            border: Border {
+                radius: 2.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
     let header = row![
+        accent_bar,
         text(if is_new {
             t!("session.editor_new")
         } else {
             t!("session.editor_edit")
         })
-        .size(18)
+        .size(16)
         .width(Length::Fill),
         icon_button(
             Icon::Dismiss,
@@ -326,9 +347,7 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
     ]
     .align_y(iced::alignment::Vertical::Center)
     .spacing(8)
-    .padding([10, 12]);
-
-    let divider = rule::horizontal(1);
+    .padding([12, 16]);
 
     let auth_choice = match draft.auth.as_str() {
         "publickey" => AuthChoice::PublicKey,
@@ -340,16 +359,17 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
     // 凭据为密文信封，编辑器内留空表示「保持不变」，故占位提示强调这一点。
     let cred_field: Element<'a, Message> = match draft.auth.as_str() {
         "password" => labeled_input(
-            t!("session.password"),
+            field_label(t!("session.password")),
             &draft.password,
             t!("session.keep_unchanged"),
             SessionField::Password,
             true,
+            Length::Fill,
         ),
         "publickey" => column![
             // 私钥路径：输入框 + 文件系统选择按钮（document 图标）。
             column![
-                text(t!("session.key_path")).size(14),
+                field_label(t!("session.key_path")),
                 row![
                     text_input("", &draft.key_path)
                         .on_input(move |v| Message::EditorField(SessionField::KeyPath, v))
@@ -365,163 +385,280 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center),
             ]
-            .spacing(2),
+            .spacing(4),
             labeled_input(
-                t!("session.passphrase"),
+                field_label(t!("session.passphrase")),
                 &draft.passphrase,
                 t!("session.keep_unchanged"),
                 SessionField::Passphrase,
                 true,
+                Length::Fill,
             ),
         ]
-        .spacing(6)
+        .spacing(12)
         .into(),
-        _ => text(t!("session.agent_hint")).into(),
+        _ => agent_hint(t!("session.agent_hint")),
     };
 
-    // 字段区可滚动；保存按钮置于滚动区之外的固定底部，不随表单滚动。
-    let fields = column![
-        labeled_input(
-            t!("session.name"),
-            &draft.name,
-            "user@host",
-            SessionField::Name,
-            false,
+    // 表单分三节：连接（主机 + 端口两栏 / 用户名）、认证（方式 + 凭据）、名称与分组（两栏）。
+    // 节标题用主文本色、字段标签用次级色，形成两级层次；节间距 18px、节内 12px 拉开呼吸感。
+    let form = column![
+        form_section(
+            t!("session.section_connection"),
+            column![
+                row![
+                    labeled_input(
+                        required_label(t!("session.host")),
+                        &draft.host,
+                        "",
+                        SessionField::Host,
+                        false,
+                        Length::Fill,
+                    ),
+                    labeled_input(
+                        required_label(t!("session.port")),
+                        &draft.port,
+                        "",
+                        SessionField::Port,
+                        false,
+                        Length::Fixed(PORT_FIELD_W),
+                    ),
+                ]
+                .spacing(10),
+                labeled_input(
+                    field_label(t!("session.username")),
+                    &draft.username,
+                    "",
+                    SessionField::Username,
+                    false,
+                    Length::Fill,
+                ),
+            ]
+            .spacing(12),
         ),
-        labeled_input(
-            t!("session.group"),
-            &draft.group,
-            "",
-            SessionField::Group,
-            false
+        form_section(
+            t!("session.section_auth"),
+            column![
+                column![
+                    field_label(t!("session.auth")),
+                    pick_list(&AuthChoice::ALL[..], Some(auth_choice), |c| {
+                        Message::EditorField(SessionField::Auth, c.value().to_string())
+                    },)
+                    .width(Length::Fill)
+                    .style(crate::theme::pick_list_style),
+                ]
+                .spacing(4),
+                cred_field,
+            ]
+            .spacing(12),
         ),
-        labeled_input(
-            t!("session.host"),
-            &draft.host,
-            "",
-            SessionField::Host,
-            false
+        form_section(
+            t!("session.section_identity"),
+            row![
+                labeled_input(
+                    field_label(t!("session.name")),
+                    &draft.name,
+                    "user@host",
+                    SessionField::Name,
+                    false,
+                    Length::Fill,
+                ),
+                labeled_input(
+                    field_label(t!("session.group")),
+                    &draft.group,
+                    "",
+                    SessionField::Group,
+                    false,
+                    Length::Fill,
+                ),
+            ]
+            .spacing(10),
         ),
-        labeled_input(
-            t!("session.port"),
-            &draft.port,
-            "",
-            SessionField::Port,
-            false
-        ),
-        labeled_input(
-            t!("session.username"),
-            &draft.username,
-            "",
-            SessionField::Username,
-            false,
-        ),
-        column![
-            text(t!("session.auth")).size(14),
-            pick_list(&AuthChoice::ALL[..], Some(auth_choice), |c| {
-                Message::EditorField(SessionField::Auth, c.value().to_string())
-            },)
-            .width(Length::Fill)
-            .style(crate::theme::pick_list_style),
-        ]
-        .spacing(2),
-        cred_field,
     ]
-    .spacing(10)
-    .padding(16);
+    .spacing(18)
+    .padding([16, 20]);
 
-    // 校验错误显示在弹窗底部（按钮上方），随字段修改自动清除。
-    let mut footer = column![].spacing(8);
-    if let Some(e) = &draft.error {
-        footer = footer.push(text(e.clone()).size(13).color(crate::ui::DANGER));
-    }
-    footer = footer.push(
-        container(
-            button(text(t!("session.save")).size(16))
+    // 底部固定行：左侧校验错误（随字段修改自动清除，不撑走按钮），右侧「取消」次要按钮
+    // +「保存」强调色主按钮（主次分明，符合桌面弹窗的按钮位置习惯）。
+    let footer = container(
+        row![
+            container(
+                text(draft.error.clone().unwrap_or_default())
+                    .size(13)
+                    .wrapping(Wrapping::Word)
+                    .color(crate::ui::DANGER),
+            )
+            .width(Length::Fill)
+            .align_y(iced::alignment::Vertical::Center),
+            button(text(t!("common.cancel")).size(13))
+                .on_press(Message::CancelEdit)
+                .style(crate::sftp_dialogs::dialog_btn_style_neutral)
+                .padding([8, 16]),
+            button(text(t!("session.save")).size(13))
                 .on_press(Message::SaveSession)
                 .style(save_btn_style)
-                .padding([10, 24]),
-        )
-        .width(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Center),
-    );
-    let footer = container(footer).width(Length::Fill).padding([12, 16]);
+                .padding([8, 20]),
+        ]
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center),
+    )
+    .width(Length::Fill)
+    .padding([12, 16]);
 
     column![
         header,
-        divider,
-        scrollable(fields).height(Length::Fill),
+        hairline(),
+        scrollable(form).height(Length::Fill),
+        hairline(),
         footer,
     ]
     .into()
 }
 
-/// 编辑器弹窗面板样式：提亮背景 + 圆角 + 细边框。
+/// 编辑器弹窗面板样式：抬升表面底色 + 圆角 + 细边框 + 柔和投影。
 ///
-/// 背景取 `extended_palette().background.strong`；设置弹窗的 `panel_style` 用的是
-/// `custom_palette(theme).surface_raised`，两者并非同一取值（历史遗留，未统一）。
+/// 背景统一取 [`crate::theme::custom_palette`] 的 `surface_raised`（由主题背景感知亮度派生，
+/// 随任意 iced 主题即时适配），与设置弹窗、tooltip 等抬升表面同源；投影让弹窗在遮罩上
+/// 呈现悬浮层次，深浅主题下均用半透明黑（浅色主题遮罩本身已压暗背景，视觉一致）。
 pub(crate) fn panel_style(theme: &Theme) -> iced::widget::container::Style {
+    let p = crate::theme::custom_palette(theme);
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(
-            theme.extended_palette().background.strong.color,
-        )),
+        background: Some(iced::Background::Color(p.surface_raised)),
         border: Border {
-            color: crate::theme::custom_palette(theme).border,
+            color: p.border,
             width: 1.0,
-            radius: 8.0.into(),
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+            offset: iced::Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
         },
         ..Default::default()
     }
 }
 
+/// 弹窗内低对比度细分割线（表头下方 / 底部按钮区上方），颜色随主题 border 派生。
+fn hairline() -> Element<'static, Message> {
+    rule::horizontal(1)
+        .style(|theme: &Theme| iced::widget::rule::Style {
+            color: crate::theme::custom_palette(theme).border,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full,
+            snap: true,
+        })
+        .into()
+}
+
+/// 表单字段标签：次要文字色、略小字号，与输入值形成视觉层级，颜色随主题派生。
+fn field_label<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    text(label.into())
+        .size(13)
+        .style(|theme: &Theme| iced::widget::text::Style {
+            color: Some(crate::theme::custom_palette(theme).text_secondary),
+        })
+        .into()
+}
+
+/// 必填字段标签：在标签右侧追加强调色星号（强调色取统一取色点，随主题即时适配）。
+fn required_label<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    row![
+        field_label(label),
+        text("*")
+            .size(13)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(crate::theme::accent_color(theme)),
+            }),
+    ]
+    .spacing(3)
+    .into()
+}
+
+/// 小节标题：主文本色 13px，与次级色的字段标签构成两级层次。
+fn section_title<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    text(label.into())
+        .size(13)
+        .style(|theme: &Theme| iced::widget::text::Style {
+            color: Some(theme.extended_palette().background.base.text),
+        })
+        .into()
+}
+
+/// 表单小节：小节标题 + 字段组（节内 12px 间距；节间间距由外层列表给出）。
+fn form_section<'a>(
+    title: impl Into<String>,
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    column![section_title(title), content.into()]
+        .spacing(12)
+        .into()
+}
+
+/// 说明 / 提示文字：12px 弱文字色，随主题派生（与设置弹窗的提示文字同级）。
+fn hint_text<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    text(label.into())
+        .size(12)
+        .wrapping(Wrapping::Word)
+        .style(|theme: &Theme| iced::widget::text::Style {
+            color: Some(theme.extended_palette().background.weak.text),
+        })
+        .into()
+}
+
+/// SSH agent 提示：以「内嵌说明块」呈现（弱文字 + 表面底色 + 细边框），
+/// 与输入框同处一列时高度、圆角一致，避免此处出现一块突兀的裸文字。
+fn agent_hint<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    container(hint_text(label))
+        .width(Length::Fill)
+        .padding([8, 10])
+        .style(|theme: &Theme| {
+            let p = crate::theme::custom_palette(theme);
+            iced::widget::container::Style {
+                background: Some(iced::Background::Color(p.surface)),
+                border: Border {
+                    color: p.border,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
 /// 生成带标签的输入框（标签在输入框顶部，`placeholder` 为空值占位提示）。
 ///
-/// `secure` 为 `true` 时掩码输入（用于密码 / 私钥口令等敏感字段）。
+/// `label` 直接传入标签元素（便于 [`field_label`] / [`required_label`] 复用同一布局）；
+/// `secure` 为 `true` 时掩码输入（用于密码 / 私钥口令等敏感字段）；`width` 控制整列宽度，
+/// 使「主机 + 端口」这类一行两栏的排版得以成立。
 fn labeled_input<'a>(
-    label: impl Into<String>,
+    label: Element<'a, Message>,
     value: &'a str,
     placeholder: impl Into<String>,
     field: SessionField,
     secure: bool,
+    width: Length,
 ) -> Element<'a, Message> {
     let placeholder = placeholder.into();
     column![
-        text(label.into()).size(14),
+        label,
         text_input(&placeholder, value)
             .secure(secure)
             .on_input(move |v| Message::EditorField(field, v))
             .style(crate::ui::text_input_style),
     ]
-    .spacing(2)
+    .spacing(4)
+    .width(width)
     .into()
 }
 
-/// 保存按钮样式：作为弹窗主操作按钮，悬浮 / 按下切换为强调色（统一取色点）。
+/// 保存按钮样式：弹窗主操作按钮，常态即为强调色实底（统一取色点，随主题即时适配）。
 ///
-/// 不能用背景微调做反馈：自定义调色板的 `hover` 与 `surface_raised` 恒等
-/// （均为背景 ±0.08/0.10），切换后无任何可见变化。强调色背景上文字恒为白色。
+/// 直接复用 [`crate::sftp_dialogs::dialog_btn_style`] 的强调按钮样式：悬浮 / 按下降至 85%
+/// 不透明度作反馈（背景微调在中性底色上不可见，实底强调色上则清晰可辨），文字恒为白色。
+/// 设置弹窗 / 主密码弹窗的保存按钮共用此样式，保证各弹窗主操作观感一致。
 pub(crate) fn save_btn_style(theme: &Theme, status: button::Status) -> button::Style {
-    let p = crate::theme::custom_palette(theme);
-    let pal = theme.extended_palette();
-    let accent = crate::theme::accent_color(theme);
-    let (bg, text_color) = match status {
-        button::Status::Pressed => (accent, Color::WHITE),
-        button::Status::Hovered => (
-            Color::from_rgba(accent.r, accent.g, accent.b, 0.85),
-            Color::WHITE,
-        ),
-        _ => (p.surface_raised, pal.background.base.text),
-    };
-    button::Style {
-        background: Some(iced::Background::Color(bg)),
-        text_color,
-        border: Border {
-            color: p.border,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..Default::default()
-    }
+    crate::sftp_dialogs::dialog_btn_style(theme, status, false)
 }
 
 /// 危险操作按钮样式：用于「关闭主密码」等不可逆 / 降权操作，用 [`crate::ui::DANGER`] 红描边以警示。

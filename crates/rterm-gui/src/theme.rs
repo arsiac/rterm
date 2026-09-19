@@ -88,6 +88,31 @@ pub const TOOLTIP_DELAY_MS: u64 = 200;
 /// 左侧活动栏宽度（像素）。
 pub const ACTIVITY_BAR_WIDTH: f32 = 48.0;
 
+/// 按主题背景亮度把基准色推向「更亮 / 更暗」一档：深色主题取背景 +`up`，浅色主题取背景 -`down`。
+///
+/// 语义色派生的统一入口（[`custom_palette`] 之外的表单控件也复用），避免每处各写一遍亮度判定。
+fn shift_from_bg(theme: &Theme, up: f32, down: f32) -> Color {
+    let bg = theme.palette().background;
+    let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    let delta = if luminance > 0.5 { -down } else { up };
+    Color::from_rgb(
+        (bg.r + delta).clamp(0.0, 1.0),
+        (bg.g + delta).clamp(0.0, 1.0),
+        (bg.b + delta).clamp(0.0, 1.0),
+    )
+}
+
+/// 表单输入区常态边框色：比通用 `border` 更明确一档（深色背景 +0.24 / 浅色 -0.22），
+/// 使内嵌输入框在抬升面板上边界可辨（面板底与通用 `border` 仅差 0.08，边界几乎看不见）。
+pub fn input_border_color(theme: &Theme) -> Color {
+    shift_from_bg(theme, 0.24, 0.22)
+}
+
+/// 输入区悬浮边框色：在 [`input_border_color`] 基础上再亮 / 暗一档，作为悬浮反馈。
+pub fn input_border_hover(theme: &Theme) -> Color {
+    shift_from_bg(theme, 0.34, 0.32)
+}
+
 /// 自定义调色板，在 iced 主题默认颜色之外补充 UI 专用语义色。
 ///
 /// 通过感知亮度公式判断背景深浅，对任意 iced 主题天然生效，无需为每个主题手工配色
@@ -312,16 +337,27 @@ pub fn icon_button_style(
 }
 
 /// 下拉框样式：跟随主题底色 + 圆角边框（设置弹窗 / 会话编辑弹窗等表单复用）。
-pub fn pick_list_style(theme: &Theme, _status: pick_list::Status) -> pick_list::Style {
+///
+/// 三态区分（此前忽略 `status`，展开与否毫无视觉差异）：展开时以强调色描边并把右侧
+/// 箭头一并染成强调色（与下拉层呼应），悬浮时边框提亮一档，常态用输入区边框色。
+pub fn pick_list_style(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
     let p = custom_palette(theme);
     let pal = theme.extended_palette();
+    let accent = accent_color(theme);
+    let opened = matches!(status, pick_list::Status::Opened { .. });
+    let border_color = match status {
+        pick_list::Status::Opened { .. } => accent,
+        pick_list::Status::Hovered => input_border_hover(theme),
+        pick_list::Status::Active => input_border_color(theme),
+    };
     pick_list::Style {
         text_color: pal.background.base.text,
         placeholder_color: p.text_secondary,
-        handle_color: p.text_secondary,
-        background: iced::Background::Color(p.surface),
+        handle_color: if opened { accent } else { p.text_secondary },
+        // 与输入框同底（窗口主背景色）：在抬升面板上呈内嵌观感，边界清晰可辨。
+        background: iced::Background::Color(pal.background.base.color),
         border: iced::Border {
-            color: p.border,
+            color: border_color,
             width: 1.0,
             radius: 6.0.into(),
         },
@@ -368,21 +404,7 @@ pub fn pane_grid_style(_theme: &Theme) -> iced::widget::pane_grid::Style {
 /// 左右分割线的颜色：比通用 `border` 更暗 / 更淡（深色 `bg+0.10`、浅色 `bg-0.08`），
 /// 降低分隔线的存在感，避免其抢夺视觉焦点。
 pub fn pane_divider_color(theme: &Theme) -> Color {
-    let bg = theme.palette().background;
-    let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
-    if luminance > 0.5 {
-        Color::from_rgb(
-            (bg.r - 0.08).max(0.0),
-            (bg.g - 0.08).max(0.0),
-            (bg.b - 0.08).max(0.0),
-        )
-    } else {
-        Color::from_rgb(
-            (bg.r + 0.10).min(1.0),
-            (bg.g + 0.10).min(1.0),
-            (bg.b + 0.10).min(1.0),
-        )
-    }
+    shift_from_bg(theme, 0.10, 0.08)
 }
 
 /// 标签按钮样式：整个标签（状态点 + 标题 + 关闭按钮）为单一按钮，悬浮 / 按下反馈覆盖全部区域。

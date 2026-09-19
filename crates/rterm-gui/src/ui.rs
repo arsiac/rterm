@@ -115,16 +115,18 @@ pub fn menu_separator<'a, M: Clone + 'a>() -> Element<'a, M> {
 }
 
 /// 文本框 / 组合框输入区样式：跟随主题底色，圆角边框（名称 / 主机 / 路径等复用）。
-///
-/// 此前会话面板、设置弹窗各有一份逐字相同的输入样式、文件面板另有 4 处内联同款样式，
-/// 现已统一复用此函数。
-pub fn text_input_style(theme: &Theme, _status: text_input::Status) -> text_input::Style {
+pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let p = theme::custom_palette(theme);
     let pal = theme.extended_palette();
+    let border_color = match status {
+        text_input::Status::Focused { .. } => theme::accent_color(theme),
+        text_input::Status::Hovered => theme::input_border_hover(theme),
+        _ => theme::input_border_color(theme),
+    };
     text_input::Style {
-        background: Background::Color(p.surface),
+        background: Background::Color(pal.background.base.color),
         border: Border {
-            color: p.border,
+            color: border_color,
             width: 1.0,
             radius: 6.0.into(),
         },

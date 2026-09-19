@@ -69,6 +69,9 @@ session:
   empty_hint: 点击右上角 + 新建会话
   editor_new: 新建会话
   editor_edit: 编辑会话
+  section_connection: 连接
+  section_auth: 认证
+  section_identity: 名称与分组
   name: 名称(选填)
   group: 分组(可选)
   host: 主机

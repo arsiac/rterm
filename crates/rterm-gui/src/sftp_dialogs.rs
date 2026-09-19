@@ -24,7 +24,7 @@ pub fn overlay_wrap<'a, M: Clone + 'a>(child: Element<'a, M>) -> Element<'a, M> 
         .height(Length::Fill)
         .style(|_: &Theme| container::Style {
             background: Some(iced::Background::Color(Color::from_rgba(
-                0.0, 0.0, 0.0, 0.6,
+                0.0, 0.0, 0.0, 0.30,
             ))),
             ..Default::default()
         })

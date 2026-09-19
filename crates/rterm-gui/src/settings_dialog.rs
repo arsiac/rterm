@@ -70,8 +70,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
 
 /// 设置弹窗面板整体样式：提亮背景 + 圆角 + 细边框（背景跟随当前主题调色板）。
 ///
-/// 复用自定义调色板的 `surface_raised`；`extended_palette().background.strong` 比窗口主背景暗
-/// 一个层级，会使弹窗莫名发暗（`session_panel::panel_style` 仍在用后者，两者观感并不一致）。
+/// 复用自定义调色板的 `surface_raised`：`extended_palette().background.strong` 比窗口主背景暗
+/// 一个层级，会使弹窗莫名发暗（`session_panel::panel_style` 现已同样取 `surface_raised`，
+/// 两者观感一致）。
 fn panel_style(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(
