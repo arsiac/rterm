@@ -2,108 +2,75 @@
 //!
 //! # 并发调度
 //!
-//! 传输按**全局并发 N** 执行：N 由 `[transfer] max_concurrent` 配置（设置界面可调，默认 3），
-//! 跨标签、跨方向共享同一份额度——左侧传输面板本身就是全局聚合展示，用户的心智是
-//! 「同时最多 N 个文件在动」。
+//! 全局并发 N（`[transfer] max_concurrent`，默认 3），跨标签、跨方向共享额度：传输面板本就是
+//! 全局聚合视图，用户的心智是「同时最多 N 个文件在动」。
 //!
-//! 调度器是**显式计数 + pump**而非 `tokio::Semaphore`：iced 的 `update` 是单线程消息循环，
-//! 任务只能从 `update` 返回的 `Task` 启动；若把准入交给信号量，「谁先跑」由 tokio 调度决定，
-//! UI 的 `Queued` / `Active` 会与实际在跑的任务产生时序缝隙，也无法单测。
+//! 用显式计数 + pump 而非 `tokio::Semaphore`：信号量把「谁先跑」交给 tokio 调度，UI 的
+//! `Queued` / `Active` 会与实际任务产生时序缝隙，也无法单测。
 //!
 //! # 同一 SFTP 客户端为什么可以并发
 //!
-//! 历史注释（本模块与 `state.rs`）曾断言「同一标签的 SFTP 通道非并发安全，故顺序执行」，
-//! 该前提与 `russh-sftp` 2.4.0 的实现不符：
-//!
-//! - `SftpSession { session: Arc<RawSftpSession>, .. }`，全部操作方法签名均为 `&self`；
-//! - `RawSftpSession` 由「单写任务 + `Arc<DashMap<request_id, oneshot>>` + `AtomicU32`
-//!   请求 id」构成，响应由读循环按 id 派发回各自的等待者 —— **多请求在途互不串包**，
-//!   这正是 SFTP 协议本身的多路复用语义；
-//! - 单个 `File` 内部还有 `write_acks` 队列，按 `limits@openssh.com` 的
-//!   `max_concurrent_writes` 做写流水线。
-//!
-//! 故 `Arc<SftpClient>` 可被 N 个传输任务同时持有并调用。需要如实认知的是收益上限：
-//! OpenSSH 的 `sftp-server` 是每通道一个进程、按序处理请求，单通道的并发是「隐藏往返延迟」
-//! 而非服务端并行；真正的服务端并行需要通道池（未实现）。
+//! `russh-sftp` 的 `SftpSession` 方法全是 `&self`，内部是单写任务 +
+//! `DashMap<request_id, oneshot>`，响应按 id 派发给各自等待者，多请求在途互不串包，故
+//! `Arc<SftpClient>` 可被 N 个任务同时持有。旧注释「同一标签的通道非并发安全」是错的。
+//! 收益上限：OpenSSH 的 `sftp-server` 每通道按序处理请求，并发只是隐藏往返延迟，服务端并行
+//! 需要通道池（未实现）。
 //!
 //! # 调度不变量
 //!
-//! - **I1**：`running.len() <= max_concurrent`（`max_concurrent` 由父层在**路由每条消息前**
-//!   经 `Ctx` 注入，绝不缓存进本模块 `State`，否则滑块消息到达那一刻会读到旧值，
-//!   表现为「拖了没反应」）。
-//! - **I2**：`running` 的移除**只发生在 `TransferDone` 处理里**（唯一释放点）。取消路径
-//!   不得提前摘除——`abort()` 只中止内层 tokio worker，外层 `Task::stream` 仍会在
-//!   `worker.await` 上醒来并发出 `TransferDone`，在那里统一回收额度。唯一例外见
-//!   [`Message::TabClosed`]（标签已消失，不再有事件送回来）。
-//! - **I3**：同一 `tid` 任一时刻最多一个在跑的 worker，故只有「不在 `running` 中」的排队项
-//!   才能被启动；否则旧 worker 迟到的 `TransferDone` 会错误释放新 worker 的额度（见
-//!   [`State::next_queued`] 的过滤条件与 [`State::admit`]）。
-//! - **I4**：同一时刻至多一个在跑的传输使用同一个**写靶**（下载 = 目标的 `.part` 暂存，
-//!   上传 = 远端目标路径 + 标签）。两个 worker 交叠写同一个暂存文件产出的是拼接垃圾；
-//!   在续传落地前这已经坏了（只是表现为「内容错乱」这种明显失败），而续传会把它升级成
-//!   「大小正确、内容拼接」——**看起来成功**。故由调度器自己执行互斥（见 [`WriteTarget`]）。
-//! - **I5**：删除某个暂存文件前，必须确认该写靶不再被任何其它存活行占用。同靶两行共存
-//!   （一行失败留着等继续、一行正在写）时，删掉前者会连带删掉后者正在写的文件——
-//!   Unix 上 `unlink` 并不报错，随后改名才失败。
+//! - **I1**：`running.len() <= max_concurrent`。`max_concurrent` 由父层在**路由每条消息前**经
+//!   `Ctx` 注入，绝不缓存进 `State`，否则滑块改动后读到旧值。
+//! - **I2**：`running` 只在 `TransferDone` 里移除。取消不得提前摘除：`abort()` 只中止内层
+//!   worker，外层仍会在 `worker.await` 上醒来发 `TransferDone`，在那里统一回收额度。唯一例外
+//!   是 [`Message::TabClosed`]（不会再有事件回来）。
+//! - **I3**：同一 `tid` 任一时刻最多一个 worker，故只有不在 `running` 中的排队项才能启动；
+//!   否则旧 worker 迟到的 `TransferDone` 会错放新 worker 的额度。
+//! - **I4**：同一写靶（`.part` 暂存）至多一个在跑的传输。交叠写产出的是拼接垃圾，续传又会把
+//!   它伪装成「大小正确、内容错乱」的**看起来成功**，故互斥由调度器自己执行（见 [`WriteTarget`]）。
+//! - **I5**：删暂存前必须确认没有其它存活行共用该靶子。一行失败等继续、另一行正在写时删前者
+//!   会连带删掉后者——Unix 上 `unlink` 不报错，改名时才失败。
 //!
 //! # 断点续传
 //!
-//! 失败之后的下一轮**从已落盘的字节继续**，而不是从 0 重来（见设计文档
-//! `.workbuddy/resumable-transfer-design.md`）。三件事共同构成它：
+//! 失败后的下一轮从已落盘字节继续（设计文档：`.workbuddy/resumable-transfer-design.md`）。
+//! 两侧同构，源端 / 半成品角色互换：`.part` 暂存（下载 = 本地，上传 = 远端，见
+//! [`staging_path`] / [`staging_remote`]）→ 每轮 stat 源端指纹与暂存长度，交纯函数
+//! [`resume_offset`] 定起点并经 [`Message::AttemptStarted`] 记回行上 → 改名到真名。
 //!
-//! 1. **`.part` 暂存**（本模块既有）是地基：暂存文件与源端一一对应，且只可能由本模块创建；
-//! 2. **源端指纹**：每轮尝试开始时 stat 源端（大小 + 修改时间）与暂存长度，交给纯函数
-//!    [`resume_offset`] 判定起点，并把结果经 [`Message::AttemptStarted`] 记回行上；
-//! 3. **暂存的寿命**：自动重试期间本来就在，**最终失败后也保留**（见下）。
+//! 判定基准是「上一轮记录的指纹」而非本次看到的大小：只比大小会把换成更长同名文件误判为可续传，
+//! 产出「旧前半 + 新后半」。宁可误判为重下，也不接受静默损坏。
 //!
-//! 判定基准是「上一轮记录的指纹」而不是「这次看到的大小」：只比大小时，源端被换成
-//! 一个**更长**的同名文件会被判为可续传，于是产出「旧文件前半 + 新文件后半」。重新下载
-//! 只浪费带宽，静默损坏不可接受，故宁可误判为不可续传。
+//! 最终失败的行**保留** `.part`：默认重试预算（≈4.5s）短于它要救的故障（断网、VPN 重连、
+//! 合盖），预算在网络恢复前就烧光了，失败那一刻才是用户想接着传的时刻。代价同浏览器的
+//! `.crdownload`。取消与关标签 / 移除行一律清理，都经 [`cleanup_partial`]，靶子永远是暂存路径。
 //!
-//! # 最终失败时暂存的去留
-//!
-//! **下载的失败行保留 `.part`**，这是续传唯一的「行为变更」，理由是默认重试预算
-//! （1.5s + 3s ≈ 4.5s）远短于它要救的那类故障（酒店 Wi-Fi、VPN 重连、合盖）：预算在断网
-//! 尚未恢复时就烧光了，失败那一刻才是用户想接着下的时刻，此时删掉 45% 的暂存，「重试」
-//! 就退化成重下整个文件。代价是失败行还在面板时下载目录里会有一个 `.part`——与浏览器的
-//! `.crdownload` 同款，且行上「已下载 n%」与「继续」按钮都指向它。
-//!
-//! **上传不在此列**：上传侧目前写的是**真名**（阶段 B 才会改成远端 `.part` 暂存），
-//! 失败留下的是一份被截断的真名文件，用户会以为「文件在这儿」，故仍然清理。
-//! 取消（两侧）与关标签 / 移除行（下载）也一律清理——行消失即代表缓存失效。清理统一经
-//! [`cleanup_partial`]，并受 I5 约束。
+//! 上传写暂存顺带修掉旧缺陷：以真名 + `TRUNCATE` 打开时，失败的上传在远端留下一份被截断的
+//! 真名文件；现在改名成功前，用户原有的远端同名文件不受影响。
 //!
 //! # 失败重试
 //!
-//! 失败的分类来自核心层 [`CoreError::class`]，映射为 [`FailureKind`]。**可自动重试**的是
-//! `Transient` 与 `Unknown`（网络抖动最常见的形态恰恰无法细分，不重试等于把成本转嫁给用户）；
-//! `Cancelled`（用户取消）、`Permanent`（权限不足 / 路径不存在 / 磁盘满）与
-//! `SessionGone`（会话已终结）只保留手动重试入口。
+//! 分类来自 [`CoreError::class`]，映射为 [`FailureKind`]。自动重试只针对 `Transient` 与
+//! `Unknown`（抖动最常见的形态恰恰无法细分）；`Cancelled`、`Permanent` 与 `SessionGone`
+//! 只留手动入口。`SessionGone` 单列的理由是重试无意义——那个 `SftpClient` 已经死了，唯一出路
+//! 是重连；曾并入 `Transient` 时症状是「预算全烧在死会话上，恢复网络后仍报 session closed」。
 //!
-//! [`FailureKind::SessionGone`] 单列的理由是**性质**而非程度：抖动时客户端还活着，退避后重试
-//! 有可能成功；会话终结时这个 `SftpClient` 已经死了（`session closed` / `sender dropped`），
-//! 重试只会立刻失败，唯一的出路是重新连接。曾把它并进 `Transient`，实测症状是「重试次数耗尽
-//! 后再恢复网络仍报 session closed」—— 预算全烧在一具尸体上，行上还留着引擎原文。
-//!
-//! 次数取 `[transfer] retry_attempts`（默认 2、0 = 关闭），延迟为
-//! `min(BASE_BACKOFF * 2^attempt, MAX_BACKOFF)`。**退避期间不占并发额度**：`WaitingRetry`
-//! 既不参与调度序也不计入 `running`，否则 N 个任务同时失败会让整条队列空转最长 8 秒。
-//! 到点由 [`retry_timer`] 发 [`Message::RetryDue`] 把该行转回排队态；该消息**必须幂等**——
-//! 到点时若该行已不是 `WaitingRetry`（用户已取消 / 手动重试 / 移除 / 标签已关闭），直接丢弃。
+//! 次数取 `[transfer] retry_attempts`（默认 2、0 = 关闭），退避
+//! `min(BASE_BACKOFF * 2^attempt, MAX_BACKOFF)`。**退避期间不占额度**：`WaitingRetry` 既不参与
+//! 调度序也不计入 `running`，否则 N 个任务同时失败会让整条队列空转最长 8 秒。到点由
+//! [`retry_timer`] 发 [`Message::RetryDue`]；该消息**必须幂等**——到点时该行已不是
+//! `WaitingRetry`（被取消 / 手动重试 / 移除 / 关标签）就直接丢弃。
 //!
 //! # 传输用哪个客户端
 //!
-//! **启动 / 重试时取该标签此刻的客户端**（`Ctx::client_for`，父层每轮从 SFTP 视图快照），
-//! 而不是 [`Transfer::client`] 里入队那一刻捕获的那份 —— 后者只在标签已无客户端时兜底。
-//! 理由：会话重建后同一标签会换上新通道，若继续用记录里那份，排队中的项与用户的手动重试
-//! 都会打在旧会话上，而那个会话可能早就终结了。启动时还会把解析出的客户端回写进记录，
-//! 使收尾阶段的远端清理也走当前通道。
+//! 启动 / 重试用该标签**此刻**的客户端（`Ctx::client_for`），[`Transfer::client`] 里入队时
+//! 捕获的那份只在标签已无客户端时兜底：会话重建后同一标签换上新通道，旧通道可能早已终结。
+//! 启动时把解析出的客户端回写进记录，收尾的远端清理因此走当前通道。
 //!
 //! # 半成品的清理
 //!
-//! 清理的靶子**只可能是本模块创建的暂存文件**（见 [`staging_path`]），这正是关标签时敢对
-//! 所有「留下痕迹」的行清理一次的底气。清理失败时下载侧把路径记在 `Transfer.partial` 上
-//! 提示用户手动处理；上传侧只记日志（残留不致命，重传的 `create()` 会截断）。
+//! 靶子只可能是本模块创建的暂存文件，这正是关标签时敢对所有「留下痕迹」的行清理一次的底气。
+//! 清理失败时下载侧把路径记在 `Transfer.partial` 上提示手动处理；上传侧只记日志（残留会被
+//! 下一次上传的截断重写清掉，且删不到最常见的原因本就是没被创建）。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -123,10 +90,8 @@ use rterm_core::{CoreError, ErrorClass, Fingerprint, ResumeAt, SftpClient};
 use std::path::Path;
 use tokio::task::AbortHandle;
 
-/// 单标签队列的条目上限：文件夹上传会把目录展开成「一文件一条」
-/// （见 `app::tasks::collect_upload_items`），拖入一个十万文件的目录会瞬间产生十万条
-/// `Transfer`（每条含 `String + PathBuf`）并让面板每帧全量遍历。超限时**拒绝并入并提示**，
-/// 不静默丢弃，使用户知道哪些文件没进去。
+/// 单标签队列的条目上限：文件夹上传会展开成「一文件一条」，十万文件的目录能瞬间产生十万条
+/// `Transfer` 并让面板每帧全量遍历。超限时拒绝并入并提示，不静默丢弃。
 const MAX_QUEUE: usize = 1000;
 
 /// 进度上报的最小时间间隔：同一帧内只有最后一个进度值有意义，故按时间节流。
@@ -135,22 +100,11 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(100);
 /// 进度上报的最小字节增量（1 MiB）：与 [`REPORT_INTERVAL`] 二者满足其一即可上报。
 const REPORT_BYTES: u64 = 1024 * 1024;
 
-/// 自动重试的基础退避时长：1.5 s。
+/// 自动重试的基础退避时长：1.5 s（此后 3/6/8 s，上限 [`MAX_BACKOFF`]）。
 ///
-/// 这个值由两条实测要求夹出来，两边的约束都是硬的：
-///
-/// 1. **不能太小**。琥珀态的可见时长由「故障持续多久」决定，但**故障比退避还短**时，退避就是
-///    全部可见时长。0.5 s 起步时反馈原话是「只显示一瞬间的琥珀色、一瞬间的重试次数」；
-///    一行 11px 的「正在重试（第 1/2 次） · 尚未收到数据」要读得完，至少需要 1.5 s 量级。
-/// 2. **不能太大**。退避同时也是「网络回来后多久才恢复」的延迟。2 s + 4 s（默认 2 次重试）
-///    意味着最坏要等 6 s 才见分晓，反馈明确要求「不用等五秒」。
-///
-/// 1.5 s 起（1.5/3/6/8 s，上限 [`MAX_BACKOFF`]）两边都满足：最短可见 1.5 s 读得完，
-/// 默认预算耗尽的最坏等待 1.5 + 3 = 4.5 s 在 5 s 以内。
-///
-/// 可见性**不再**靠拉长退避兜底：琥珀会一直挂到「第一个字节到达」（见
-/// [`crate::transfer_panel`] 的 `is_retrying_without_data`），长断网时的琥珀时长由故障本身
-/// 决定，与这个常量无关。
+/// 下限：故障比退避短时，退避就是琥珀态的全部可见时长，一行小字要读得完。
+/// 上限：退避同时也是「网络回来后多久才恢复」的延迟，默认预算的最坏等待须 < 5 s。
+/// 长断网下的可见时长靠「第一个字节到达」才结束重试态（见 `transfer_panel`），不靠拉长退避。
 const BASE_BACKOFF: Duration = Duration::from_millis(1500);
 
 /// 退避倍率：每次重试在上一次的基础上翻倍。
@@ -183,12 +137,9 @@ pub struct Ctx {
     pub tab_id: u64,
     /// 当前标签的 SFTP 客户端（上传 / 下载执行所需）。
     pub client: Option<Arc<SftpClient>>,
-    /// 各标签**当前**的 SFTP 客户端快照（父层每轮重建）。
-    ///
-    /// 与 [`Ctx::client`] 的分工：后者只服务「入队」这类作用于活动标签的动作，前者服务
-    /// 「启动 / 重试」——那条路径必须按传输**自己的标签**取客户端（面板跨标签聚合，非活动标签
-    /// 的排队项同样要能跑）。且取的是此刻的客户端，而不是记录里入队时捕获的那份：会话重建后
-    /// 同一标签会换上新通道，旧记录因此能用上新客户端（见设计文档 §19）。
+    /// 各标签**此刻**的 SFTP 客户端快照（父层每轮重建）。[`Ctx::client`] 只服务作用于活动
+    /// 标签的动作；「启动 / 重试」必须按传输自己的标签取，且取的是此刻的客户端——会话重建后
+    /// 同一标签已换上新通道。
     pub clients: HashMap<u64, Arc<SftpClient>>,
     /// 当前标签的远端工作目录（用于把本地文件名 / 远端名解析为绝对远端路径）。
     pub remote_dir: String,
@@ -196,18 +147,13 @@ pub struct Ctx {
     ///
     /// 刻意**不**缓存进 [`State`]：见模块文档的不变量 I1。
     pub max_concurrent: usize,
-    /// 单次传输的自动重试次数上限（`0` = 关闭自动重试）。
-    ///
-    /// 与 `max_concurrent` 同样**不缓存**：它在「失败那一刻」被读取，故设置界面改动后
-    /// 下一次失败即用新值，无需任何重调度消息。
+    /// 单次传输的自动重试次数上限（`0` = 关闭自动重试）。与 `max_concurrent` 同样**不缓存**。
     pub retry_attempts: u32,
 }
 
 impl Ctx {
-    /// 某标签此刻可用的 SFTP 客户端（无则 `None`）。
-    ///
-    /// 这是启动 / 重试路径取客户端的**唯一**入口：优先当前，缺了才由调用方回退到记录里
-    /// 入队时捕获的那一份（回退只为兼容，正常路径下二者是同一个）。
+    /// 某标签此刻可用的 SFTP 客户端（无则 `None`）：启动 / 重试路径的唯一取用入口，缺了才由
+    /// 调用方回退到记录里入队时捕获的那份。
     pub fn client_for(&self, tab_id: u64) -> Option<Arc<SftpClient>> {
         self.clients.get(&tab_id).cloned()
     }
@@ -215,15 +161,10 @@ impl Ctx {
 
 /// 传输模块私有状态：每标签传输队列 + 任务 id 分配器 + 取消句柄注册表 + 运行中任务集合。
 pub struct State {
-    /// 每标签独立的传输队列（原内嵌在 `SftpView.transfers`）。
-    ///
-    /// 保持「每标签一条队列」而非单一全局队列：渲染层 `all_transfers()` 与「取消 / 移除作用于
-    /// 活动标签」的既有语义都建立在它之上。跨标签的公平序由单调的 `Transfer.id` 给出（见
-    /// [`State::next_queued`]），无需额外的排序结构。
+    /// 每标签一条队列（而非全局一条）：渲染与「取消 / 移除作用于活动标签」都建立在它之上。
+    /// 跨标签的公平序由单调的 `Transfer.id` 给出，无需额外排序结构。
     per_tab: HashMap<u64, Vec<Transfer>>,
-    /// 下一个传输任务的 id（原 `sftp::State::next_transfer_id` 搬入）。
-    ///
-    /// 同时充当全局排队序：id 单调递增，故「id 最小者优先」等价于「入队最早者优先」。
+    /// 下一个传输任务的 id，同时充当全局排队序（id 最小 = 入队最早）。
     next_transfer_id: u64,
     /// 传输任务 id → 取消句柄（原 `sftp::State::abort_handles` 搬入）。
     abort_handles: HashMap<u64, AbortHandle>,
@@ -242,11 +183,8 @@ impl Default for State {
     }
 }
 
-/// 一次传输作业的完整参数。
-///
-/// 由 [`State::admit`] 产出时是「启动参数」（[`State::pump`] 据此拉起 worker），
-/// 由 [`State::job_of`] 产出时是「收尾参数」（[`cleanup_partial`] 据此删除半成品）。
-/// 两者字段完全重合——都需要「谁、往哪、用哪个客户端」——故共用同一结构，避免两份平行定义。
+/// 一次传输作业的参数：[`State::admit`] 用它拉起 worker，[`State::job_of`] 用它定位要清理的
+/// 文件。两种用途的字段完全重合，故共用一个结构。
 struct Job {
     /// 所属标签 id（事件回传时用于定位队列）。
     tab_id: u64,
@@ -260,7 +198,7 @@ struct Job {
     remote: String,
     /// 执行该传输的客户端；`None` 只可能出现在测试用宽松判定下（生产判定要求其存在）。
     client: Option<Arc<SftpClient>>,
-    /// 上一轮记录下来的源端指纹，作为本轮续传判定的基准（`None` = 无基准，从 0 开始）。
+    /// 上一轮记录的源端指纹，本轮续传判定的基准（`None` = 无基准，从 0 开始）。
     prior_source: Option<Fingerprint>,
 }
 
@@ -340,8 +278,8 @@ impl State {
                         error: None,
                         speed: 0.0,
                         client: Some(client.clone()),
-                        // 新入队的行没有续传基准：即便磁盘上躺着同名 `.part`，也无从判断它
-                        // 是不是这个文件的（`resume_offset` 会据此从 0 开始并顺手截断它）。
+                        // 新入队的行没有续传基准：即便目录里（本地或远端）躺着同名 `.part`，也无从
+                        // 判断它是不是这个文件的（`resume_offset` 会据此从 0 开始并顺手截断它）。
                         resume: None,
                         keep_staging: false,
                     };
@@ -372,13 +310,9 @@ impl State {
                     t.transferred = transferred;
                     t.total = total;
                     t.speed = speed;
-                    // **第一个字节到达 = 这次故障结束了**：琥珀态（等待重试 / 重试中尚无数据）
-                    // 到此为止，上一轮的失败原因也随之收走——它的使命是回答「为什么在重试」，
-                    // 现在数据在流，这一行不再是「出了问题」的行。
-                    //
-                    // 必须限定 `Active`：worker 被中止后可能还有一条迟到的进度回来，那时行已是
-                    // `Error`，抹掉它的失败原因会让用户无从判断。`transferred > 0` 则把核心层在
-                    // 每次尝试开头发的那个 `(0, total)` 排除在外（那正是「尚无数据」的信号）。
+                    // **第一个字节到达 = 故障结束了**：收走上轮的失败原因。必须限定 `Active`
+                    // （中止后迟到的进度不该抹掉失败行的原因），`transferred > 0` 则把核心层
+                    // 开头发的那个 `(0, total)` 排除在外——那正是「尚无数据」的信号。
                     if t.status == TransferStatus::Active && transferred > 0 {
                         t.error = None;
                     }
@@ -391,17 +325,14 @@ impl State {
                 source,
                 offset,
             } => {
-                // 只在该行**仍在跑**时落地：worker 起步到这条消息回到 `update` 之间，用户完全
-                // 可能已经取消了它、或点了重试让行回到排队态——迟到的元信息不该覆盖新状态
-                // （与 `TransferDone` 的落地条件同一条纪律）。
+                // 只在该行**仍在跑**时落地：worker 起步到这里，用户可能已取消或重试过，
+                // 迟到的元信息不该覆盖新状态（与 `TransferDone` 的落地条件同一条纪律）。
                 if let Some(tab) = self.per_tab.get_mut(&tab_id)
                     && let Some(t) = tab.iter_mut().find(|t| t.id == tid)
                     && t.status == TransferStatus::Active
                 {
                     t.resume = Some(ResumeState { source, offset });
-                    // 把读数校正到断点：偏移为 0 时等于清零（本轮确实从头写），大于 0 时立刻
-                    // 显示断点比例。上一轮清零 `transferred` 的做法正是「重试后进度掉回 0」
-                    // 的来源，现在改由这里给出**权威**值。
+                    // 读数校正到断点：偏移 0 即清零，>0 立刻显示断点比例，不必等首个进度回调。
                     t.transferred = offset;
                 }
                 Task::none()
@@ -428,8 +359,7 @@ impl State {
                             t.error = None;
                             t.not_before = None;
                             t.partial = None;
-                            // 成功即暂存已被用到终点（下载的 `.part` 已改名到目标）：清掉「这里面
-                            // 是完整数据」的标记，不让它跟着一条已完成记录继续走。
+                            // 暂存已改名到目标，这个标记不该跟着一条已完成记录继续走。
                             t.keep_staging = false;
                             if matches!(t.direction, TransferDirection::Upload) {
                                 relist = true;
@@ -439,9 +369,8 @@ impl State {
                             warn!("transfer {tid} failed ({:?}): {}", f.kind, f.message);
                             t.error = Some(f.message);
                             if f.kind.is_retryable() && t.attempts < ctx.retry_attempts {
-                                // 退避期间**不占额度**（关键设计）：上面已经 `running.remove`，
-                                // 该行接下来进入 `WaitingRetry` 也不参与调度，额度立刻让给排队项；
-                                // 否则 N 个任务同时失败会让整条队列空转最长 `MAX_BACKOFF`。
+                                // 退避期间不占额度：上面已 `running.remove`，`WaitingRetry` 也
+                                // 不参与调度，额度立刻让给排队项。
                                 let delay = backoff_delay(t.attempts);
                                 t.attempts += 1;
                                 t.not_before = Some(Instant::now() + delay);
@@ -452,17 +381,9 @@ impl State {
                                 t.status = TransferStatus::Error;
                                 t.not_before = None;
                                 t.partial = None;
-                                // 「暂存里是完整数据」这件事要落到行上：关标签 / 移除行等清理
-                                // 路径据此跳过它（见 `leaves_partial_on_disk`）。
                                 t.keep_staging = f.keep_staging;
-                                // **下载的失败行刻意保留 `.part`**——它就是续传的地基，删掉等于
-                                // 让「继续」退化成重下整个文件（见模块文档「最终失败时暂存的去留」）。
-                                // 上传侧不在保留之列：它失败留下的是一份被截断的**真名**远端文件
-                                // （阶段 B 才会改成远端 `.part` 暂存），留着会被误认为「文件在这儿」。
-                                // 取消则两侧都清理：用户明确不要了。
-                                let keep = f.keep_staging
-                                    || (t.direction == TransferDirection::Download
-                                        && f.kind != FailureKind::Cancelled);
+                                // 失败行两侧都保留暂存（续传的地基）；取消除外——用户明确不要了。
+                                let keep = f.keep_staging || f.kind != FailureKind::Cancelled;
                                 if !keep {
                                     cleanup = Some(job_from(tab_id, t));
                                 }
@@ -471,9 +392,7 @@ impl State {
                     }
                 }
                 let mut tasks = vec![self.pump(ctx)];
-                // I5：同靶还有别的存活行时不删——那个暂存可能正被它续传。判定刻意放在
-                // `pump` **之后**：上面那一步可能刚启动一个同靶的排队项，而它正是最容易被
-                // 这次删除毁掉的对象。
+                // I5：同靶还有存活行时不删。刻意放在 `pump` **之后**判：那一步可能刚启动同靶排队项。
                 if let Some(job) = cleanup
                     && !self.target_busy(&job_target(&job), Some(job.tid))
                 {
@@ -499,13 +418,9 @@ impl State {
                 Task::none()
             }
             Message::CancelTransfer(id) => {
-                // 「取消」按行所处状态分三种，处置方式不同，不能一律改状态：
-                // 1. 有 worker 在跑：只 `abort()`，状态留给随后的 `TransferDone`——
-                //    在那里统一「落地为取消 + 归还额度 + 清理半成品」（不变量 I2）；
-                // 2. 等待重试中：既无 worker 也无额度，须在此直接落地；但**磁盘上有半成品**
-                //    （上一轮真跑过），故同时触发清理；
-                // 3. 排队中：从未启动，本地 / 远端都没有半成品，**不可清理**——那会删掉用户
-                //    原有的同名文件。
+                // 按状态分三种处置：在跑的只 `abort()`，状态与额度留给随后的 `TransferDone`
+                // （I2）；等待重试的没有 worker，须在此直接落地，且磁盘上有上一轮留下的暂存，
+                // 同时清理；排队中的从未启动，两侧都没有它的东西，不该清理。
                 let was_running = self.running.contains(&id);
                 if let Some(handle) = self.abort_handles.remove(&id) {
                     handle.abort();
@@ -518,10 +433,8 @@ impl State {
                     self.find(id).is_some_and(leaves_partial_on_disk)
                         && !self.target_busy(&job_target(job), Some(id))
                 });
-                // 只对「排队中 / 等待重试」的行落地。`Done` / `Error` 的行本就不该有取消按钮，
-                // 但消息可能迟到（连点 / 与服务端竞态），此时把已完成的任务改写成「已取消」
-                // 是货真价实的错误显示，故在此收口。
-                // 按 id 全局查找：面板跨标签聚合展示，非活动标签的行同样要能被取消。
+                // 只对「排队中 / 等待重试」的行落地：迟到的取消把 `Done` 改写成「已取消」是
+                // 货真价实的错误显示。按 id 全局查找：面板跨标签聚合，非活动标签的行也要能取消。
                 if matches!(
                     status,
                     Some(TransferStatus::Queued | TransferStatus::WaitingRetry)
@@ -538,13 +451,9 @@ impl State {
                 }
             }
             Message::RetryTransfer(id) => {
-                // 手动重试 = 「尽量继续」：保留 `transferred` 与 `resume`（指纹基准），让下一轮
-                // 仍能从断点接着写；只清掉属于「这一次尝试」的东西——自动重试计数（故手动重试
-                // 次数不限）、失败原因、退避时刻与清理提示。
-                //
-                // 它与自动重试的区别**不再是语义上的**：早先这里是「用户重新开始」故清零进度，
-                // 续传落地后两条路径走同一段判定（`run_transfer` 的 stat + `resume_offset`），
-                // 能不能接着写由指纹说了算，而不是由「谁点的重试」决定。指纹不符时照样从 0 开始。
+                // 手动重试与自动重试走同一段判定（`run_transfer` 的 stat + `resume_offset`），
+                // 能不能接着写由指纹说了算，与「谁点的重试」无关。这里只清掉属于「这一次尝试」
+                // 的东西：自动重试计数（故手动次数不限）、失败原因、退避时刻；`resume` 与读数保留。
                 if let Some(t) = self.find_mut(id) {
                     t.status = TransferStatus::Queued;
                     t.attempts = 0;
@@ -553,14 +462,13 @@ impl State {
                     t.error = None;
                     t.speed = 0.0;
                 }
-                // 若该行仍在运行（用户在取消后立刻点了重试），`next_queued` 会因 I3 跳过它，
-                // 待其 `TransferDone` 释放额度后再由那次 pump 补位启动。
+                // 若该行仍在跑（取消后立刻点重试），`next_queued` 会因 I3 跳过它，等它的
+                // `TransferDone` 释放额度后再补位。
                 self.pump(ctx)
             }
             Message::RemoveTransfer(id) => {
-                // `Active` 项不得直接删除：删掉记录后 worker 仍在跑，其 `TransferDone` 将无处
-                // 落地，`running` 里的额度也会永久漂移。面板本就不给 `Active` 行提供删除按钮，
-                // 此处仅作防御。
+                // `Active` 项不得直接删除：记录没了，worker 的 `TransferDone` 无处落地，
+                // 额度永久漂移。面板不给 `Active` 行删除按钮，此处仅作防御。
                 let status = self.find(id).map(|t| t.status);
                 let Some(status) = status else {
                     return Task::none();
@@ -569,9 +477,7 @@ impl State {
                     debug!("refused to remove a running transfer: {id}");
                     return Task::none();
                 }
-                // 该行在磁盘上留有暂存（等待重试中、或失败但刻意保留了 `.part`）时，移除即等于
-                // 放弃该传输，与「最终失败」同样清理一次——否则半个文件会无声无息地留在本地。
-                // 但同靶还有别的存活行时不能删（I5）：那个文件可能正是它要续传的。
+                // 移除 = 放弃该传输，按与「最终失败」同样的规则清理暂存；同靶有存活行时不删（I5）。
                 let cleanup = self.job_of(id).filter(|job| {
                     self.find(id).is_some_and(leaves_partial_on_disk)
                         && !self.target_busy(&job_target(job), Some(id))
@@ -584,9 +490,8 @@ impl State {
                 Task::batch(tasks)
             }
             Message::RetryDue(tid) => {
-                // 退避到点：**必须幂等**。到点时该行可能已不是 `WaitingRetry`（用户已取消 /
-                // 手动重试 / 移除，或所属标签已关闭），那说明这次重试早已作废，直接丢弃——
-                // 绝不能无条件把它推回排队态（会把用户刚取消的任务又重新跑起来）。
+                // **必须幂等**：到点时该行可能已被取消 / 手动重试 / 移除 / 关标签，那说明这次
+                // 重试早已作废——无条件推回排队态会把用户刚取消的任务又跑起来。
                 if !self
                     .find(tid)
                     .is_some_and(|t| t.status == TransferStatus::WaitingRetry)
@@ -597,14 +502,11 @@ impl State {
                 if let Some(t) = self.find_mut(tid) {
                     t.status = TransferStatus::Queued;
                     t.not_before = None;
-                    // 失败原因**刻意保留**（早先这里会清空）：退避到点后这一行仍是琥珀态——
-                    // 从「等待重试」无缝接到「重试中尚无数据」，面板要在这整段里回答
-                    // 「为什么在重试」。首个数据到达时由 `Message::Progress` 清掉。
+                    // 失败原因**刻意保留**：退避结束后这一行仍是琥珀态（「重试中尚无数据」），
+                    // 面板要在整段里回答「为什么在重试」，首个数据到达时由 `Progress` 清掉。
                     t.partial = None;
-                    // `transferred` 与 `total` **刻意保留**：续传的下一轮大概率正是从这个读数
-                    // 接着走，清零会让行在「退避结束 → 本轮起步」之间从 45% 掉回 0%——那是假
-                    // 跳变。权威值来自下一轮的 `Message::AttemptStarted`（它带着 stat 出来的真实
-                    // 偏移），若指纹已变、只能从 0 开始时，那一条会把它校正为 0。
+                    // 读数同样保留：清零会让行在「退避结束 → 本轮起步」之间从 45% 掉回 0%，
+                    // 那是假跳变。权威值由下一轮的 `AttemptStarted` 给出，指纹变了它会校正为 0。
                     t.speed = 0.0;
                 }
                 self.pump(ctx)
@@ -613,8 +515,8 @@ impl State {
                 // 半成品清理的异步结果：仅清理失败时带路径，用于提示用户手动处理。
                 match self.find_mut(tid) {
                     Some(t) => t.partial = partial,
-                    // 行已不存在——关标签时发起的清理，或用户在清理期间点了移除。此时面板上没有
-                    // 能承载提示的行，改用 toast：否则「有文件没删掉」这件事会完全无声。
+                    // 行已不存在（关标签时的清理，或用户期间点了移除）：面板上没有能承载提示的
+                    // 行，改用 toast，否则「有文件没删掉」完全无声。
                     None => {
                         if let Some(path) = partial {
                             return Task::done(Event::Toast(
@@ -632,26 +534,13 @@ impl State {
                 self.pump(ctx)
             }
             Message::TabClosed(tab_id) => {
-                // 关标签必须一并清理传输态：`per_tab` 中的僵尸行会一直挂在全局面板上，
-                // 而 `running` 中的僵尸 id 会**永久**占用并发额度（串行实现下只表现为多几行
-                // 记录，改成全局计数后就成了可用额度的泄漏）。
-                //
-                // 这是不变量 I2「只在 TransferDone 释放额度」的唯一例外：标签已消失，
-                // 其任务不会再有任何事件送回来。迟到的 `TransferDone` 只会再 remove 一次
-                // 已不存在的 id（幂等），不会重新占额度。
-                //
-                // 在磁盘上留有痕迹的行（在跑 / 等待重试 / **失败的下载行**）在关标签即放弃该
-                // 传输时都要清理——否则用户下次打开下载目录会看到一堆 `.part`。
-                // 唯一的例外是 `keep_staging`（暂存里是完整数据），见 `leaves_partial_on_disk`。
+                // 关标签必须一并清理传输态：`per_tab` 里的僵尸行会一直挂在全局面板上，`running`
+                // 里的僵尸 id 会**永久**占用并发额度。这是 I2 的唯一例外——标签没了，其任务不会
+                // 再有事件送回来；迟到的 `TransferDone` 只会再 remove 一次（幂等）。
                 let rows = self.per_tab.remove(&tab_id).unwrap_or_default();
-                // 先把「清理所需参数」取出来（后面 `rows` 会被消费），再逐行归还额度。
-                //
-                // 两道过滤：
-                // 1. **同靶去重**：同一目标的两行都留下痕迹时删两次是多余的（第二次必然
-                //    `NotFound`）。`seen.insert` 在 `filter` 里做副作用是为了让去重与判定处在同
-                //    一趟遍历中，读的时候记住这一点即可。
-                // 2. **I5**：别的标签可能正拿着同一个本地暂存（下载的写靶是本地路径，跨标签共享），
-                //    删掉会毁掉它的数据。本标签的行已从表里摘掉，故 `except` 传 `None`。
+                // 先取出清理参数（`rows` 随后被消费）。两道过滤：同靶去重（删第二次必然
+                // `NotFound`），以及 I5——别的标签可能正拿着同一个本地暂存。本标签的行已摘掉，
+                // 故 `except` 传 `None`。
                 let mut seen: HashSet<WriteTarget> = HashSet::new();
                 let cleanups: Vec<Job> = rows
                     .iter()
@@ -683,26 +572,20 @@ impl State {
         }
     }
 
-    /// 重新调度：在并发额度允许的范围内，按全局 FIFO 拉起尽可能多的排队项。
+    /// 重新调度：在并发额度允许的范围内按全局 FIFO 拉起尽可能多的排队项。
     ///
-    /// 这是唯一的调度入口——入队、完成、重试、并发数变更、标签关闭都汇到这里，故额度永远由
-    /// 当前额度与队列现状推导得出，不需要额外的记账。`max_concurrent` 取自 `ctx`（父层在路由
-    /// 本消息前重建），因此在设置界面拖动滑块后，同一条消息链就能读到新值并立即补位。
+    /// 唯一的调度入口——入队、完成、重试、并发数变更、标签关闭都汇到这里，故额度永远由当前
+    /// 额度与队列现状推导，不需要额外记账。
     fn pump(&mut self, ctx: &Ctx) -> Task<Event> {
-        // 启动条件的判定放在 `admit` 的实参里：客户端缺失的项本轮跳过（而非阻塞整个调度），
-        // 这样一个已断连标签的残留队列不会冻住其它标签的队列。
-        //
-        // 判定按**该传输自己的标签**取客户端（面板是跨标签聚合的，活动标签的客户端对别的标签
-        // 无效），并优先取此刻的那一份：会话重建后同一标签换了新客户端，旧记录也就跟着复活。
+        // 客户端缺失的项本轮跳过而非阻塞调度：一个已断连标签的残留队列不该冻住其它标签。
+        // 按传输自己的标签取客户端，且优先此刻的那一份。
         let starts = self.admit(ctx.max_concurrent, |tab_id, t| {
             ctx.client_for(tab_id).is_some() || t.client.is_some()
         });
         let mut tasks = Vec::with_capacity(starts.len());
         for s in starts {
-            // 优先当前客户端；记录里那份只在标签已经拿不到客户端时兜底（见 `Ctx::client_for`）。
             if let Some(client) = ctx.client_for(s.tab_id).or(s.client) {
-                // 回写进去：收尾时的远端清理（删上传留下的半个文件）也走 `Transfer.client`，
-                // 让它同样用上当前通道，而不是入队时的那份可能已死的。
+                // 回写进记录：收尾时的远端清理也走当前通道，而不是入队时那份可能已死的。
                 if let Some(t) = self.find_mut(s.tid) {
                     t.client = Some(client.clone());
                 }
@@ -720,21 +603,18 @@ impl State {
         Task::batch(tasks)
     }
 
-    /// 按额度把队列中的可启动项置为 `Active` 并占用槽位，返回其启动参数。
+    /// 按额度把队列中的可启动项置为 `Active` 并占用槽位，返回其启动参数（顺序即启动顺序）。
     ///
-    /// `startable` 判定一个排队项本轮能否启动，入参为该传输所属标签 id 与记录本身（客户端
-    /// 按标签解析，见 [`State::pump`]）；不可启动者记入本轮黑名单后**跳过**（而不是终止本轮
-    /// 循环），使后续候选仍有机会补位。返回值的顺序即启动顺序。
+    /// `startable` 判一个排队项本轮能否启动；不可启动者记入本轮黑名单后**跳过**而非终止循环，
+    /// 让后续候选仍有补位机会。
     ///
-    /// 除调用方给的判定之外，这里还**自带**不变量 I4：写靶已被占用的候选一律跳过。它属于调度
-    /// 规则而非业务条件，故写在调度器里——两个 worker 交叠写同一个暂存文件的产物是拼接垃圾，
-    /// 而续传会让它从「明显失败」变成「看起来成功」（大小正确、内容错位）。
+    /// 这里**自带**不变量 I4（写靶被占用的候选一律跳过），因为它属于调度规则而非业务条件。
     fn admit(&mut self, limit: usize, startable: impl Fn(u64, &Transfer) -> bool) -> Vec<Job> {
         let limit = limit.clamp(MIN_CONCURRENT, MAX_CONCURRENT);
         let mut starts = Vec::new();
         let mut skipped: HashSet<u64> = HashSet::new();
-        // I4 的初始占用：所有 `Active` 行都已经拿着自己的写靶。此后每启动一项就把它加进来，
-        // 因此**同一轮**里的两个同靶候选（比如连点两次下载同一个文件）也只有一个能启动。
+        // I4 的初始占用：`Active` 行各自已拿着写靶。每启动一项就加进来，故**同一轮**里的两个
+        // 同靶候选也只有一个能启动。
         let mut busy = self.active_targets();
         while self.running.len() < limit {
             let Some((tab_id, tid)) = self.next_queued(&skipped) else {
@@ -770,14 +650,9 @@ impl State {
             .collect()
     }
 
-    /// 该写靶是否仍被**别的**存活行占用（不变量 I5：删除暂存文件前的前提）。
-    ///
-    /// 「占用」的定义是：那一行自己在磁盘上留有痕迹（[`leaves_partial_on_disk`]），于是这个
-    /// 暂存文件既是它正在写的，也可能是它下一轮要接着写的。`except` 是即将被清理的那一行
-    /// （若它已经被从表里删掉，传 `None`）。
-    ///
-    /// 不判这一条就会出现「删掉别人正在写的文件」：同靶两行共存时，移除 / 关闭其中一行会连带
-    /// 删掉另一行的暂存——Unix 上 `unlink` 并不报错，要等随后改名失败才暴露。
+    /// 该写靶是否仍被**别的**存活行占用（不变量 I5：删暂存前的前提）。`except` 是即将被清理的
+    /// 那一行（已从表里删掉时传 `None`）。不判这一条就会出现「删掉别人正在写的文件」——Unix 上
+    /// `unlink` 不报错，改名时才暴露。
     fn target_busy(&self, target: &WriteTarget, except: Option<u64>) -> bool {
         self.per_tab
             .iter()
@@ -941,12 +816,9 @@ pub enum Message {
     Download(u64, String, PathBuf),
     /// 传输进度（携带标签 id + 传输任务 id + 已传字节 + 总字节 + 瞬时速度字节/秒）。
     Progress(u64, u64, u64, u64, f64),
-    /// 本轮尝试的元信息（携带标签 id + 任务 id + 源端指纹 + 起始偏移），由 worker 在拉起
-    /// 核心层**之前**发回。
-    ///
-    /// 用途有二：写入续传状态（`Transfer.resume`，下一轮的校验基准），以及把行上读数校正到
-    /// 真实起点——首个进度回调之前 UI 就能显示正确比例，而不是停在上一轮的残留值上。
-    /// 「能不能接着写」的判定在 worker 侧完成（见 [`resume_offset`]），这里只负责落地结果。
+    /// 本轮尝试的元信息（标签 id + 任务 id + 源端指纹 + 起始偏移），由 worker 在拉起核心层
+    /// **之前**发回：既写入下一轮的校验基准，也把行上读数校正到真实起点，否则 UI 会停在上一轮的
+    /// 残留值上。判定在 worker 侧完成（见 [`resume_offset`]），这里只落地结果。
     AttemptStarted {
         /// 所属标签 id。
         tab_id: u64,
@@ -989,11 +861,8 @@ pub enum Message {
 pub enum FailureKind {
     /// 用户取消 / worker 被中止：永不自动重试。
     Cancelled,
-    /// 承载这次传输的会话已终结：重试同一个客户端永远会立刻失败，**不**自动重试。
-    ///
-    /// 与 [`Transient`](Self::Transient) 的区别是性质而非程度：抖动时客户端还活着，退避后重试
-    /// 有可能成功；会话终结时客户端已死，重试只是把预算烧在尸体上（每次零耗时，只有退避在等）。
-    /// 用户要做的不是「等它自己好」，而是重新连接 —— 故行上的文案也必须说这件事。
+    /// 承载这次传输的会话已终结：客户端已死，重试只会零耗时地再失败，出路是重连而非等待
+    /// （与 [`Transient`](Self::Transient) 的区别是性质而非程度）。**不**自动重试。
     SessionGone,
     /// 瞬时故障（网络抖动、超时、通道断开）：自动重试有意义。
     Transient,
@@ -1010,21 +879,14 @@ pub struct Failure {
     pub kind: FailureKind,
     /// 用户可见的失败文案（已按当前界面语言本地化）。
     pub message: String,
-    /// 收尾时**不得删除**暂存文件。
-    ///
-    /// 目前只有一种来源：下载内容已完整落盘、但改名到目标路径失败（见 [`finalize_download`]）。
-    /// 此时暂存文件里是用户唯一的一份数据，把它当作半成品删掉等于毁掉一次成功的下载——
-    /// 文案里已带上路径，让用户自己改名即可。
+    /// 收尾时**不得删除**暂存文件：内容已完整落盘、只是改名失败（见 [`finalize_download`] /
+    /// [`finalize_upload`]），那是用户唯一的一份完整数据，文案里已带上路径。
     pub keep_staging: bool,
 }
 
 impl FailureKind {
-    /// 是否值得自动重试。
-    ///
-    /// `Unknown` 也纳入：实测中最常见的失败是网络抖动，而抖动常表现为无法细分的形态
-    /// （如 `UnexpectedBehavior("sender dropped")`），不重试等于把成本转嫁给用户；
-    /// 代价是可能在永久性错误上多试几次——有指数退避兜底，开销可接受。
-    /// [`SessionGone`](Self::SessionGone) 明确排除：那具尸体不会因为多等几秒就活过来。
+    /// 是否值得自动重试。`Unknown` 也算：抖动最常见的形态恰恰无法细分，不重试等于把成本转嫁给
+    /// 用户，代价至多在永久性错误上多试几次。
     fn is_retryable(self) -> bool {
         matches!(self, Self::Transient | Self::Unknown)
     }
@@ -1041,11 +903,8 @@ impl Failure {
         Self::core(Some(prefix), e)
     }
 
-    /// 由核心层错误构造失败的共同实现。
-    ///
-    /// 会话终结时的文案**刻意不带引擎原文**：`session closed` 对用户没有信息量，它要说的是
-    /// 「连接没了，重连再试」，故整句替换为 [`errors.session_gone`]；原始错误改记日志，
-    /// 排查时照样看得到（这条路径此前是把引擎原文直接甩给用户看的）。
+    /// 由核心层错误构造失败的共同实现。会话终结时整句换成 [`errors.session_gone`]——
+    /// `session closed` 对用户没有信息量，引擎原文改记日志。
     fn core(prefix: Option<String>, e: &CoreError) -> Self {
         let kind = kind_of(e);
         let detail = if kind == FailureKind::SessionGone {
@@ -1109,33 +968,29 @@ fn containing_folder(local: &Path) -> PathBuf {
         .unwrap_or_else(|| local.to_path_buf())
 }
 
-/// 下载的暂存文件路径：与目标同目录、追加 `.part` 后缀（`archive.tar.gz` → `archive.tar.gz.part`）。
+/// 下载的暂存路径：与目标同目录、追加 `.part`（`a.tar.gz` → `a.tar.gz.part`）。
 ///
-/// 刻意用 `OsString` 追加而非 `with_extension`：后者会把 `archive.tar.gz` 变成
-/// `archive.tar.part`，丢掉一层后缀，改回真名时无从还原。同目录是关键——跨文件系统的
-/// `rename` 会失败（用户可能把下载目录放在另一个挂载点上）。
+/// 用追加而非 `with_extension`：后者会丢掉一层后缀，改名时无从还原。必须同目录——跨文件系统的
+/// `rename` 会失败。
 fn staging_path(local: &Path) -> PathBuf {
     let mut staged = local.as_os_str().to_os_string();
     staged.push(".part");
     PathBuf::from(staged)
 }
 
-/// 决定这次尝试从第几个字节开始（`0` = 从头，且目标会被截断）。
+/// 上传的远端暂存路径：[`staging_path`] 的远端同构体（同样追加，不换扩展名）。
+fn staging_remote(remote: &str) -> String {
+    let mut staged = remote.to_string();
+    staged.push_str(".part");
+    staged
+}
+
+/// 这次尝试从第几个字节开始（`0` = 从头，目标会被截断）。三条同时成立才续传：
+/// 有上一轮记录的指纹（没有基准就无从判断磁盘上那个 `.part` 属于谁）、源端未变、
+/// 半成品不比源端长。
 ///
-/// 三个条件缺一不可：
-///
-/// 1. **有上一轮的指纹**（`prev.is_some()`）。没有基准就无从判断磁盘上那个半成品属于谁——
-///    应用重启后重新发起下载（行也已不在），或用户手工放了一个 `.part`，都属于这一类，
-///    一律从 0 开始；
-/// 2. **源端未变**（`prev == now`，大小与修改时间都一致）；
-/// 3. **半成品不比源端长**（`partial <= now.len`）。恰好相等也按续传处理：拷贝循环会立刻读到
-///    EOF 并正常收尾，于是「已下完、只是改名失败」那条路径的重试**瞬间**成功，
-///    而不是把整个文件重下一遍。
-///
-/// 源端大小未知（`now.len == 0`，服务端不返回 `size`）时条件 3 只在 `partial == 0` 时成立，
-/// 自然退化为「不可续传」，无需特判。
-///
-/// 这是纯函数（有单测），也是唯一的判定入口：自动重试与手动重试走的是同一段代码。
+/// 恰好等长按续传处理：拷贝循环立刻 EOF，于是「已下完、只是改名失败」的重试瞬间成功。
+/// 源端长度未知（`now.len == 0`）时条件自然退化，无需特判。
 fn resume_offset(prev: Option<Fingerprint>, now: Fingerprint, partial: u64) -> u64 {
     match prev {
         Some(prev) if prev == now && partial <= now.len => partial,
@@ -1146,15 +1001,9 @@ fn resume_offset(prev: Option<Fingerprint>, now: Fingerprint, partial: u64) -> u
 /// 一次写入的**靶子**：不变量 I4（同靶互斥）与 I5（删除前提）都键在它上面。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum WriteTarget {
-    /// 下载：本地的 `.part` 暂存文件。
-    ///
-    /// 刻意用**暂存路径**而不是最终目标：两个下载同时写同一个暂存才会互相破坏内容，
-    /// 而「两行指向同一个目标文件」正是它要拦下的情形。
+    /// 下载：本地 `.part` 暂存（用暂存而非真名，因为要拦的正是「两行写同一个目标」）。
     Local(PathBuf),
-    /// 上传：远端路径 **+ 所属标签**。
-    ///
-    /// 必须带 `tab_id`：两个标签可以连到不同的服务器，它们的远端路径字符串完全可能相同，
-    /// 而那是两个不同的文件。
+    /// 上传：远端 `.part` 暂存 + 标签 id（不同服务器的远端路径字符串可能相同，却是两个文件）。
     Remote(u64, String),
 }
 
@@ -1162,7 +1011,7 @@ enum WriteTarget {
 fn write_target(tab_id: u64, t: &Transfer) -> WriteTarget {
     match t.direction {
         TransferDirection::Download => WriteTarget::Local(staging_path(&t.local)),
-        TransferDirection::Upload => WriteTarget::Remote(tab_id, t.remote.clone()),
+        TransferDirection::Upload => WriteTarget::Remote(tab_id, staging_remote(&t.remote)),
     }
 }
 
@@ -1170,40 +1019,28 @@ fn write_target(tab_id: u64, t: &Transfer) -> WriteTarget {
 fn job_target(job: &Job) -> WriteTarget {
     match job.direction {
         TransferDirection::Download => WriteTarget::Local(staging_path(&job.local)),
-        TransferDirection::Upload => WriteTarget::Remote(job.tab_id, job.remote.clone()),
+        TransferDirection::Upload => WriteTarget::Remote(job.tab_id, staging_remote(&job.remote)),
     }
 }
 
-/// 该行是否在磁盘上（本地 `.part` 暂存 / 远端半成品）留有未收尾的痕迹，即关标签 / 移除行时
-/// 是否值得清理一次。
+/// 该行是否在磁盘上留有未收尾的暂存文件，即关标签 / 移除行时是否值得清理一次。
+/// `Active` / `WaitingRetry` 必然有；`Queued`（从未启动）与 `Done`（已改名）没有；
+/// `Error` 也返回真——失败行刻意保留暂存供续传。清理的靶子永远是暂存路径，它在「没跑过就
+/// 失败」时压根不存在，删除是空操作。
 ///
-/// - `Active`：正在写，`abort()` 后必然留下半成品；
-/// - `WaitingRetry`：上一轮真跑过并失败了，半成品还在；
-/// - `Queued`：从未启动，磁盘上没有它的东西；
-/// - `Done`：下载的暂存文件已改名到目标文件；
-/// - `Error`：**下载**侧刻意保留暂存（续传的地基，见模块文档「最终失败时暂存的去留」），
-///   故要清理；上传侧在失败那一刻已删过远端残留，这里再判一次是空操作（删除失败只记日志）。
-///
-/// `keep_staging` 的行**一概为假**：那时暂存里是**完整数据**（下载已落全、只是改名失败），
-/// 是用户唯一的一份，任何清理路径都必须跳过——宁可留一个文件，也不能毁掉一次成功的下载。
+/// `keep_staging` 一概为假：那时暂存里是**完整数据**（只是改名失败），清掉等于毁掉一次成功传输。
 fn leaves_partial_on_disk(t: &Transfer) -> bool {
     if t.keep_staging {
         return false;
     }
     match t.status {
-        TransferStatus::Active | TransferStatus::WaitingRetry => true,
-        TransferStatus::Error => t.direction == TransferDirection::Download,
+        TransferStatus::Active | TransferStatus::WaitingRetry | TransferStatus::Error => true,
         TransferStatus::Queued | TransferStatus::Done => false,
     }
 }
 
-/// 下载完成后把暂存文件改名到目标路径。
-///
-/// 目标已存在时先删再改名：Windows 的 `rename` 不会覆盖已存在的目标（Unix 会），而用户
-/// 此前已在覆盖确认框里明确同意覆盖，故删除是有授权的。
-///
-/// 改名失败时调用方**必须保留**暂存文件（见 [`Failure::keep_staging`]）——能走到这里说明
-/// 内容已经完整落盘，只是名字不对，删掉就等于毁掉一次成功的下载。
+/// 下载完成后把暂存改名到目标。目标已存在时先删再改名：Windows 的 `rename` 不覆盖（Unix 会），
+/// 而用户已在覆盖确认框里同意过。改名失败时调用方必须保留暂存（见 [`Failure::keep_staging`]）。
 async fn finalize_download(staging: &Path, target: &Path) -> std::io::Result<()> {
     match tokio::fs::rename(staging, target).await {
         Ok(()) => Ok(()),
@@ -1217,57 +1054,77 @@ async fn finalize_download(staging: &Path, target: &Path) -> std::io::Result<()>
     }
 }
 
-/// 退避定时器：`delay` 之后发一条 [`Message::RetryDue`] 回到模块自身。
+/// 上传的源端指纹：本地文件的大小与修改时间（[`Fingerprint`] 的本地侧取法）。
+async fn local_fingerprint(local: &Path) -> std::io::Result<Fingerprint> {
+    let meta = tokio::fs::metadata(local).await?;
+    Ok(Fingerprint {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+/// 上传完成后把远端暂存改名到目标（[`finalize_download`] 的 SFTP 版本）。
 ///
-/// 刻意**不新增订阅**：复用既有的 `Event::Emit` 自回路，`RetryDue` 与 `Progress` /
-/// `TransferDone` 走同一条父层转发路径，模块不需要为此持有任何计时状态。
+/// 被拒时删掉目标再试一次：SFTP v3 允许服务端拒绝改名到已存在的目标，而 OpenSSH 的
+/// `sftp-server` 走 `rename(2)` 会覆盖，两种都要能过。删除失败时返回**第一次**的错误，那才是
+/// 用户要看到的原因。改名失败同样要保留暂存（见 [`Failure::keep_staging`]）。
+async fn finalize_upload(
+    client: &SftpClient,
+    staging: &str,
+    target: &str,
+) -> Result<(), CoreError> {
+    match client.rename(staging, target).await {
+        Ok(()) => Ok(()),
+        Err(first) => {
+            if client.remove_file(target).await.is_err() {
+                return Err(first);
+            }
+            client.rename(staging, target).await
+        }
+    }
+}
+
+/// 退避定时器：`delay` 之后发一条 [`Message::RetryDue`] 回到模块自身（复用 `Event::Emit` 自回路，
+/// 不新增订阅，模块也不持有计时状态）。
 ///
-/// **`sleep` 必须写在 `async` 块内部**：`State::update` 在 iced 的事件循环里同步执行，那里
-/// 没有 tokio 运行时上下文，`tokio::time::sleep(..)` 在**构造时**就要向运行时取计时器句柄，
-/// 外层构造会直接 panic（`there is no reactor running`）。放进 `async` 块则推迟到 future
-/// 被轮询时构造——那时已运行在 iced 的 tokio 执行器里（`run_transfer` 里的 `tokio::spawn`
-/// 同理，故它写在 channel 闭包内部而非 `update` 里）。
+/// `sleep` **必须写在 `async` 块内部**：`State::update` 里没有 tokio 运行时上下文，而
+/// `tokio::time::sleep` 在构造时就要取计时器句柄，写在外层会直接 panic（`there is no reactor
+/// running`）。放进 `async` 块推迟到轮询时构造，那时已在 iced 的 tokio 执行器里（`run_transfer`
+/// 的 `tokio::spawn` 同理）。
 fn retry_timer(delay: Duration, tid: u64) -> Task<Event> {
     Task::perform(async move { tokio::time::sleep(delay).await }, move |()| {
         Event::Emit(Box::new(Message::RetryDue(tid)))
     })
 }
 
-/// 清理取消 / 移除 / 关标签之后留下的半成品文件，结果经 [`Message::CleanupDone`] 回到模块自身。
+/// 清理取消 / 移除 / 关标签之后留下的半成品，结果经 [`Message::CleanupDone`] 回到模块自身。
 ///
-/// **调用时机**（注意不是「所有失败」）：下载的失败行刻意**不**清理——那个 `.part` 是续传的
-/// 起点，由行上的「继续下载」接着用；只有取消、移除行、关标签这三类「这条传输到此为止」的
-/// 路径才清理（见模块文档「最终失败时暂存的去留」）。
+/// **失败行不在调用之列**：两侧的 `.part` 是续传起点，由行上的「继续」接着用。清理的靶子只
+/// 可能是本模块创建的暂存文件（[`staging_remote`] / [`staging_path`]），绝不是用户原有的目标
+/// 文件——这正是关标签时敢对所有「留下痕迹」的行清理一次的底气。
 ///
-/// - **上传**：删除远端残留。残留本身不致命（重传的 `create()` 会截断），故删除失败只记日志；
-/// - **下载**：删除本地 `.part` 暂存文件（[`staging_path`]）。半个本地文件若以真实文件名留下，
-///   会被用户误认为「已下载完成」，是真正危险的一侧，故确实要删。删除前先确认它是**文件**再删
-///   ——失败可能发生在 `File::create` 之前（如远端 `open` 被拒），此时磁盘上根本没有暂存文件，
-///   若不加判定就会误删同名目录。删除失败时把路径回报给界面（`Transfer.partial`）提示用户
-///   手动处理。
-///
-/// 清理靶子只可能是本模块创建的暂存文件（从不是用户原有的文件）：这正是关标签时敢对所有
-/// 「留下痕迹」的行清理一次的底气，见 [`Message::TabClosed`]。
-///
-/// 本函数**只应在「该任务确实跑过一轮」时调用**（排队中被取消的任务从未碰过任何文件），
-/// 且调用方必须先过不变量 I5（[`State::target_busy`]）：同靶还有别的存活行时，那个文件是它的。
+/// 只在「该任务确实跑过一轮」时调用，且调用方须先过不变量 I5（[`State::target_busy`]）。
 fn cleanup_partial(job: Job) -> Task<Event> {
     let tid = job.tid;
     Task::perform(
         async move {
             match job.direction {
                 TransferDirection::Upload => {
+                    // 靶子是远端 `x.part`，绝不是 `job.remote`——那是用户原有的同名文件。
+                    let staged = staging_remote(&job.remote);
                     if let Some(client) = &job.client
-                        && let Err(e) = client.remove_file(&job.remote).await
+                        && let Err(e) = client.remove_file(&staged).await
                     {
-                        debug!("failed to remove partial remote file {}: {e}", job.remote);
+                        debug!("failed to remove partial remote file {staged}: {e}");
                     }
+                    // 删除失败只记日志：残留会被下一次上传的截断重写清掉，而 SFTP 删除失败最常见
+                    // 的原因本就是「它压根没被创建」，提示只会成为噪音。
                     None
                 }
                 TransferDirection::Download => {
                     let staged = staging_path(&job.local);
-                    // 先确认它是**普通文件**：失败可能发生在 `File::create` 之前（如远端 `open`
-                    // 被拒），此时磁盘上根本没有暂存文件；若不加判定就会把同名目录交给 `remove_file`。
+                    // 先确认它是**普通文件**：失败可能发生在 `File::create` 之前，此时磁盘上
+                    // 根本没有暂存文件，不加判定就会把同名目录交给 `remove_file`。
                     let is_file = tokio::fs::metadata(&staged)
                         .await
                         .map(|m| m.is_file())
@@ -1275,9 +1132,8 @@ fn cleanup_partial(job: Job) -> Task<Event> {
                     if !is_file {
                         return None;
                     }
-                    // 重试几次再判失败：关标签时发起的清理会与「worker 正在被 `abort`」重叠，
-                    // 而 Windows 删除仍被打开的文件会失败（Unix 不会）。多试几次即可覆盖那个窗口，
-                    // 仍失败才如实把路径回报给用户手动处理。
+                    // 多试几次：关标签时的清理会与「worker 正在被 abort」重叠，而 Windows 删除
+                    // 仍被打开的文件会失败（Unix 不会）。仍失败才把路径回报给用户。
                     let mut error = String::new();
                     for attempt in 0..CLEANUP_ATTEMPTS {
                         match tokio::fs::remove_file(&staged).await {
@@ -1302,15 +1158,9 @@ fn cleanup_partial(job: Job) -> Task<Event> {
 
 /// 运行单个传输任务（上传 / 下载），以 `Task::stream` 把进度与完成事件流回流模块。
 ///
-/// - 在独立 tokio 任务里调用核心层 `upload_with_progress` / `download_with_progress`，
-///   进度回调经 mpsc 通道回传；
-/// - 下载侧起步时先做**续传判定**：stat 源端与半成品，[`resume_offset`] 给出本轮起点，
-///   经 [`Message::AttemptStarted`] 记回行上；
-/// - 流任务按真实 I/O 间隔估算瞬时速度，逐条发射 `Progress`；
-/// - 启动时先发射 `TransferHandle` 以登记取消句柄，结束发射 `TransferDone`。
-///
-/// 每个事件都包成 `Event::Emit(Box<Message>)`，由父层派发回 `State::update`，
-/// 从而保证「子模块只经 Event 通信、不持有 `&mut App`」的架构约束。
+/// 在独立 tokio 任务里调核心层，进度经 mpsc 回传、按真实 I/O 间隔估算速度；起步前先做
+/// 续传判定（见 [`resume_offset`]），结果经 [`Message::AttemptStarted`] 记回行上。
+/// 事件都包成 `Event::Emit(Box<Message>)` 由父层派发回 `State::update`，子模块不持有 `&mut App`。
 fn run_transfer(
     tab_id: u64,
     tid: u64,
@@ -1327,15 +1177,13 @@ fn run_transfer(
             // 由流任务逐条包成 `Event::Emit(Message::Progress)` 上行，避免子模块直接写父态。
             let (mut prog_tx, mut prog_rx) = futures::channel::mpsc::channel::<(u64, u64, f64)>(64);
 
-            // 进度回调：核心层只回传累计字节，瞬时速度在此按真实 I/O 间隔估算（EMA 平滑），
-            // 经通道回传后由 UI 直接展示与估算 ETA。注意 `prog_tx` 作为唯一发送端被此闭包捕获、
-            // 随 worker 任务结束（闭包丢弃）而释放，从而 `prog_rx` 必然关闭、下方转发循环必然退出——
-            // 这是刻意设计：避免「原始发送端滞留外层作用域导致通道不关闭、TransferDone 永不发出」的
-            // 死锁（那会让前序传输卡在 Active，进而阻塞其后所有排队传输，表现为「上传一直排队」）。
+            // 进度回调：核心层只回传累计字节，瞬时速度在此按真实 I/O 间隔估算（EMA 平滑）。
+            // `prog_tx` 作为唯一发送端被闭包捕获，随 worker 结束而释放，`prog_rx` 因此必然关闭、
+            // 下方转发循环必然退出——若发送端滞留在外层作用域，通道永不关闭，`TransferDone` 就
+            // 永远发不出，前序传输卡在 Active 并冻住其后所有排队项。
             //
-            // 速度 EMA 在**每次**回调时更新（保精度、保平滑），但只在满足节流条件时才真正跨线程
-            // 上报：核心层每写满 64 KiB 就回调一次，并发 N 后消息量会 ×N，而其中绝大多数是同一帧内
-            // 被覆盖掉的中间值。终值必须放行，否则进度条会停在 99%（完成事件依赖通道关闭后发出）。
+            // EMA 每次回调都更新，但只在满足节流条件时才跨线程上报（核心层每 64 KiB 回调一次，
+            // 绝大多数是同一帧内被覆盖的中间值）。终值必须放行，否则进度条停在 99%。
             let mut last = Instant::now();
             let mut last_bytes = 0u64;
             let mut speed_ema = 0.0f64;
@@ -1350,7 +1198,6 @@ fn run_transfer(
                 } else {
                     speed_ema
                 };
-                // 指数滑动平均抑制瞬时抖动，读数更平滑。
                 speed_ema = speed_ema * 0.7 + inst * 0.3;
                 last = now;
                 last_bytes = transferred;
@@ -1382,38 +1229,87 @@ fn run_transfer(
                     // UI 要据此判断能否重试，故不能只传本地化文案。
                     match direction {
                         TransferDirection::Upload => {
-                            // 文件夹上传时 `remote` 含子目录层级，先递归确保远端父目录存在，
-                            // 否则 `upload_with_progress` 会因目标目录不存在而失败。
+                            // 文件夹上传时 `remote` 含子目录层级，先递归确保远端父目录存在。
+                            // 暂存与目标同目录，故父目录不变。
                             let parent = parent_path(&remote);
                             if !parent.is_empty()
                                 && parent != remote
                                 && let Err(e) = ensure_remote_dir(&client, &parent).await
                             {
-                                // 建目录失败同样带分类：远端权限不足不该被反复重试，
-                                // 会话终结同样该直接停下并给出「重连再试」（走共享的构造器，
-                                // 文案规则与其它失败完全一致）。
                                 return Err(Failure::core_prefixed(t!("sftp.mkdir_failed"), &e));
                             }
-
-                            client
-                                .upload_with_progress(&local, &remote, cb)
+                            // 与下载侧同构：写远端 `x.part`，成功后才改名，于是有断点可续，
+                            // 且失败时用户原有的远端同名文件不受影响。
+                            let staged = staging_remote(&remote);
+                            // 角色与下载互换：源端是本地文件，半成品是远端暂存；判定仍在
+                            // [`resume_offset`]，规则一致。
+                            let mut start = 0u64;
+                            match local_fingerprint(&local).await {
+                                Ok(now) => {
+                                    // 远端没有 `x.part` 是首轮的常态，按「半成品为 0」处理。
+                                    let partial = match client.remote_fingerprint(&staged).await {
+                                        Ok(f) => f.len,
+                                        Err(e) => {
+                                            debug!("no remote staging {staged}: {e}");
+                                            0
+                                        }
+                                    };
+                                    start = resume_offset(prior_source, now, partial);
+                                    debug!(
+                                        "upload {remote}: resuming at {start} (partial {partial}, total {})",
+                                        now.len
+                                    );
+                                    let _ = meta_tx
+                                        .send(Event::Emit(Box::new(Message::AttemptStarted {
+                                            tab_id,
+                                            tid,
+                                            source: now,
+                                            offset: start,
+                                        })))
+                                        .await;
+                                }
+                                Err(e) => debug!(
+                                    "no fingerprint for {}, starting from the beginning: {e}",
+                                    local.display()
+                                ),
+                            }
+                            // 本地元数据读不到时不更新 `resume`：保留上一轮的基准反而更有利。
+                            let resume = if start == 0 {
+                                ResumeAt::Start
+                            } else {
+                                ResumeAt::Offset(start)
+                            };
+                            match client
+                                .upload_with_progress(&local, &staged, resume, cb)
                                 .await
-                                .map_err(|e| Failure::from_core(&e))
+                            {
+                                Ok(()) => match finalize_upload(&client, &staged, &remote).await {
+                                    Ok(()) => Ok(()),
+                                    Err(e) => {
+                                        // 内容已完整上传、只是改不了名：暂存是用户唯一一份完整数据。
+                                        warn!(
+                                            "uploaded {remote} but failed to rename {staged}: {e}"
+                                        );
+                                        Err(Failure {
+                                            kind: FailureKind::Permanent,
+                                            message: t!(
+                                                "transfer.rename_failed_upload",
+                                                path => staged
+                                            ),
+                                            keep_staging: true,
+                                        })
+                                    }
+                                },
+                                Err(e) => Err(Failure::from_core(&e)),
+                            }
                         }
                         TransferDirection::Download => {
-                            // 先写同目录的 `.part` 暂存文件，成功后再改名到目标路径（浏览器同款）：
-                            // 「下载到一半的文件」因此不会以真实文件名出现。暂存文件也是清理的靶子，
-                            // 而它只可能由本模块创建（见 `staging_path`）。
+                            // 先写同目录的 `.part` 暂存，成功后才改名：半成品不会以真实文件名出现，
+                            // 它也是清理的唯一靶子（见 [`staging_path`]）。
                             let staged = staging_path(&local);
-                            // 续传判定：源端有没有变、半成品能不能用，只看这三样东西（上一轮记下的
-                            // 指纹、这次 stat 到的指纹、暂存的长度）。判定与「从第几字节开始」的
-                            // 规则本身在 `resume_offset`（纯函数、有单测）。
-                            //
-                            // 指纹读不到（权限 / 会话已终结 / 服务端不支持）时不另造一条错误路径：
-                            // 当作「不可续传」从 0 开始，让随后的真实读写给出准确的分类与文案。
-                            //
-                            // 这条路径**不更新** `resume`：保留上一轮的基准反而更有利——本轮从 0
-                            // 重下后暂存会重新长到某个长度，下一轮仍可从这里接着写。
+                            // 续传判定只看三样：上一轮记下的指纹、这次 stat 到的指纹、暂存长度。
+                            // 指纹读不到时不另造错误路径——当作不可续传从 0 开始，并且**不更新**
+                            // `resume`，让随后的真实读写给出准确分类。
                             let mut start = 0u64;
                             match client.remote_fingerprint(&remote).await {
                                 Ok(now) => {
@@ -1439,8 +1335,7 @@ fn run_transfer(
                                     "no fingerprint for {remote}, starting from the beginning: {e}"
                                 ),
                             }
-                            // `Offset(0)` 与 `Start` 等价（核心层按 0 走截断路径），此处显式区分
-                            // 只是让意图清楚：起点为 0 就是「从头下」。
+                            // `Offset(0)` 与 `Start` 等价，显式区分只是让意图清楚。
                             let resume = if start == 0 {
                                 ResumeAt::Start
                             } else {
@@ -1453,8 +1348,7 @@ fn run_transfer(
                                 Ok(()) => match finalize_download(&staged, &local).await {
                                     Ok(()) => Ok(()),
                                     Err(e) => {
-                                        // 内容已完整落盘、只是改不了名：保留暂存文件并把路径告诉
-                                        // 用户，绝不能当作半成品删掉（那是用户唯一的一份数据）。
+                                        // 内容已完整落盘、只是改不了名：把路径告诉用户，别删。
                                         warn!(
                                             "downloaded {remote} but failed to rename {} -> {}: {e}",
                                             staged.display(),
@@ -1566,7 +1460,7 @@ mod tests {
     /// 故一律以 `client: None` 入队；凡需要真正「启动」的调度用例都直接调 [`State::admit`] 并传入
     /// 宽松判定 `|_, _| true`，绕开客户端要求、只验证额度与队列逻辑（`pump` 与 `admit` 的差别
     /// 仅在于启动判定与拉起 worker）。**代价**：`pump` 里「优先取标签当前客户端」这条规则无法
-    /// 用单测覆盖，只能靠代码审查与手工验收（见设计文档 §19.4）。
+    /// 用单测覆盖，只能靠代码审查与手工验收。
     fn make_transfer(id: u64, direction: TransferDirection) -> Transfer {
         Transfer {
             id,
@@ -2191,7 +2085,7 @@ mod tests {
         for kind in [
             FailureKind::Permanent,
             FailureKind::Cancelled,
-            // 会话终结同样不重试：那具尸体不会因为多等几秒就活过来（设计文档 §19）。
+            // 会话终结同样不重试：客户端已死，多等几秒也不会活过来。
             FailureKind::SessionGone,
         ] {
             let mut s = State::new();
@@ -2658,8 +2552,8 @@ mod tests {
 
     #[test]
     fn cleanup_skips_the_remote_side_when_the_client_is_gone() {
-        // 上传侧的清理需要活着的客户端；没有客户端时只记日志，不得 panic、也不回报残留
-        // （上传残留不致命：重传的 `create()` 会截断）。
+        // 上传侧的清理需要活着的客户端（删的是远端 `x.part`）；没有客户端时只记日志，不得 panic、
+        // 也不回报残留（远端残留不致命：下一次上传没有指纹基准时按 `Start` 截断重写，等于自我清理）。
         let events = run_events(cleanup_partial(Job {
             tab_id: 7,
             tid: 1,
@@ -2677,12 +2571,14 @@ mod tests {
 
     #[test]
     fn a_final_failure_starts_a_cleanup() {
-        // 不可重试的失败要清理半成品（否则半个本地文件会一直躺着）。
+        // 「到此为止」的失败（此处：取消导致次数耗尽前的最终失败）要清理半成品，否则半个文件会
+        // 一直躺着。非取消的最终失败**不**清理，那由 `a_failed_row_keeps_its_partial_on_both_sides`
+        // 专门守着。
         let mut s = State::new();
         enqueue_with_status(&mut s, 7, 1, TransferStatus::Active);
 
         let events = run_events(s.update(
-            Message::TransferDone(7, 1, Err(failure(FailureKind::Permanent))),
+            Message::TransferDone(7, 1, Err(failure(FailureKind::Cancelled))),
             &no_client_ctx(7),
         ));
 
@@ -2690,43 +2586,51 @@ mod tests {
             events
                 .iter()
                 .any(|e| matches!(e, Event::Emit(m) if matches!(**m, Message::CleanupDone(1, _)))),
-            "最终失败应触发半成品清理"
+            "取消的最终失败应触发半成品清理"
         );
     }
 
     #[test]
-    fn a_failed_download_keeps_its_partial_but_a_failed_upload_cleans_up() {
-        // 本方案唯一的「行为变更」：下载失败**保留** `.part`（续传的地基——默认预算 4.5s 远短于
-        // 它要救的那类故障，失败那一刻才是用户想接着下的时刻）；上传失败仍清理，因为它留下的是
-        // 半个**真名**远端文件，用户会以为「文件在这儿」。
+    fn a_failed_row_keeps_its_partial_on_both_sides() {
+        // 失败行**两侧都保留**暂存（下载留本地 `.part`、上传留远端 `x.part`）：默认预算 4.5s
+        // 远短于它要救的那类故障，失败那一刻才是用户想接着传的时刻。
         let mut s = State::new();
         enqueue_with_status(&mut s, 7, 1, TransferStatus::Active); // Upload
         let mut dl = make_transfer(2, TransferDirection::Download);
         dl.status = TransferStatus::Active;
         s.per_tab.entry(7).or_default().push(dl);
 
-        let dl_events = run_events(s.update(
-            Message::TransferDone(7, 2, Err(failure(FailureKind::SessionGone))),
-            &no_client_ctx(7),
-        ));
-        assert_eq!(s.find(2).map(|t| t.status), Some(TransferStatus::Error));
-        assert!(
-            !dl_events
-                .iter()
-                .any(|e| matches!(e, Event::Emit(m) if matches!(**m, Message::CleanupDone(2, _)))),
-            "下载失败必须保留暂存，否则「继续」会退化成重下整个文件"
-        );
+        for tid in [2, 1] {
+            let events = run_events(s.update(
+                Message::TransferDone(7, tid, Err(failure(FailureKind::SessionGone))),
+                &no_client_ctx(7),
+            ));
+            assert_eq!(s.find(tid).map(|t| t.status), Some(TransferStatus::Error));
+            assert!(
+                !events.iter().any(|e| matches!(e, Event::Emit(m)
+                    if matches!(**m, Message::CleanupDone(..)))),
+                "失败行 {tid} 必须保留暂存，否则「继续」会退化成重传整个文件"
+            );
+        }
+    }
 
-        let up_events = run_events(s.update(
-            Message::TransferDone(7, 1, Err(failure(FailureKind::SessionGone))),
+    #[test]
+    fn a_cancelled_upload_cleans_up_the_remote_staging() {
+        // 「保留」只针对**失败**：取消是用户明确不要了，两侧都清理（清的是远端 `x.part`）。
+        let mut s = State::new();
+        enqueue_with_status(&mut s, 7, 1, TransferStatus::Active); // Upload
+
+        let events = run_events(s.update(
+            Message::TransferDone(7, 1, Err(failure(FailureKind::Cancelled))),
             &no_client_ctx(7),
         ));
+
         assert_eq!(s.find(1).map(|t| t.status), Some(TransferStatus::Error));
         assert!(
-            up_events
+            events
                 .iter()
                 .any(|e| matches!(e, Event::Emit(m) if matches!(**m, Message::CleanupDone(1, _)))),
-            "上传失败要清掉远端残留，不能留下半个真名文件"
+            "取消的上传要清掉远端暂存"
         );
     }
 
@@ -2799,15 +2703,18 @@ mod tests {
         assert!(!leaves_partial_on_disk(&dl(TransferStatus::Queued)));
         assert!(!leaves_partial_on_disk(&dl(TransferStatus::Done)));
 
-        // 上传失败留下的是半个真名文件，在失败那一刻就被清理了，故不算「留有痕迹」。
+        // 上传与下载同律：远端留的也是 `x.part`，故失败行同样算「留有痕迹」。
         let mut up = make_transfer(1, TransferDirection::Upload);
         up.status = TransferStatus::Error;
-        assert!(!leaves_partial_on_disk(&up), "上传失败已清理完毕");
+        assert!(
+            leaves_partial_on_disk(&up),
+            "上传失败的远端 `x.part` 是续传的地基，行消失时要清理"
+        );
         let mut up_waiting = make_transfer(1, TransferDirection::Upload);
         up_waiting.status = TransferStatus::WaitingRetry;
         assert!(
             leaves_partial_on_disk(&up_waiting),
-            "等待重试的上传：远端还留着上一轮写了一半的文件，关标签时要清理"
+            "等待重试的上传：远端还留着上一轮写了一半的暂存，关标签时要清理"
         );
 
         // 完整数据（改名失败）在任何状态下都不清理：它比状态优先。
@@ -3083,6 +2990,99 @@ mod tests {
     }
 
     #[test]
+    fn staging_remote_appends_the_same_suffix_as_the_local_side() {
+        // 远端版与本地版同构：同为纯追加，`a.tar.gz` 不能变成 `a.tar.part`。
+        assert_eq!(
+            staging_remote("/home/user/archive.tar.gz"),
+            "/home/user/archive.tar.gz.part"
+        );
+        assert_eq!(
+            staging_remote("/home/user/no_ext"),
+            "/home/user/no_ext.part"
+        );
+    }
+
+    #[test]
+    fn the_local_fingerprint_is_a_usable_resume_basis_for_uploads() {
+        // 上传侧的源端是**本地**文件，指纹取法与远端同构（大小 + 修改时间），因此能直接喂给
+        // 同一个 `resume_offset`：源端没动 → 接着写；源端被改过 → 从 0 重来。
+        let dir = cleanup_dir("local_fp");
+        let file = dir.join("payload.bin");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("应能建立测试运行时");
+        let fingerprint = |path: &Path| {
+            rt.block_on(local_fingerprint(path))
+                .expect("应能取到本地指纹")
+        };
+
+        std::fs::write(&file, b"0123456789").expect("应能写入源文件");
+        let first = fingerprint(&file);
+        assert_eq!(first.len, 10, "本地指纹的大小即文件长度");
+        assert!(
+            first.modified.is_some(),
+            "本地 mtime 可得（拿不到只会退化成不可续传）"
+        );
+        assert_eq!(
+            first,
+            fingerprint(&file),
+            "同一文件两次读取必须给出同一指纹，否则每轮都会白丢断点"
+        );
+
+        // 源端未变、远端暂存已有 4 字节 → 从 4 续写。
+        assert_eq!(resume_offset(Some(first), fingerprint(&file), 4), 4);
+        // 源端在断网期间被换掉（这里换了长度）→ 断点作废。
+        std::fs::write(&file, b"01234567890").expect("应能改写源文件");
+        let replaced = fingerprint(&file);
+        assert_ne!(first, replaced, "源端变了，指纹必须跟着变");
+        assert_eq!(resume_offset(Some(first), replaced, 4), 0, "对不上就重传");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upload_writes_and_cleans_its_staging_never_the_final_name() {
+        // **最高危的一条**：上传的写靶必须是 `x.part`，绝不能是真名目标。cleanup 走的是同一个
+        // `job_target`，靶子写成真名就等于「移除一行」连带删掉用户原有的远端文件。
+        let up = make_transfer(1, TransferDirection::Upload);
+        let remote = up.remote.clone();
+        assert_eq!(
+            write_target(7, &up),
+            WriteTarget::Remote(7, staging_remote(&remote))
+        );
+        assert_eq!(
+            job_target(&job_from(7, &up)),
+            WriteTarget::Remote(7, staging_remote(&remote))
+        );
+        assert_ne!(
+            job_target(&job_from(7, &up)),
+            WriteTarget::Remote(7, remote),
+            "写靶与最终目标必须是两个路径"
+        );
+    }
+
+    #[test]
+    fn two_uploads_to_the_same_remote_path_never_run_together() {
+        // I4 在上传侧同样成立：暂存路径由目标路径 1:1 推导，故互斥关系与改用暂存前完全一致。
+        // 不同标签的同名远端路径是**两个文件**（不同的 `tab_id`），不该互相阻塞——那由
+        // `WriteTarget::Remote` 带 `tab_id` 保证。
+        let mut s = State::new();
+        let first = make_transfer(1, TransferDirection::Upload);
+        let second = same_target_as(2, &first);
+        let other_tab = same_target_as(3, &first);
+        s.per_tab.entry(7).or_default().extend([first, second]);
+        s.per_tab.entry(8).or_default().push(other_tab);
+
+        let started = s.admit(3, |_, _| true);
+
+        assert_eq!(
+            started.iter().map(|x| x.tid).collect::<Vec<_>>(),
+            vec![1, 3],
+            "同标签同目标的第 2 条被跳过，另一个标签与它无关"
+        );
+    }
+
+    #[test]
     fn finalize_download_moves_the_staged_file_into_place() {
         let dir = cleanup_dir("finalize_dl");
         let target = dir.join("archive.tar.gz");
@@ -3164,7 +3164,7 @@ mod tests {
 
     #[test]
     fn tab_close_cleans_up_rows_that_left_files_behind() {
-        // F：关标签即放弃该标签的全部传输，留下半成品的行（在跑 / 等待重试）要清理掉。
+        // F：关标签即放弃该标签的全部传输，留下半成品的行（在跑 / 等待重试 / 失败）要清理掉。
         // 排队中（没碰过磁盘）与已完成（暂存文件已改名）的行不产生清理动作。
         let mut s = State::new();
         enqueue_with_status(&mut s, 7, 1, TransferStatus::Active);
@@ -3188,8 +3188,8 @@ mod tests {
             .collect();
         assert_eq!(
             cleaned,
-            vec![1, 2],
-            "只应清理「在跑 / 等待重试」这两条留下痕迹的行"
+            vec![1, 2, 5],
+            "只应清理「在跑 / 等待重试 / 失败」这三条留下痕迹的行"
         );
         assert!(s.all_transfers().is_empty(), "关标签后不应留下任何僵尸行");
         assert!(s.running.is_empty(), "关标签必须归还全部并发额度");

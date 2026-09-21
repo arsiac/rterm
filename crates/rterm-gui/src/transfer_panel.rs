@@ -180,10 +180,10 @@ fn transfer_item(t: &Transfer, retry_limit: u32) -> Element<'_, Message> {
             ));
         }
         TransferStatus::Error => {
-            // 「继续下载」而不是「重试」：下载失败后暂存仍在，下一轮从断点接着写。两者发的是
-            // 同一条消息（`RetryTransfer`），差别只在用户是否知道自己不必从头再来。
+            // 有断点时说「继续下载 / 继续上传」而非「重试」：发的仍是同一条 `RetryTransfer`，
+            // 差别只在用户知道自己不必从头再来。
             let label = if can_continue(t) {
-                t!("transfer.resume")
+                continue_label(t)
             } else {
                 t!("common.retry")
             };
@@ -261,12 +261,9 @@ enum Tone {
     Success,
 }
 
-/// 派生一行的基调。
-///
-/// `Accent` 里藏着唯一的分支：[`is_retrying_without_data`] 把「重试中但尚无数据」也归入琥珀。
-/// 这个判据是**渲染层派生**的，刻意不新增 `TransferStatus` 变体——调度器（`next_queued` /
-/// `admit` / `leaves_partial_on_disk` / 取消与清理）全部键在状态上，加一个变体就要逐个审一遍，
-/// 而这里需要的只是「同一状态下的两种呈现」。
+/// 派生一行的基调。唯一的分支在 `Accent` 里：[`is_retrying_without_data`] 把「重试中但尚无数据」
+/// 也归入琥珀。判据刻意在渲染层派生而不新增 `TransferStatus` 变体——调度器全部键在状态上，
+/// 而这里需要的只是同一状态下的两种呈现。
 fn tone_of(t: &Transfer) -> Tone {
     match t.status {
         TransferStatus::Done => Tone::Success,
@@ -282,35 +279,29 @@ fn tone_of(t: &Transfer) -> Tone {
     }
 }
 
-/// 该行是否处于「重试尝试进行中、但一个字节都还没拿到」。
+/// 该行是否处于「重试尝试进行中、但一个字节都还没拿到」：`Active` && `attempts > 0`（首次尝试
+/// 不适用，否则每次下载起手都闪琥珀）&& `transferred == 0`。
 ///
-/// 三个条件同时成立才算：
-///
-/// - `Active`：worker 真的在跑；
-/// - `attempts > 0`：是重试，不是首次尝试；
-/// - `transferred == 0`：尚无数据。
-///
-/// 第三个条件是**事实**而非猜测：worker 在拉起核心层之前会先 stat 源端与半成品，把真实起点经
-/// `Message::AttemptStarted` 记到行上（续传时它就等于断点），随后核心层在读写循环之前还会再回调
-/// 一次 `(0, total)`——故「还没收到数据」在 UI 侧始终是可观测的。
-///
-/// 数据一到（`transferred > 0`）立刻返回 `false`，琥珀与计数随之消失——见模块文档。
-/// **续传的重试因此天然不显琥珀**：`AttemptStarted` 已把 `transferred` 置为断点（> 0），
-/// 那一轮的行是「已经有数据」的正常样子。
-///
-/// 首次尝试（`attempts == 0`）不适用：那只是「刚启动」，不该报成重试，否则每次下载起手都闪琥珀。
+/// 第三个条件是可观测的事实而非猜测：worker 起步时会把 stat 出来的真实起点经 `AttemptStarted`
+/// 记到行上，续传的重试因此 `transferred` 直接就是断点（> 0），天然不显琥珀。
 fn is_retrying_without_data(t: &Transfer) -> bool {
     t.status == TransferStatus::Active && t.attempts > 0 && t.transferred == 0
 }
 
-/// 该行是否有可接着写的半成品——决定失败行的按钮说「继续下载」还是「重试」。
+/// 失败行的按钮该说「继续（下载 / 上传）」还是「重试」：上一轮起点大于 0 才算有断点。
 ///
-/// 判据是上一轮尝试留下的记录：它既带着源端指纹（下一轮的校验基准），也记着那一轮的起点。
-/// 起点为 0 时说明上一轮本就是从零开始写的，此时「继续」与「重试」是同一件事，用朴素的那个
-/// 更不容易让人误会。**注意这只是文案判据**：真正能不能续传由下一轮的 stat 结果说了算
-/// （源端变了照样从头写），这里给出的是「有多大可能不用重下」的提示。
+/// **只是文案判据**——真能不能续由下一轮的 stat 说了算（源端变了照样从头写）。判据与方向无关，
+/// 两侧的 `.part` 是同一套地基，方向词由 [`continue_label`] 给出。
 fn can_continue(t: &Transfer) -> bool {
     t.resume.is_some_and(|r| r.offset > 0)
+}
+
+/// 可续传的行上按钮的文案：说清「继续」的是哪一侧，免得被读成重新来一遍。
+fn continue_label(t: &Transfer) -> String {
+    match t.direction {
+        TransferDirection::Download => t!("transfer.resume_download"),
+        TransferDirection::Upload => t!("transfer.resume_upload"),
+    }
 }
 
 /// 基调对应的语义色；`Accent` 无固定色（走 `theme::accent_color`）。固定常量不随主题漂移，
