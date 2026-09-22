@@ -1,31 +1,23 @@
 //! 中心面板的传输队列视图（与“会话 / 文件”并列切换）。
 //!
-//! 聚合展示所有终端标签的 SFTP 传输队列（上传 / 下载）。传输按全局并发 N 调度（跨标签、
-//! 跨方向共享同一份额度，N 可在设置界面调整，默认 3；调度细节见 `app::transfer`）。每条传输
-//! 提供进度条、速度 / 剩余时间；可用操作随状态不同——进行中 / 排队中 / 等待重试只可取消，
-//! 失败可重试或移除，已完成可打开所在文件夹或移除。失败与等待重试的行会附上原因。
+//! 聚合展示所有终端标签的 SFTP 传输队列（上传 / 下载），按全局并发 N 调度（跨标签、跨方向
+//! 共享额度，见 `app::transfer`）。每条传输提供进度条、速度 / 剩余时间；可用操作随状态不同，
+//! 失败与等待重试的行会附上原因。
 //!
-//! **琥珀色（WARNING）标记「还没恢复」的行**，有两种形态，视觉上连成一段：
+//! **琥珀色（WARNING）标记「还没恢复」的行**，有两种形态：
 //!
 //! 1. **等待重试**：退避计时中，行上写「等待重试（第 n/N 次） · Ns 后重试」；
-//! 2. **重试中、但尚无数据**：[`is_retrying_without_data`]——worker 已经跑起来
-//!    （`Active`）却一个字节都还没落地。核心层在每次尝试的读写循环**之前**先回调一次
-//!    `(0, total)`，故「尚无数据」在 UI 侧是看得见的事实而非猜测。
+//! 2. **重试中、但尚无数据**：[`is_retrying_without_data`]——worker 已跑起来（`Active`）却
+//!    一个字节都还没落地。核心层在每次尝试的读写循环**之前**先回调一次 `(0, total)`，故
+//!    「尚无数据」在 UI 侧是可见的事实而非猜测。
 //!
-//! 琥珀在**第一个字节到达时结束**（`transferred > 0`），而不是等退避走完或等这次尝试结束——
-//! 这正是实测提出的口径：「第一个字节获取回来之后再去除琥珀色与重试次数，这样不用等五秒」。
-//! 反过来，只要数据没来（长时间断网、服务端不吐数据），琥珀就一直挂着，所以它的可见时长由
-//! 「故障持续多久」决定，而不是由退避时长决定。
+//! 琥珀在**第一个字节到达时结束**（`transferred > 0`）：它的可见时长由「故障持续多久」决定，
+//! 与退避步长无关。整行取 [`crate::ui::WARNING`]（卡片描边、空轨底色、状态图标与文字），与
+//! 最终失败的红色区分。只染「空轨」而不填满进度条：染轨道只声明状态，不谎报进度。
 //!
-//! 整行取 [`crate::ui::WARNING`]：卡片描边、空轨底色、状态图标与两行文字，与最终失败的红色
-//! 明确区分——它还没失败到底。只染「空轨」而不填满进度条：染轨道只声明状态，不谎报进度
-//! （断线后总量常常未知，进度条本就没有可填的部分，若只靠填充色表达，这一态看上去就是灰空条）。
-//!
-//! 自动重试的次数（上限读自 `[transfer] retry_attempts`）**只出现在「坏消息」里**——
-//! 等待重试的倒计时、重试中尚无数据、以及最终失败；数据一到（或已完成），那一行就回到干净样子。
-//!
-//! 标题栏只放总数：曾并列过「进行中 / 排队 / 等待重试 / 失败 + 总速率」的汇总行，但面板宽度
-//! 一窄就必然折行（实测反馈「折行后反而不美观」），故整条撤掉，计数改由每行自己表达。
+//! 自动重试的次数（上限读自 `[transfer] retry_attempts`）**只出现在「坏消息」里**——等待重试、
+//! 重试中尚无数据、最终失败；数据一到，那一行就回到干净样子。标题栏只放总数，各态计数由每行
+//! 自己表达（汇总行在窄面板上必然折行）。
 
 use crate::t;
 
@@ -124,14 +116,10 @@ fn transfer_item(t: &Transfer, retry_limit: u32) -> Element<'_, Message> {
         Some(c) => Box::new(move |_t: &iced::Theme| c),
         None => Box::new(crate::theme::accent_color),
     };
-    // 进度条填充比例。总量未知（总量取自远端元数据，取不到时为 0）时**画空条**而不是满条：
-    // 曾经以「满条」表示「进行中但无法量化」，实测被误读成「已经下完了」——尤其在断开重试后的
-    // 「重置到 0 字节、总量未知」那一小段（用户反馈：显示 0 B 且进度条满格）。空条虽不表达进度，
-    // 但绝不会说谎。
+    // 见 `progress_fraction`：总量未知画空条，满条会被读成「已经下完了」。
     let fill = progress_fraction(t);
-    // 轨道底色：琥珀态下整条空轨也染上半透明琥珀。实测反馈「重试时没有琥珀色」，根因就是这一态
-    // 最常被看到的样子恰好是**空轨**（断线后总量未知 / 重试尚无数据 → 没有可填的填充段），
-    // 剩余可见的琥珀只有一个 14px 图标。
+    // 琥珀态最常以**空轨**面目出现（总量未知 / 尚无数据 → 没有可填的段），只染轨道才能让整行
+    // 都带上状态色，而非只剩一个 14px 图标。
     let track = match tone {
         Tone::Retry => with_alpha(crate::ui::WARNING, 0.30),
         _ => TRACK_BASE,
@@ -322,10 +310,9 @@ fn with_alpha(c: Color, a: f32) -> Color {
 
 /// 进度条填充比例（0.0..=1.0）。
 ///
-/// 总量未知（总量取自远端元数据，取不到时为 0）时返回 **0**，即空条——曾以「满条」表示
-/// 「进行中但无法量化」，实测被读成「已经下完了」（断开重试后那一小段尤其明显：用户反馈
-/// 「显示 0 B 且进度条满格」）。空条虽不表达进度，但绝不说谎。唯一的例外是 `Done`
-/// （总量为 0 的完成态，满条即「已完成」）。
+/// 总量未知（总量取自远端元数据，取不到时为 0）时返回 **0**，即空条——满条会被读成「已经
+/// 下完了」，空条虽不表达进度但绝不说谎。唯一的例外是 `Done`（总量为 0 的完成态，满条即
+/// 「已完成」）。
 fn progress_fraction(t: &Transfer) -> f32 {
     if t.status == TransferStatus::Done {
         1.0
@@ -342,8 +329,7 @@ fn progress_fraction(t: &Transfer) -> f32 {
 /// 是网络抖动还是权限不足（自动重试到底值不值得等，全看这句话）。
 fn detail_text(t: &Transfer, retry_limit: u32) -> Element<'_, Message> {
     let main = detail_line(t, retry_limit);
-    // 琥珀态（等待重试 / 重试中尚无数据）的两行文字都取琥珀而非「次要灰 + 红」：失败原因若仍是
-    // 红色，整行看上去与最终失败无异，用户会以为传输已经失败（实测反馈「没有琥珀色」）。
+    // 琥珀态的两行文字都取琥珀：失败原因若仍是红色，整行看上去与最终失败无异。
     let retrying = tone_of(t) == Tone::Retry;
     let (main_style, note_style): (TextStyle, TextStyle) = if retrying {
         (warning_text, warning_text)
@@ -370,7 +356,7 @@ fn detail_text(t: &Transfer, retry_limit: u32) -> Element<'_, Message> {
     col.into()
 }
 
-/// 详情主行的文本（纯函数，便于单测——进度与重试计数是实测反馈里最容易回退的两处）。
+/// 详情主行的文本（纯函数，便于单测）。
 fn detail_line(t: &Transfer, retry_limit: u32) -> String {
     match t.status {
         TransferStatus::Queued => t!("transfer.queued"),
@@ -395,10 +381,9 @@ fn detail_line(t: &Transfer, retry_limit: u32) -> String {
                 secs => secs
             )
         }
-        // 自动重试的计数只属于「坏消息」：等待重试（上一支自带 n/N）与最终失败。曾把计数挂到
-        // 「重试中 / 成功」上，实测反馈「重试成功、又开始下载了，重试次数的提示还没消失」——
-        // 一次网络抖动会在那一行留下永久徽标，看着像还没恢复正常。`attempts` 本身不清零
-        // （重试预算要用它），清掉的只是显示。
+        // 自动重试的计数只属于「坏消息」：等待重试（上一支自带 n/N）与最终失败。挂在「重试中 /
+        // 成功」上会让一次网络抖动留下永久徽标。`attempts` 本身不清零（重试预算要用它），
+        // 清掉的只是显示。
         TransferStatus::Error => {
             let mut s = progress_line(t);
             if t.attempts > 0 {
@@ -413,9 +398,9 @@ fn detail_line(t: &Transfer, retry_limit: u32) -> String {
             }
             s
         }
-        // 重试已启动、但一个字节都还没拿到：不显示「0 B / 总量 0%」（那说的是同一件事，且「0 B」
-        // 曾被读成「下完了 0 字节」，见 `progress_line`），改为明说现状——用户由此知道琥珀为什么
-        // 还挂着，也知道它会在第一个字节到达时消失。
+        // 重试已启动、但一个字节都还没拿到：不显示「0 B / 总量 0%」（「0 B」会被读成「下完了
+        // 0 字节」），改为明说现状——用户由此知道琥珀为什么还挂着，也知道它会在第一个字节到达
+        // 时消失。
         TransferStatus::Active if is_retrying_without_data(t) => t!(
             "transfer.retrying",
             attempt => t.attempts,
@@ -599,7 +584,7 @@ mod tests {
 
     #[test]
     fn progress_fraction_is_empty_when_the_total_is_unknown() {
-        // A 的回归点：总量未知时不得画满条（曾被读成「已经下完了」）。
+        // 总量未知时不得画满条（会被读成「已经下完了」）。
         assert_eq!(
             progress_fraction(&transfer(TransferStatus::Active, 0, 0)),
             0.0
@@ -628,7 +613,7 @@ mod tests {
 
     #[test]
     fn detail_line_never_shows_zero_bytes_for_an_unknown_total() {
-        // A 的回归点之二：刚启动 / 重试刚起来时不能显示「0 B」（会被读成「下完了 0 字节」）。
+        // 刚启动 / 重试刚起来时不能显示「0 B」（会被读成「下完了 0 字节」）。
         let line = detail_line(&transfer(TransferStatus::Active, 0, 0), 2);
         assert!(!line.contains("0 B"), "不得显示 0 B，实际：{line}");
         assert!(!line.starts_with(' '), "不得以空格开头，实际：{line}");
@@ -639,8 +624,8 @@ mod tests {
 
     #[test]
     fn detail_line_shows_the_retry_counter_only_in_the_troubled_states() {
-        // C 的第一轮回归点：重试次数必须在「等待重试 / 最终失败」两态能看到 n/N
-        // （当时等待重试的首次退避仅 0.5s，只能在倒计时里显示，等于看不见）。
+        // 重试次数必须在「等待重试 / 最终失败」两态能看到 n/N
+        // （等待重试的首次退避可以很短，只藏在倒计时里等于看不见）。
         let mut waiting = transfer(TransferStatus::WaitingRetry, 0, 1000);
         waiting.attempts = 2;
         waiting.not_before = Some(Instant::now());
@@ -662,9 +647,8 @@ mod tests {
 
     #[test]
     fn detail_line_drops_the_counter_once_the_transfer_is_healthy_again() {
-        // C 的第二轮回归点（实测反馈）：重试成功、行重新跑起来后，计数必须消失，
-        // 否则一次网络抖动会在那一行留下永久徽标。计数仍存在 `Transfer.attempts` 里
-        // （重试预算要用它），只是不显示。
+        // 重试成功、行重新跑起来后，计数必须消失，否则一次网络抖动会在那一行留下永久徽标。
+        // 计数仍存在 `Transfer.attempts` 里（重试预算要用它），只是不显示。
         let mut active = transfer(TransferStatus::Active, 500, 1000);
         active.attempts = 1;
         let line = detail_line(&active, 5);
@@ -693,7 +677,7 @@ mod tests {
 
     #[test]
     fn waiting_retry_is_amber_and_failure_is_red() {
-        // A 的回归点：等待重试必须拿到 WARNING（琥珀）——实测反馈「功能没问题但没有琥珀色」。
+        // 等待重试必须拿到 WARNING（琥珀）。
         // 语义色分工刻意固定：琥珀 = 稍后自己再试，红 = 已失败到底，绿 = 完成。
         assert_eq!(
             tone_color(tone_of(&transfer(TransferStatus::WaitingRetry, 0, 1000))),
@@ -731,8 +715,7 @@ mod tests {
 
     #[test]
     fn a_retry_that_has_not_delivered_anything_yet_is_still_amber() {
-        // 本轮的回归点：琥珀不再随「等待重试」结束，而是持续到第一个字节到达。
-        // 这是实测提出的口径——「第一个字节回来之后再去除琥珀色与重试次数」。
+        // 琥珀不随「等待重试」结束，而是持续到第一个字节到达（见模块文档）。
         let mut retrying = transfer(TransferStatus::Active, 0, 4096);
         retrying.attempts = 1;
         assert!(is_retrying_without_data(&retrying));
@@ -813,7 +796,7 @@ mod tests {
     #[test]
     fn a_resumed_retry_is_not_amber_because_data_is_already_there() {
         // 续传的重试天然不显琥珀：`AttemptStarted` 已把 `transferred` 置为断点（> 0），
-        // 那一轮行是「已经有数据」的正常样子——琥珀只属于「一个字节都还没拿到」的等待。
+        // 该行是「已经有数据」的正常样子——琥珀只属于「一个字节都还没拿到」的等待。
         let mut resumed = transfer(TransferStatus::Active, 450, 1000);
         resumed.attempts = 1;
         resumed.resume = Some(ResumeState {

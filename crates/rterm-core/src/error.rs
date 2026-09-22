@@ -333,12 +333,10 @@ fn classify_status_code(code: russh_sftp::protocol::StatusCode) -> ErrorClass {
 fn classify_message(msg: &str) -> ErrorClass {
     let lower = msg.to_ascii_lowercase();
     // 「本地执行端已退出」优先判：这类文案全部出自 russh-sftp 的**本地通道管线**，与远端状态
-    // 无关，且一旦出现就意味着这个客户端对象已经死了（重试同一个它永远不会成功）。
-    // 四个来源：`RawSftpSession::send` 发现写入任务已退出（`session closed`）、向该任务投递
-    // 失败（`sender dropped` / `SendError`）、或等待回执的通道先关闭（`RecvError`）。
-    // 它们此前被并进瞬时故障，于是「会话已终结」会被当成网络抖动反复重试 —— 每次瞬间失败、
-    // 只有退避在空等，预算烧光后界面只剩一句引擎原文。实测反馈即「重试次数耗尽后再恢复网络
-    // 仍报 session closed」。
+    // 无关，一旦出现就意味着这个客户端对象已经死了（重试它永远不会成功）。四个来源：
+    // `RawSftpSession::send` 发现写入任务已退出（`session closed`）、向该任务投递失败
+    // （`sender dropped` / `SendError`）、或等待回执的通道先关闭（`RecvError`）。若被当成
+    // 网络抖动反复重试，每次都会瞬间失败，预算全耗在退避上。
     if lower.contains("session closed")
         || lower.contains("sender dropped")
         || lower.contains("senderror")
@@ -472,7 +470,7 @@ mod tests {
             ErrorClass::Transient
         );
         // 断链时 russh-sftp 的 oneshot 发送端被丢弃，表现为 UnexpectedBehavior。
-        // 它现在单列为「会话已终结」：读取端已退出，重试同一个客户端没有意义。
+        // 它归类为「会话已终结」：读取端已退出，重试同一个客户端没有意义。
         assert_eq!(
             classify_sftp_error(&SftpError::UnexpectedBehavior(
                 "RecvError: sender dropped".to_string()
@@ -483,8 +481,7 @@ mod tests {
 
     #[test]
     fn session_gone_is_recognised_on_both_error_paths() {
-        // 实测反馈（设计文档 §18）：重试次数耗尽后再恢复网络，行上仍报 `session closed`。
-        // 这个文案由 `RawSftpSession::send` 在写入任务退出后产生，含义是「这个客户端已死」，
+        // `session closed` 由 `RawSftpSession::send` 在写入任务退出后产生，含义是「这个客户端已死」，
         // 必须与网络抖动区分开，否则自动重试会把预算全烧在一具尸体上。
         //
         // 路径一：分块读写经由 AsyncRead/AsyncWrite，结构化类型被 `io::Error::other()` 抹平，

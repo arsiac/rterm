@@ -121,8 +121,8 @@ pub(crate) fn tabs_ctx(app: &App) -> tabs::Ctx {
 /// 每次 `update` 调用前重建，确保模块读到最新父状态；模块据此取客户端执行上传 / 下载，
 /// 并据并发上限重新调度，但绝不写回父状态，写回经 `transfer::Event` 由父层落地 / 转发。
 ///
-/// 并发上限与自动重试次数**只经此注入**、绝不缓存进传输模块的状态：否则设置界面改动上限的
-/// 那一帧，模块读到的仍是旧值，表现为「拖动滑块没反应，得再点一下才生效」。
+/// 并发上限与自动重试次数**只经此注入**、绝不缓存进传输模块的状态：缓存会让设置界面改动后
+/// 模块仍读旧值，表现为「拖动滑块没反应，得再点一下才生效」。
 pub(crate) fn transfer_ctx(app: &App) -> transfer::Ctx {
     let tab_id = app.tabs.active().unwrap_or(0);
     let (client, remote_dir) = app
@@ -135,7 +135,7 @@ pub(crate) fn transfer_ctx(app: &App) -> transfer::Ctx {
         client,
         remote_dir,
         // 各标签**当前**的客户端快照：启动 / 重试时优先取它，而不是传输记录里入队那一刻捕获
-        // 的那一份（会话重建后同一标签会换上新客户端，旧记录必须能用上新通道）。
+        // 的那一份（会话重建后同一标签会换上新客户端，排队中的记录也要用新通道）。
         clients: app.sftp.live_clients().collect(),
         max_concurrent: app.config.transfer.max_concurrent,
         retry_attempts: app.config.transfer.retry_attempts,

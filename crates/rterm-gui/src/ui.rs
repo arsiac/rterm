@@ -19,9 +19,7 @@ use iced::{Background, Border, Color, Element, Length, Theme};
 /// 右键上下文菜单宽度（像素）。
 pub const MENU_WIDTH: f32 = 140.0;
 
-/// 弹窗标题字号（像素）。
-///
-/// 各弹窗此前在 16 / 18 之间漂移，现统一：标题栏是同一套骨架，字号必须一致。
+/// 弹窗标题字号（像素）：所有弹窗的标题栏是同一套骨架，字号必须一致。
 pub const DIALOG_TITLE_SIZE: f32 = 16.0;
 
 /// 弹窗右上角关闭按钮的图标尺寸（像素）。
@@ -299,7 +297,7 @@ pub fn inline_action_button<'a, M: Clone + 'a>(
 
 /// 右键菜单中的单条可点击项：文字铺满行宽，悬停 / 按下以主题 `hover` 色反馈。
 ///
-/// 不捕获任何环境，可在任意面板间复用（此前各面板各自维护一份逐字相同的实现，现已统一到此处）。
+/// 不捕获任何环境，可在任意面板间复用。
 pub fn menu_entry<'a, M: Clone + 'a>(label: impl Into<String>, msg: M) -> Element<'a, M> {
     button(text(label.into()).width(Length::Fill))
         .on_press(msg)
@@ -328,9 +326,7 @@ pub fn menu_entry<'a, M: Clone + 'a>(label: impl Into<String>, msg: M) -> Elemen
         .into()
 }
 
-/// 右键菜单容器：固定宽度、内边距与抬升边框，承载 [`menu_entry`] 列表。
-///
-/// 此前各面板各写一遍相同的容器样式（背景强色 + 边框 + 圆角 6），现已统一到此处。
+/// 右键菜单容器：固定宽度、内边距与抬升边框，承载 [`menu_entry`] 列表，各面板共用此一份样式。
 pub fn menu_container<'a, M: Clone + 'a>(content: Element<'a, M>) -> Element<'a, M> {
     container(content)
         .width(Length::Fixed(MENU_WIDTH))
@@ -454,8 +450,7 @@ fn dialog_btn_style_for(style: DialogBtnStyle, theme: &Theme, st: button::Status
 /// 文字恒为白色。
 ///
 /// `danger` 为 `true` 时底色用 [`DANGER`] 红（删除 / 覆盖 / 指纹变更），否则用统一取色点
-/// [`theme::accent_color`]（随用户主题色 / 当前主题生效）。原定义在 `sftp_dialogs`，
-/// 因它已是全部弹窗共用的按钮样式，故上移到本模块（顺带消除 `ui` ↔ `sftp_dialogs` 互相依赖）。
+/// [`theme::accent_color`]（随用户主题色 / 当前主题生效）。全部弹窗共用此样式。
 pub fn dialog_btn_style(theme: &Theme, status: button::Status, danger: bool) -> button::Style {
     let base = if danger {
         DANGER

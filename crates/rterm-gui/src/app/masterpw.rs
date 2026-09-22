@@ -61,7 +61,7 @@ impl Default for State {
 }
 
 impl State {
-    /// 构造初始（空闲）状态：对应 `App::new` 中原本的 `mpw_*` 初始化。
+    /// 构造初始（空闲）状态。
     pub fn new() -> Self {
         Self {
             input: String::new(),
@@ -849,8 +849,7 @@ mod tests {
         // 隔离状态根与钥匙串，避免读写开发者真实配置目录与真实钥匙串条目。
         let _guard = STATE_LOCK.lock().unwrap();
         use_temp_state_root();
-        // 构造一个 store 为 None 的 App 状态，验证提交不会静默“成功”
-        // （此前会在内存建立 vault、关闭弹窗，却什么都不落盘）。
+        // 构造一个 store 为 None 的 App 状态，验证提交不会静默“成功”。
         let mut app = crate::app::App {
             session: crate::app::session::State {
                 store: None,

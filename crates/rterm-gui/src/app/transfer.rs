@@ -2,79 +2,66 @@
 //!
 //! # 并发调度
 //!
-//! 全局并发 N（`[transfer] max_concurrent`，默认 3），跨标签、跨方向共享额度：传输面板本就是
-//! 全局聚合视图，用户的心智是「同时最多 N 个文件在动」。
+//! 全局并发 N（`[transfer] max_concurrent`，默认 3），跨标签、跨方向共享额度。用显式计数 +
+//! pump 而非 `tokio::Semaphore`：信号量把「谁先跑」交给 tokio 调度，UI 状态会与实况产生时序
+//! 缝隙，也无法单测。
 //!
-//! 用显式计数 + pump 而非 `tokio::Semaphore`：信号量把「谁先跑」交给 tokio 调度，UI 的
-//! `Queued` / `Active` 会与实际任务产生时序缝隙，也无法单测。
-//!
-//! # 同一 SFTP 客户端为什么可以并发
-//!
-//! `russh-sftp` 的 `SftpSession` 方法全是 `&self`，内部是单写任务 +
-//! `DashMap<request_id, oneshot>`，响应按 id 派发给各自等待者，多请求在途互不串包，故
-//! `Arc<SftpClient>` 可被 N 个任务同时持有。旧注释「同一标签的通道非并发安全」是错的。
-//! 收益上限：OpenSSH 的 `sftp-server` 每通道按序处理请求，并发只是隐藏往返延迟，服务端并行
-//! 需要通道池（未实现）。
+//! 同一 `Arc<SftpClient>` 可被 N 个任务并发持有：russh-sftp 内部按 request id 多路复用，
+//! 响应各自派发，互不串包。收益上限：OpenSSH 的 `sftp-server` 每通道按序处理请求，并发只是
+//! 隐藏往返延迟。
 //!
 //! # 调度不变量
 //!
-//! - **I1**：`running.len() <= max_concurrent`。`max_concurrent` 由父层在**路由每条消息前**经
+//! - **I1**：`running.len() <= max_concurrent`。`max_concurrent` 由父层在路由每条消息前经
 //!   `Ctx` 注入，绝不缓存进 `State`，否则滑块改动后读到旧值。
-//! - **I2**：`running` 只在 `TransferDone` 里移除。取消不得提前摘除：`abort()` 只中止内层
-//!   worker，外层仍会在 `worker.await` 上醒来发 `TransferDone`，在那里统一回收额度。唯一例外
-//!   是 [`Message::TabClosed`]（不会再有事件回来）。
-//! - **I3**：同一 `tid` 任一时刻最多一个 worker，故只有不在 `running` 中的排队项才能启动；
-//!   否则旧 worker 迟到的 `TransferDone` 会错放新 worker 的额度。
-//! - **I4**：同一写靶（`.part` 暂存）至多一个在跑的传输。交叠写产出的是拼接垃圾，续传又会把
-//!   它伪装成「大小正确、内容错乱」的**看起来成功**，故互斥由调度器自己执行（见 [`WriteTarget`]）。
-//! - **I5**：删暂存前必须确认没有其它存活行共用该靶子。一行失败等继续、另一行正在写时删前者
-//!   会连带删掉后者——Unix 上 `unlink` 不报错，改名时才失败。
+//! - **I2**：`running` 只在 `TransferDone` 里移除。`abort()` 只中止内层 worker，外层仍会发
+//!   `TransferDone` 统一回收额度；唯一例外是 [`Message::TabClosed`]（不会再有事件回来）。
+//! - **I3**：同一 `tid` 任一时刻最多一个 worker。否则旧 worker 迟到的 `TransferDone` 会错放
+//!   新 worker 的额度。
+//! - **I4**：同一写靶（`.part` 暂存）至多一个在跑的传输（见 [`WriteTarget`]）。交叠写产出的
+//!   是拼接垃圾，续传又会把它伪装成「看起来成功」。
+//! - **I5**：删暂存前必须确认没有其它存活行共用该靶子——Unix 上 `unlink` 打开中的文件不报错，
+//!   改名时才失败。
 //!
 //! # 断点续传
 //!
-//! 失败后的下一轮从已落盘字节继续（设计文档：`.workbuddy/resumable-transfer-design.md`）。
 //! 两侧同构，源端 / 半成品角色互换：`.part` 暂存（下载 = 本地，上传 = 远端，见
 //! [`staging_path`] / [`staging_remote`]）→ 每轮 stat 源端指纹与暂存长度，交纯函数
 //! [`resume_offset`] 定起点并经 [`Message::AttemptStarted`] 记回行上 → 改名到真名。
 //!
-//! 判定基准是「上一轮记录的指纹」而非本次看到的大小：只比大小会把换成更长同名文件误判为可续传，
-//! 产出「旧前半 + 新后半」。宁可误判为重下，也不接受静默损坏。
+//! 判定基准是「上一轮记录的指纹」而非本次看到的大小：只比大小会把换成更长同名文件误判为
+//! 可续传。宁可误判为重下，也不接受静默损坏。
 //!
 //! 敢拿暂存文件的 `len` 当断点，是因为核心层保证「磁盘上的长度 ≡ 一段已确证的连续前缀」：
-//! 写失败的轮次会把远端 / 本地暂存截回该水位（见 `rterm-core` 的 `Watermark`），否则失败点之上
-//! 可能已被在途的写填成全零空洞，而空洞永远补不回来。
+//! 写失败的轮次会把暂存截回该水位（见 `rterm-core` 的 `Watermark`），否则在途的写可能在失败
+//! 点之上填出永远补不回来的全零空洞。
 //!
-//! 最终失败的行**保留** `.part`：默认重试预算（≈4.5s）短于它要救的故障（断网、VPN 重连、
-//! 合盖），预算在网络恢复前就烧光了，失败那一刻才是用户想接着传的时刻。代价同浏览器的
-//! `.crdownload`。取消与关标签 / 移除行一律清理，都经 [`cleanup_partial`]，靶子永远是暂存路径。
-//!
-//! 上传写暂存顺带修掉旧缺陷：以真名 + `TRUNCATE` 打开时，失败的上传在远端留下一份被截断的
-//! 真名文件；现在改名成功前，用户原有的远端同名文件不受影响。
+//! 最终失败的行**保留** `.part`：重试预算（≈4.5s）通常先于网络恢复烧完，失败那一刻才是用户
+//! 想接着传的时刻。取消 / 移除行 / 关标签一律清理，都经 [`cleanup_partial`]，靶子永远是
+//! 暂存路径。上传侧清理失败只记日志：残留会被下一次上传截断重写。改名成功前，用户原有的
+//! 远端同名文件不受失败上传影响。
 //!
 //! # 失败重试
 //!
 //! 分类来自 [`CoreError::class`]，映射为 [`FailureKind`]。自动重试只针对 `Transient` 与
-//! `Unknown`（抖动最常见的形态恰恰无法细分）；`Cancelled`、`Permanent` 与 `SessionGone`
-//! 只留手动入口。`SessionGone` 单列的理由是重试无意义——那个 `SftpClient` 已经死了，唯一出路
-//! 是重连；曾并入 `Transient` 时症状是「预算全烧在死会话上，恢复网络后仍报 session closed」。
+//! `Unknown`；`Cancelled`、`Permanent` 只留手动入口；`SessionGone` 单列——那个客户端已死，
+//! 重试无意义，唯一出路是重连。
 //!
 //! 次数取 `[transfer] retry_attempts`（默认 2、0 = 关闭），退避
-//! `min(BASE_BACKOFF * 2^attempt, MAX_BACKOFF)`。**退避期间不占额度**：`WaitingRetry` 既不参与
-//! 调度序也不计入 `running`，否则 N 个任务同时失败会让整条队列空转最长 8 秒。到点由
-//! [`retry_timer`] 发 [`Message::RetryDue`]；该消息**必须幂等**——到点时该行已不是
-//! `WaitingRetry`（被取消 / 手动重试 / 移除 / 关标签）就直接丢弃。
+//! `min(BASE_BACKOFF * 2^attempt, MAX_BACKOFF)`。**退避期间不占额度**：`WaitingRetry` 不参与
+//! 调度也不计入 `running`，否则 N 个任务同时失败会让整条队列空转。到点由 [`retry_timer`] 发
+//! [`Message::RetryDue`]；该消息**必须幂等**——到点时该行已不是 `WaitingRetry` 就直接丢弃。
 //!
 //! # 传输用哪个客户端
 //!
 //! 启动 / 重试用该标签**此刻**的客户端（`Ctx::client_for`），[`Transfer::client`] 里入队时
-//! 捕获的那份只在标签已无客户端时兜底：会话重建后同一标签换上新通道，旧通道可能早已终结。
-//! 启动时把解析出的客户端回写进记录，收尾的远端清理因此走当前通道。
+//! 捕获的那份只在标签已无客户端时兜底。启动时把解析出的客户端回写进记录，收尾的远端清理
+//! 因此走当前通道。
 //!
 //! # 半成品的清理
 //!
-//! 靶子只可能是本模块创建的暂存文件，这正是关标签时敢对所有「留下痕迹」的行清理一次的底气。
-//! 清理失败时下载侧把路径记在 `Transfer.partial` 上提示手动处理；上传侧只记日志（残留会被
-//! 下一次上传的截断重写清掉，且删不到最常见的原因本就是没被创建）。
+//! 清理对象只可能是本模块创建的暂存文件，因此对「留下痕迹」的行例行清理不会误伤用户文件。
+//! 下载侧清理失败时把路径记在 `Transfer.partial` 上提示手动处理。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -872,7 +859,7 @@ pub enum FailureKind {
     Transient,
     /// 永久故障（权限不足、路径不存在、磁盘满）：只提供手动重试入口。
     Permanent,
-    /// 无法判定：当前按可重试处理（实测中最常见的抖动本就无法细分）。
+    /// 无法判定：当前按可重试处理（最常见的抖动本就无法细分）。
     Unknown,
 }
 
@@ -2080,7 +2067,7 @@ mod tests {
         assert_eq!(
             status_of(&s, 1),
             Some(TransferStatus::WaitingRetry),
-            "无法细分的抖动也值得重试（实测里最常见的就是它）"
+            "无法细分的抖动也值得重试（最常见的故障恰恰无法细分）"
         );
     }
 
@@ -2110,9 +2097,8 @@ mod tests {
 
     #[test]
     fn a_dead_session_is_classified_as_such_and_explained_instead_of_echoed() {
-        // 第五轮实测：重试耗尽后再恢复网络，行上仍报 `session closed`。那条文案来自
-        // `RawSftpSession::send`，含义是「这个客户端已经死了」，必须与网络抖动分开 ——
-        // 分开后既不再空烧重试预算，行上给的也不再是引擎术语。
+        // `session closed` 出自 `RawSftpSession::send`，含义是「这个客户端已经死了」，必须与
+        // 网络抖动分开 —— 分开后既不再空烧重试预算，行上给的也不再是引擎术语。
         let e = CoreError::sftp(
             CoreErrorKind::ReadRemote,
             std::io::Error::other("session closed"),
@@ -2132,8 +2118,7 @@ mod tests {
 
     #[test]
     fn a_scenario_prefix_still_applies_to_a_dead_session() {
-        // 建目录失败这条路径此前是把 `{e}` 直接拼进文案的，会话终结时会漏出引擎原文；
-        // 现在与其它失败走同一个构造器，规则一致（分类识别 + 不泄漏术语）。
+        // 所有失败走同一个构造器，规则一致（分类识别 + 不泄漏引擎术语）。
         let e = CoreError::sftp(
             CoreErrorKind::CreateDir,
             std::io::Error::other("session closed"),
@@ -2818,12 +2803,11 @@ mod tests {
         assert_eq!(started.iter().map(|x| x.tid).collect::<Vec<_>>(), vec![2]);
     }
 
-    // ===== 用户实测反馈的回归用例（A / C / F 与 `.part` 暂存）=====
+    // ===== 进度保留 / 续传 / `.part` 暂存的回归用例 =====
 
     #[test]
     fn retry_keeps_the_known_total_and_the_progress_reading() {
-        // A：断开后重试时，旧实现把 `total` 一起清零 → 「0 B / 未知」＋满条，用户误读为已完成。
-        // 总量是远端文件的真实大小，两次尝试之间不会变，必须保留。
+        // 总量是远端文件的真实大小，两次尝试之间不会变；清零会被误读为「0 B 已完成」。
         //
         // 读数（`transferred`）同样保留：续传的下一轮大概率正是从这个位置接着写，清零会让行在
         // 「退避结束 → 本轮起步」之间从 40% 掉回 0%——那是假跳变。权威值由下一轮的
@@ -3168,7 +3152,7 @@ mod tests {
 
     #[test]
     fn tab_close_cleans_up_rows_that_left_files_behind() {
-        // F：关标签即放弃该标签的全部传输，留下半成品的行（在跑 / 等待重试 / 失败）要清理掉。
+        // 关标签即放弃该标签的全部传输，留下半成品的行（在跑 / 等待重试 / 失败）要清理掉。
         // 排队中（没碰过磁盘）与已完成（暂存文件已改名）的行不产生清理动作。
         let mut s = State::new();
         enqueue_with_status(&mut s, 7, 1, TransferStatus::Active);

@@ -300,7 +300,7 @@ async fn a_remote_fingerprint_carries_size_and_modification_time() {
 }
 
 /// 会话终结的分类：整条 SSH 连接被断开后，这个客户端上的任何请求都只会立刻失败，
-/// 上层必须据此停下自动重试（曾被并入 Transient，症状是重试预算全烧在死会话上）。
+/// 上层必须据此停下自动重试（与瞬时故障分开，否则重试预算全烧在死会话上）。
 #[tokio::test]
 async fn requests_on_a_dead_session_are_classified_as_session_gone() {
     let sandbox = Sandbox::new("dead-session");

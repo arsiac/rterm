@@ -338,7 +338,7 @@ pub fn icon_button_style(
 
 /// 下拉框样式：跟随主题底色 + 圆角边框（设置弹窗 / 会话编辑弹窗等表单复用）。
 ///
-/// 三态区分（此前忽略 `status`，展开与否毫无视觉差异）：展开时以强调色描边并把右侧
+/// 三态区分（按 `status` 取值）：展开时以强调色描边并把右侧
 /// 箭头一并染成强调色（与下拉层呼应），悬浮时边框提亮一档，常态用输入区边框色。
 pub fn pick_list_style(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
     let p = custom_palette(theme);

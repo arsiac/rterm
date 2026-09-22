@@ -159,8 +159,8 @@ fn nav_item(
 
 /// 分类导航项样式：选中态以强调色高亮，悬停态浅色背景，文字颜色跟随主题。
 ///
-/// 文字色区分选中与否：未选中取次级文字色、选中取主文本色。此前两者同为
-/// `background.strong.text`（一个偏亮的灰），五项在视觉上等重、都在争抢注意力。
+/// 文字色区分选中与否：未选中取次级文字色、选中取主文本色——同色会让五项视觉等重、
+/// 都在争抢注意力。
 fn nav_item_style(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
     let background = if selected {
         Some(theme::accent_active_bg(theme).into())
@@ -427,10 +427,8 @@ fn about_pane() -> Element<'static, Message> {
 ///   随机密钥必然在钥匙串，不显示「本机记住」开关。
 /// - 模式 1（已设主密码）：状态说明 + 「更改主密码」/「关闭主密码」+ 「本机记住」开关。
 fn masterpw_pane(app: &App) -> Element<'_, Message> {
-    // 三个动作按钮统一走 `ui::inline_action_button`：内联动作的紧凑尺寸（12px 字 +
-    // 竖向 5 内边距），左对齐成行。此前是 16px + `[10, 24]` 并各自套
-    // `container(width=Fill).align_x(Center)` 做通栏居中——那正是页脚按钮已废除的形态；
-    // 之后一度改为与页脚按钮同尺寸，但对分类页仍是过重的一排，故单列一档更小的尺寸。
+    // 三个动作按钮统一走 `ui::inline_action_button`：紧凑的内联动作尺寸（12px 字 +
+    // 竖向 5 内边距），左对齐成行——分类页里通栏大按钮过重。
     let action_btn = |label: String, on_press: masterpw::Message, danger: bool| {
         crate::ui::inline_action_button(
             label,
@@ -618,11 +616,8 @@ fn terminal_font_preview(app: &App) -> Element<'_, Message> {
 }
 
 /// 预览样本块的底色与描边：与输入框同源——取窗口主背景（比面板 `surface_raised` 低一档，
-/// 构成「内嵌」观感）+ [`crate::theme::input_border_color`]。
-///
-/// 此前取 `extended_palette().background.weak`：那档颜色在浅色主题下比主背景更亮、深色主题下
-/// 反而更暗，且边框取的是 `custom_palette().border`——与输入框不是同一个值，同一页里两种
-/// 「嵌块」看起来不像一家。
+/// 构成「内嵌」观感）+ [`crate::theme::input_border_color`]，同一页里的两种「嵌块」才是
+/// 一套配色。
 fn preview_style(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(theme.palette().background)),

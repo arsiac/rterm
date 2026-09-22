@@ -351,8 +351,8 @@ const CONFIRM_INTERVAL: u64 = 4 * 1024 * 1024;
 /// 「已确证前缀」水位：只有服务器收下过的偏移，才配当下一轮的断点。
 ///
 /// 因为 russh-sftp 的 `File::poll_write` 把 ack 排队、只在深度触顶时才回收：第 j 个写的失败
-/// 往往到第 j+N 个才被发现，其间的写早已落盘，于是暂存里出现全零空洞而 `len` 更大（详见设计
-/// 文档 §15.1）。所以每写满 [`CONFIRM_INTERVAL`] 就 `flush` 一次并推进 `confirmed`；失败时调用方
+/// 往往到第 j+N 个才被发现，其间的写早已落盘，于是暂存里出现全零空洞而 `len` 更大。
+/// 所以每写满 [`CONFIRM_INTERVAL`] 就 `flush` 一次并推进 `confirmed`；失败时调用方
 /// 把远端截回该处，让 `len` 重新等价于「可信连续前缀」。
 #[derive(Debug, Clone, Copy)]
 struct Watermark {
