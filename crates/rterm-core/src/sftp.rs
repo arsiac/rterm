@@ -4,9 +4,10 @@
 //! 上传 / 下载 / 重命名 / 删除 / 建目录等高层操作。
 
 use crate::{CoreError, CoreErrorKind, FileEntry};
-use log::debug;
+use log::{debug, warn};
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::OpenFlags;
+use russh_sftp::client::fs::File;
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use std::io::SeekFrom;
 use std::path::Path;
 use std::time::SystemTime;
@@ -179,6 +180,9 @@ impl SftpClient {
     /// 参数为（文件名, 已传字节, 总字节）。总字节数取本地文件元数据。
     ///
     /// `resume` 决定起点：`Start` 截断远端目标，`Offset(n)` 定位到第 n 字节续写。
+    ///
+    /// **失败时远端目标会被截回已确证前缀**（见 [`Watermark`]），让下一轮按 `len` 算出的断点
+    /// 仍指向一段连续的数据。
     pub async fn upload_with_progress(
         &self,
         local: &Path,
@@ -223,7 +227,8 @@ impl SftpClient {
                 .await
                 .map_err(CoreError::Io)?;
         }
-        copy_with_progress(
+        let mut watermark = Watermark::tracking(start);
+        let copied = copy_with_progress(
             CopyInfo {
                 name: &name,
                 total,
@@ -232,15 +237,26 @@ impl SftpClient {
             reader,
             &mut remote_file,
             on_progress,
+            &mut watermark,
             CoreError::Io,
             |e| CoreError::sftp(CoreErrorKind::WriteRemote, e),
         )
-        .await?;
+        .await;
         // 排空未确认的写再关句柄：否则调用方随后立刻改名，可能改到一个还不完整的文件。
-        remote_file
-            .shutdown()
-            .await
-            .map_err(|e| CoreError::sftp(CoreErrorKind::CloseRemoteFile, e))?;
+        let ended = match copied {
+            Ok(_) => remote_file
+                .shutdown()
+                .await
+                .map_err(|e| CoreError::sftp(CoreErrorKind::CloseRemoteFile, e)),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = ended {
+            // 失败轮次把远端截回已确证前缀：在途的写可能已经越过失败点，留下全零空洞，
+            // 而调用方（和下一轮的续传判定）只看得到 `len`。best-effort：截不动时后果
+            // 与不修相同，绝不能让它掩盖本轮真正的失败原因。
+            trim_remote(&remote_file, watermark.confirmed, remote).await;
+            return Err(e);
+        }
         debug!("Upload complete: {remote} ({total} bytes)");
         Ok(())
     }
@@ -305,6 +321,7 @@ impl SftpClient {
                 .await
                 .map_err(CoreError::Io)?;
         }
+        let mut watermark = Watermark::disabled(start);
         let written = copy_with_progress(
             CopyInfo {
                 name: &name,
@@ -314,6 +331,7 @@ impl SftpClient {
             &mut remote_file,
             &mut local_file,
             on_progress,
+            &mut watermark,
             |e| CoreError::sftp(CoreErrorKind::ReadRemote, e),
             CoreError::Io,
         )
@@ -323,6 +341,48 @@ impl SftpClient {
         local_file.set_len(written).await.map_err(CoreError::Io)?;
         debug!("Download complete: {} ({written} bytes)", local.display());
         Ok(())
+    }
+}
+
+/// 上传确证水位步进：4 MiB。越小则失败后白传的越少，但每次确证都要排空一次写流水线——
+/// 1 MiB 在慢链路（1 MB/s、RTT 200 ms）上吞吐掉近两成，4 MiB 约 1.5%。
+const CONFIRM_INTERVAL: u64 = 4 * 1024 * 1024;
+
+/// 「已确证前缀」水位：只有服务器收下过的偏移，才配当下一轮的断点。
+///
+/// 因为 russh-sftp 的 `File::poll_write` 把 ack 排队、只在深度触顶时才回收：第 j 个写的失败
+/// 往往到第 j+N 个才被发现，其间的写早已落盘，于是暂存里出现全零空洞而 `len` 更大（详见设计
+/// 文档 §15.1）。所以每写满 [`CONFIRM_INTERVAL`] 就 `flush` 一次并推进 `confirmed`；失败时调用方
+/// 把远端截回该处，让 `len` 重新等价于「可信连续前缀」。
+#[derive(Debug, Clone, Copy)]
+struct Watermark {
+    /// 每推进多少字节做一次确证；`0` = 不确证（下载侧的写入汇是本地文件，本就同步）。
+    every: u64,
+    /// 最后一个已确证的**绝对**偏移。
+    confirmed: u64,
+}
+
+impl Watermark {
+    fn tracking(start: u64) -> Self {
+        Self {
+            every: CONFIRM_INTERVAL,
+            confirmed: start,
+        }
+    }
+
+    fn disabled(start: u64) -> Self {
+        Self {
+            every: 0,
+            confirmed: start,
+        }
+    }
+
+    fn should_confirm(&self, transferred: u64) -> bool {
+        self.every > 0 && transferred - self.confirmed >= self.every
+    }
+
+    fn confirm(&mut self, transferred: u64) {
+        self.confirmed = transferred;
     }
 }
 
@@ -337,18 +397,30 @@ struct CopyInfo<'a> {
     start: u64,
 }
 
+/// 用 SETSTAT 把远端文件的长度截回 `confirmed`，让 `len` 重新等价于「可信连续前缀」。
+async fn trim_remote(file: &File, confirmed: u64, remote: &str) {
+    let mut attrs = FileAttributes::empty();
+    attrs.size = Some(confirmed);
+    if let Err(e) = file.set_metadata(attrs).await {
+        warn!("could not trim {remote} back to {confirmed} confirmed bytes: {e}");
+    } else {
+        debug!("trimmed {remote} back to {confirmed} confirmed bytes");
+    }
+}
+
 /// 通用的分块拷贝主循环：从 `reader` 读、向 `writer` 写，每完成一块通过 `on_progress` 上报。
 ///
 /// `info.start` 让首个回调即报 `(start, total)`（否则续传时 UI 先闪一次 0%），返回值是
 /// **绝对**偏移 `start + 本轮写入字节数`。
 ///
 /// 上传与下载只有数据源 / 数据汇与错误上下文不同，故共享此实现；`map_read` / `map_write`
-/// 把底层 I/O 错误映射为对应的 [`CoreError`] 变体。
+/// 把底层 I/O 错误映射为对应的 [`CoreError`] 变体。`watermark` 见 [`Watermark`]。
 async fn copy_with_progress<R, W, F>(
     info: CopyInfo<'_>,
     mut reader: R,
     mut writer: W,
     mut on_progress: F,
+    watermark: &mut Watermark,
     map_read: impl Fn(std::io::Error) -> CoreError,
     map_write: impl Fn(std::io::Error) -> CoreError,
 ) -> Result<u64, CoreError>
@@ -369,6 +441,10 @@ where
         writer.write_all(&buf[..n]).await.map_err(&map_write)?;
         transferred += n as u64;
         on_progress(name, transferred, total);
+        if watermark.should_confirm(transferred) {
+            writer.flush().await.map_err(&map_write)?;
+            watermark.confirm(transferred);
+        }
     }
     Ok(transferred)
 }
@@ -409,6 +485,7 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 |_name, transferred, total| seen.push((transferred, total)),
+                &mut Watermark::disabled(0),
                 CoreError::Io,
                 CoreError::Io,
             )
@@ -437,6 +514,7 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 |_name, transferred, total| seen.push((transferred, total)),
+                &mut Watermark::disabled(0),
                 CoreError::Io,
                 CoreError::Io,
             )
@@ -463,6 +541,7 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 |_name, transferred, total| seen.push((transferred, total)),
+                &mut Watermark::disabled(0),
                 CoreError::Io,
                 CoreError::Io,
             )
@@ -491,6 +570,7 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 |_name, transferred, _total| seen.push(transferred),
+                &mut Watermark::disabled(0),
                 CoreError::Io,
                 CoreError::Io,
             )

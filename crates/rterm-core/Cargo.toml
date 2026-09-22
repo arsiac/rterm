@@ -16,3 +16,13 @@ zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+# 集成测试在同进程起一个真实的 SSH + SFTP 服务端（见 tests/support），需要与服务端
+# 相同的 russh / russh-sftp 版本，故走 workspace 复用同一份锁。
+[dev-dependencies]
+anyhow.workspace = true
+log.workspace = true
+rand.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
+tokio.workspace = true

@@ -5114,8 +5114,10 @@ dependencies = [
 name = "rterm-core"
 version = "0.3.1"
 dependencies = [
+ "anyhow",
  "chrono",
  "log",
+ "rand 0.10.2",
  "rterm-config",
  "russh",
  "russh-sftp",
