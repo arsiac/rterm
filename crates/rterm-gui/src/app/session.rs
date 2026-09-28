@@ -9,7 +9,10 @@ use rterm_config::{SessionConfig, SessionStore, export_sessions, import_sessions
 use rterm_crypto::Vault;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
+
+use iced_autocomplete::{Filter, State as AcState};
 
 /// 会话编辑器可编辑的字段，供 [`Message::EditorField`] 区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,11 @@ pub struct EditorDraft {
     pub passphrase: String,
     /// 分组名。
     pub group: String,
+    /// 分组字段的自动补全状态（候选池 + 当前文本），由打开编辑器时按现有会话分组填充。
+    ///
+    /// 用 [`Rc`] 包裹以规避 `iced_autocomplete::State` 的 `Clone` 不确定性与生命周期：
+    /// 其内可变经由 `&self` 的 `RefCell` 生效，故 `Rc` 克隆后视图与更新仍共享同一份。
+    pub group_ac: Rc<AcState<String>>,
     /// 保存校验失败信息（显示在弹窗内），修改任意字段时清除。
     pub error: Option<String>,
     /// 编辑已有会话时保留的原始认证（含密文信封）；新建会话为 `None`。
@@ -80,6 +88,7 @@ impl EditorDraft {
             key_path: String::new(),
             passphrase: String::new(),
             group: String::new(),
+            group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: None,
         }
@@ -116,6 +125,7 @@ impl EditorDraft {
             key_path,
             passphrase: String::new(),
             group: cfg.group.clone().unwrap_or_default(),
+            group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: Some(cfg.auth.clone()),
         }
@@ -352,12 +362,16 @@ impl State {
     pub fn update(&mut self, msg: Message, ctx: &Ctx) -> Task<Event> {
         match msg {
             Message::NewSession => {
-                self.editor = Some(EditorDraft::new());
+                let mut draft = EditorDraft::new();
+                draft.group_ac = Rc::new(group_ac_state(&draft.group, &self.sessions));
+                self.editor = Some(draft);
                 Task::none()
             }
             Message::EditSession(id) => {
                 if let Some(cfg) = self.sessions.iter().find(|s| s.id == id).cloned() {
-                    self.editor = Some(EditorDraft::from_config(&cfg));
+                    let mut draft = EditorDraft::from_config(&cfg);
+                    draft.group_ac = Rc::new(group_ac_state(&draft.group, &self.sessions));
+                    self.editor = Some(draft);
                 }
                 Task::none()
             }
@@ -547,6 +561,23 @@ impl State {
             }
         }
     }
+}
+
+/// 构造分组字段的自动补全状态：候选为现有会话去重后的分组名，初始文本取草稿当前分组。
+///
+/// 过滤采用大小写不敏感子串匹配——中文分组名直接「包含」即可命中，英文则忽略大小写；
+/// 自由输入不存在于候选中的新分组名仍会被照常提交（这正是 autocomplete 相对 combo_box 的语义）。
+fn group_ac_state(initial: &str, sessions: &[SessionConfig]) -> AcState<String> {
+    let mut groups: Vec<String> = sessions.iter().filter_map(|s| s.group.clone()).collect();
+    groups.sort();
+    groups.dedup();
+    AcState::with_value(
+        groups,
+        initial.to_string(),
+        Filter::Custom(Box::new(|opt: &String, q: &str| {
+            opt.to_lowercase().contains(&q.to_lowercase())
+        })),
+    )
 }
 
 /// 将编辑器字段变更应用到草稿。

@@ -16,8 +16,10 @@ use iced::widget::tooltip::Position;
 use iced::widget::{
     button, column, container, mouse_area, pick_list, row, scrollable, text, text_input,
 };
-use iced::{Border, Element, Length, Theme};
+use iced::{Background, Border, Element, Length, Shadow, Theme};
+use iced_autocomplete::auto_complete;
 use iced_aw::widget::context_menu::ContextMenu;
+use iced_widget::overlay::menu;
 use rterm_config::SessionConfig;
 use rterm_core::ConnectionStatus;
 use std::collections::BTreeMap;
@@ -440,14 +442,35 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
                     false,
                     Length::Fill,
                 ),
-                labeled_input(
+                column![
                     crate::ui::field_label(t!("session.group")),
-                    &draft.group,
-                    "",
-                    SessionField::Group,
-                    false,
-                    Length::Fill,
-                ),
+                    auto_complete(
+                        draft.group_ac.as_ref(),
+                        "",
+                        |v| Message::EditorField(SessionField::Group, v),
+                        |v| Message::EditorField(SessionField::Group, v),
+                        Some(|opt: String| Message::EditorField(SessionField::Group, opt)),
+                    )
+                    .width(Length::Fill)
+                    .input_style(crate::ui::text_input_style)
+                    .menu_style(|theme: &Theme| {
+                        let p = crate::theme::custom_palette(theme);
+                        menu::Style {
+                            background: Background::Color(p.surface_raised),
+                            border: Border {
+                                color: p.border,
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            text_color: theme.palette().text,
+                            selected_text_color: theme.palette().text,
+                            selected_background: Background::Color(p.hover_raised),
+                            shadow: Shadow::default(),
+                        }
+                    }),
+                ]
+                .spacing(4)
+                .width(Length::Fill),
             ]
             .spacing(10),
         ),

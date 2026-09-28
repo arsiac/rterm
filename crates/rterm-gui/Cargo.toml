@@ -14,6 +14,7 @@ alacritty_terminal.workspace = true
 anyhow.workspace = true
 iced_core.workspace = true
 iced_graphics.workspace = true
+iced-autocomplete.workspace = true
 open.workspace = true
 polling.workspace = true
 piper.workspace = true

@@ -2445,6 +2445,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced-autocomplete"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "758459fc144a6608821dd651b192a2e7f0ab1dab929b9ef755f979a30ad6f989"
+dependencies = [
+ "iced_core",
+ "iced_widget",
+]
+
+[[package]]
 name = "iced_aw"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5151,6 +5161,7 @@ dependencies = [
  "fontdb 0.24.0",
  "futures",
  "iced",
+ "iced-autocomplete",
  "iced_aw",
  "iced_core",
  "iced_graphics",
