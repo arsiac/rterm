@@ -96,14 +96,24 @@ fn nav_pane(app: &App) -> Element<'_, Message> {
             app.settings.category == settings::SettingsCategory::General,
         ),
         nav_item(
-            t!("settings.masterpw"),
-            settings::SettingsCategory::MasterPassword,
-            app.settings.category == settings::SettingsCategory::MasterPassword,
-        ),
-        nav_item(
             t!("settings.appearance"),
             settings::SettingsCategory::Appearance,
             app.settings.category == settings::SettingsCategory::Appearance,
+        ),
+        nav_item(
+            t!("settings.terminal"),
+            settings::SettingsCategory::Terminal,
+            app.settings.category == settings::SettingsCategory::Terminal,
+        ),
+        nav_item(
+            t!("settings.connection"),
+            settings::SettingsCategory::Connection,
+            app.settings.category == settings::SettingsCategory::Connection,
+        ),
+        nav_item(
+            t!("settings.security"),
+            settings::SettingsCategory::Security,
+            app.settings.category == settings::SettingsCategory::Security,
         ),
         nav_item(
             t!("settings.updates"),
@@ -195,8 +205,10 @@ fn nav_item_style(theme: &Theme, status: button::Status, selected: bool) -> butt
 fn content_pane(app: &App) -> Element<'_, Message> {
     let (title, content) = match app.settings.category {
         settings::SettingsCategory::General => (t!("settings.general"), general_pane(app)),
-        settings::SettingsCategory::MasterPassword => (t!("settings.masterpw"), masterpw_pane(app)),
+        settings::SettingsCategory::Connection => (t!("settings.connection"), connection_pane(app)),
+        settings::SettingsCategory::Terminal => (t!("settings.terminal"), terminal_pane(app)),
         settings::SettingsCategory::Appearance => (t!("settings.appearance"), appearance_pane(app)),
+        settings::SettingsCategory::Security => (t!("settings.security"), security_pane(app)),
         settings::SettingsCategory::Updates => (t!("settings.updates"), updates_pane(app)),
         settings::SettingsCategory::About => (t!("settings.about"), about_pane()),
     };
@@ -221,13 +233,52 @@ fn content_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// “通用”分类：连接超时、最大并发传输数、日志级别、界面语言。
+/// “通用”分类：界面语言、日志、窗口记忆等应用级偏好。
 fn general_pane(app: &App) -> Element<'_, Message> {
+    let language_picker = pick_list(
+        &LANGUAGE_OPTIONS[..],
+        Some(LanguageOption(app.config.appearance.language)),
+        |lang| Message::Settings(settings::Message::Language(lang.0)),
+    )
+    .style(theme::pick_list_style)
+    .width(Length::Fill);
+    let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.logging.level), |lv| {
+        Message::Settings(settings::Message::LogLevel(lv))
+    })
+    .style(theme::pick_list_style)
+    .width(Length::Fill);
+    // 纯图标按钮：打开日志目录，避免长文字挤压 pick_list 宽度。
+    let open_log = icon_button(
+        Icon::Folder,
+        crate::icons::ICON_SIZE,
+        t!("settings.open_log_folder"),
+        Message::Settings(settings::Message::OpenLogFolder),
+        iced::widget::tooltip::Position::Bottom,
+    );
+    column![
+        crate::ui::field_label(t!("settings.language")),
+        language_picker,
+        crate::ui::section_title(t!("settings.sub_logging")),
+        crate::ui::field_label(t!("settings.log_level")),
+        row![log_level_picker, open_log]
+            .align_y(iced::alignment::Vertical::Center)
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.restart_note")),
+        crate::ui::section_title(t!("settings.sub_window")),
+        checkbox(app.config.window.remember_size)
+            .label(t!("settings.remember_window_size"))
+            .on_toggle(|v| Message::Settings(settings::Message::RememberWindowSize(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.remember_window_size_hint")),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// “连接与传输”分类：连接超时、最大并发传输数、失败自动重试次数。
+fn connection_pane(app: &App) -> Element<'_, Message> {
     let timeout_input = text_input("30", &app.config.connection.timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
-        .style(crate::ui::text_input_style);
-    let scrollback_input = text_input("10000", &app.config.terminal.scrollback.to_string())
-        .on_input(|s| Message::Settings(settings::Message::Scrollback(s)))
         .style(crate::ui::text_input_style);
     // 并发数是 1..=8 的小整数枚举：滑块从交互上直接消除非法输入，故不用文本框
     // （「连接超时」用文本框是因为它取值范围开放）。
@@ -250,21 +301,11 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     .step(1.0_f32)
     .on_release(Message::Settings(settings::Message::RetryAttemptsPersist));
     let retry_value = text(app.config.transfer.retry_attempts.to_string()).size(13);
-    let log_level_picker = pick_list(&LogLevel::ALL[..], Some(app.config.logging.level), |lv| {
-        Message::Settings(settings::Message::LogLevel(lv))
-    })
-    .style(theme::pick_list_style)
-    .width(Length::Fill);
-    let language_picker = pick_list(
-        &LANGUAGE_OPTIONS[..],
-        Some(LanguageOption(app.config.appearance.language)),
-        |lang| Message::Settings(settings::Message::Language(lang.0)),
-    )
-    .style(theme::pick_list_style)
-    .width(Length::Fill);
     column![
+        crate::ui::section_title(t!("settings.sub_connection")),
         crate::ui::field_label(t!("settings.connect_timeout")),
         timeout_input,
+        crate::ui::section_title(t!("settings.sub_transfer")),
         crate::ui::field_label(t!("settings.max_concurrent")),
         row![concurrency_slider, concurrency_value]
             .spacing(12)
@@ -275,26 +316,65 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .spacing(12)
             .align_y(iced::alignment::Vertical::Center),
         crate::ui::hint_text(t!("settings.retry_attempts_hint")),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// “终端”分类：配色、字体、字号（外观子区）与滚动缓冲、目录追踪、回显、去尾空格（行为子区）。
+fn terminal_pane(app: &App) -> Element<'_, Message> {
+    let terminal_theme_picker = pick_list(
+        crate::terminal_theme::TERMINAL_THEME_NAMES,
+        Some(app.config.terminal.theme.as_str()),
+        |name: &str| Message::Settings(settings::Message::TerminalTheme(name.to_string())),
+    )
+    .style(theme::pick_list_style)
+    .width(Length::Fill);
+    let terminal_font_selection = if app.config.terminal.font.trim().is_empty() {
+        crate::font::default_font_label()
+    } else {
+        app.config.terminal.font.clone()
+    };
+    let terminal_font_picker = combo_box(
+        &app.settings.terminal_font_combo,
+        &t!("settings.terminal_font_placeholder"),
+        Some(&terminal_font_selection),
+        |name: String| {
+            map_default_font(name, |s| {
+                Message::Settings(settings::Message::TerminalFont(s))
+            })
+        },
+    )
+    .on_input(|s: String| {
+        map_default_font(s, |s| Message::Settings(settings::Message::TerminalFont(s)))
+    })
+    .input_style(crate::ui::text_input_style)
+    .width(Length::Fill);
+    let size_slider = slider(8.0..=32.0, app.config.terminal.font_size, |size| {
+        Message::Settings(settings::Message::FontSize(size))
+    })
+    .step(1.0_f32);
+    let size_value = text(format!("{:.0} px", app.config.terminal.font_size)).size(13);
+    let scrollback_input = text_input("10000", &app.config.terminal.scrollback.to_string())
+        .on_input(|s| Message::Settings(settings::Message::Scrollback(s)))
+        .style(crate::ui::text_input_style);
+    column![
+        crate::ui::section_title(t!("settings.sub_terminal_appearance")),
+        crate::ui::field_label(t!("settings.terminal_theme")),
+        terminal_theme_picker,
+        crate::ui::field_label(t!("settings.terminal_font")),
+        terminal_font_picker,
+        crate::ui::field_label(t!("settings.terminal_font_preview")),
+        terminal_font_preview(app),
+        crate::ui::field_label(t!("settings.terminal_font_size")),
+        row![size_slider, size_value]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+        crate::ui::hint_text(t!("settings.appearance_note")),
+        crate::ui::section_title(t!("settings.sub_terminal_behavior")),
         crate::ui::field_label(t!("settings.scrollback")),
         scrollback_input,
         crate::ui::hint_text(t!("settings.scrollback_note")),
-        crate::ui::field_label(t!("settings.log_level")),
-        row![
-            log_level_picker,
-            // 纯图标按钮：打开日志目录，避免长文字挤压 pick_list 宽度。
-            icon_button(
-                Icon::Folder,
-                crate::icons::ICON_SIZE,
-                t!("settings.open_log_folder"),
-                Message::Settings(settings::Message::OpenLogFolder),
-                iced::widget::tooltip::Position::Bottom,
-            ),
-        ]
-        .align_y(iced::alignment::Vertical::Center)
-        .spacing(8),
-        crate::ui::hint_text(t!("settings.restart_note")),
-        crate::ui::field_label(t!("settings.language")),
-        language_picker,
         checkbox(app.config.terminal.cwd_bootstrap)
             .label(t!("settings.cwd_bootstrap"))
             .on_toggle(|v| Message::Settings(settings::Message::CwdBootstrap(v)))
@@ -310,11 +390,6 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.trim_trailing_whitespace_hint")),
-        checkbox(app.config.window.remember_size)
-            .label(t!("settings.remember_window_size"))
-            .on_toggle(|v| Message::Settings(settings::Message::RememberWindowSize(v)))
-            .spacing(8),
-        crate::ui::hint_text(t!("settings.remember_window_size_hint")),
     ]
     .spacing(10)
     .into()
@@ -421,12 +496,13 @@ fn about_pane() -> Element<'static, Message> {
     .into()
 }
 
-/// 「主密码」分类：按当前模式（随机密钥 / 已设主密码）展示状态与可用操作。
+/// 「安全」分类：按当前模式（随机密钥 / 已设主密码）展示主密码状态与可用操作，
+/// 以及「本机记住主密码」自动解锁开关。
 ///
 /// - 模式 0（未设主密码）：状态说明 + 「设置主密码」按钮（升级到模式 1，凭据重新加密）；
 ///   随机密钥必然在钥匙串，不显示「本机记住」开关。
 /// - 模式 1（已设主密码）：状态说明 + 「更改主密码」/「关闭主密码」+ 「本机记住」开关。
-fn masterpw_pane(app: &App) -> Element<'_, Message> {
+fn security_pane(app: &App) -> Element<'_, Message> {
     // 三个动作按钮统一走 `ui::inline_action_button`：紧凑的内联动作尺寸（12px 字 +
     // 竖向 5 内边距），左对齐成行——分类页里通栏大按钮过重。
     let action_btn = |label: String, on_press: masterpw::Message, danger: bool| {
@@ -493,7 +569,7 @@ fn masterpw_pane(app: &App) -> Element<'_, Message> {
     col.spacing(12).into()
 }
 
-/// “外观”分类：程序主题、界面字体、终端配色与字号。
+/// “外观”分类：程序主题与界面字体。
 fn appearance_pane(app: &App) -> Element<'_, Message> {
     let theme_choice = pick_list(
         crate::theme::theme_names(),
@@ -517,40 +593,6 @@ fn appearance_pane(app: &App) -> Element<'_, Message> {
     .on_input(|s: String| map_default_font(s, |s| Message::Settings(settings::Message::UiFont(s))))
     .input_style(crate::ui::text_input_style)
     .width(Length::Fill);
-    // 终端配色主题下拉框：选项为预设名，选中即热切换到所有已打开的终端标签。
-    let terminal_theme_picker = pick_list(
-        crate::terminal_theme::TERMINAL_THEME_NAMES,
-        Some(app.config.terminal.theme.as_str()),
-        |name: &str| Message::Settings(settings::Message::TerminalTheme(name.to_string())),
-    )
-    .style(theme::pick_list_style)
-    .width(Length::Fill);
-    // 终端字体下拉框：仅列出等宽字体（非等宽会破坏字符网格），选中即热切换所有终端。
-    let terminal_font_selection = if app.config.terminal.font.trim().is_empty() {
-        crate::font::default_font_label()
-    } else {
-        app.config.terminal.font.clone()
-    };
-    let terminal_font_picker = combo_box(
-        &app.settings.terminal_font_combo,
-        &t!("settings.terminal_font_placeholder"),
-        Some(&terminal_font_selection),
-        |name: String| {
-            map_default_font(name, |s| {
-                Message::Settings(settings::Message::TerminalFont(s))
-            })
-        },
-    )
-    .on_input(|s: String| {
-        map_default_font(s, |s| Message::Settings(settings::Message::TerminalFont(s)))
-    })
-    .input_style(crate::ui::text_input_style)
-    .width(Length::Fill);
-    let size_slider = slider(8.0..=32.0, app.config.terminal.font_size, |size| {
-        Message::Settings(settings::Message::FontSize(size))
-    })
-    .step(1.0_f32);
-    let size_value = text(format!("{:.0} px", app.config.terminal.font_size)).size(13);
     column![
         crate::ui::field_label(t!("settings.theme")),
         theme_choice,
@@ -558,17 +600,6 @@ fn appearance_pane(app: &App) -> Element<'_, Message> {
         font_picker,
         crate::ui::field_label(t!("settings.ui_font_preview")),
         font_preview(app),
-        crate::ui::field_label(t!("settings.terminal_theme")),
-        terminal_theme_picker,
-        crate::ui::field_label(t!("settings.terminal_font")),
-        terminal_font_picker,
-        crate::ui::field_label(t!("settings.terminal_font_preview")),
-        terminal_font_preview(app),
-        crate::ui::field_label(t!("settings.terminal_font_size")),
-        row![size_slider, size_value]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
-        crate::ui::hint_text(t!("settings.appearance_note")),
     ]
     .spacing(10)
     .into()

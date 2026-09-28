@@ -7,15 +7,19 @@ use rterm_config::{
     AppConfig, Language, LogLevel, MAX_CONCURRENT, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT,
 };
 
-/// 设置弹窗的分类。
+/// 设置弹窗的分类（按用户心智分组，而非按底层 TOML 段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsCategory {
-    /// 通用：连接超时、日志级别、界面语言。
+    /// 通用：界面语言、日志、窗口记忆等应用级偏好。
     General,
-    /// 主密码：设置 / 更改 / 关闭主口令、本机记住开关。
-    MasterPassword,
-    /// 外观：程序主题、界面字体、终端配色与字号。
+    /// 连接与传输：连接超时、最大并发传输、失败自动重试。
+    Connection,
+    /// 终端：配色、字体、字号、滚动缓冲与终端行为。
+    Terminal,
+    /// 外观：程序主题与界面字体。
     Appearance,
+    /// 安全：主密码与本地自动解锁。
+    Security,
     /// 更新：自动检查、版本对比、前往下载。
     Updates,
     /// 关于：版本与简要信息。

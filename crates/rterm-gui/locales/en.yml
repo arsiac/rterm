@@ -7,9 +7,17 @@ common:
 settings:
   title: Settings
   general: General
+  connection: Connection & Transfer
+  terminal: Terminal
   appearance: Appearance
+  security: Security
   about: About
-  masterpw: Master Password
+  sub_logging: Logging
+  sub_window: Window
+  sub_connection: Connection
+  sub_transfer: Transfer
+  sub_terminal_appearance: Appearance
+  sub_terminal_behavior: Behavior
   connect_timeout: Connect timeout (seconds, 0 = no limit)
   max_concurrent: Maximum concurrent transfers
   max_concurrent_hint: Takes effect immediately — raising it starts more queued transfers at once, while lowering it never interrupts transfers in progress and converges once they finish.

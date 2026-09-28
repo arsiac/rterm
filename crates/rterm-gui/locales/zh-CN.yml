@@ -7,9 +7,17 @@ common:
 settings:
   title: 设置
   general: 通用
-  masterpw: 主密码
+  connection: 连接与传输
+  terminal: 终端
   appearance: 外观
+  security: 安全
   about: 关于
+  sub_logging: 日志
+  sub_window: 窗口
+  sub_connection: 连接
+  sub_transfer: 传输
+  sub_terminal_appearance: 外观
+  sub_terminal_behavior: 行为
   connect_timeout: 连接超时（秒，0 表示不限制）
   max_concurrent: 最大并发传输数
   max_concurrent_hint: 即时生效：调大后立刻启动更多排队任务；调小不会打断进行中的传输，待其完成后收敛。
