@@ -1,6 +1,6 @@
 //! 中心“会话管理”面板。
 //!
-//! 未编辑时顶部为一排按钮栏（新建会话、刷新、导入、导出），其下为会话列表（双击列表项即可连接）；
+//! 未编辑时顶部为一排按钮栏（新建会话、刷新、更多），其下为会话列表（双击列表项即可连接）；
 //! 右键列表项弹出含新建会话 / 连接 / 编辑 / 删除的菜单；
 //! 编辑（新建 / 修改）以弹窗表单呈现（名称、主机、端口、用户名、认证方式及对应凭据、分组），
 //! 列表在遮罩之下仍可见。
@@ -9,7 +9,7 @@ use crate::t;
 
 use crate::App;
 use crate::app::session::{EditorDraft, Message, SessionField};
-use crate::icons::{ICON_SIZE, Icon, icon_button};
+use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
 use crate::ui::menu_entry;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
@@ -25,7 +25,7 @@ use rterm_core::ConnectionStatus;
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// 操作按钮（新建会话、刷新、导入、导出）图标尺寸（像素），与列表图标保持一致。
+/// 操作按钮图标尺寸（像素），与列表图标保持一致。
 const ACTION_ICON_SIZE: f32 = ICON_SIZE;
 
 /// 会话编辑弹窗面板尺寸（像素）：两栏排版后无需过高，压扁以贴近桌面弹窗比例。
@@ -117,8 +117,32 @@ fn list_view(app: &App) -> Element<'_, Message> {
         }
     }
 
-    // 顶部按钮栏：与文件列表一致的一排右对齐图标按钮（新建会话、刷新、导入、导出），
-    // 置于右键菜单触发区之外，避免右键工具栏时误弹会话菜单。
+    // 顶部按钮栏：与文件列表一致的一排右对齐图标按钮。
+    let more_expanded = app.session.show_more_menu;
+    let more_button = container(
+        button(Icon::MoreVertical.svg(ACTION_ICON_SIZE))
+            .on_press(Message::ToggleMoreMenu)
+            .padding(ICON_BUTTON_DEFAULT_PADDING)
+            .style(move |theme, st| crate::theme::icon_button_style(theme, st, more_expanded)),
+    );
+    // dropdown 面板与右键菜单样式相同。
+    let more_menu = crate::ui::menu_container(
+        column![
+            menu_entry(t!("session.import"), Message::ImportSessions),
+            menu_entry(t!("session.export"), Message::ExportSessions),
+        ]
+        .spacing(2)
+        .into(),
+    );
+    let more_dropdown = iced_aw::widget::drop_down::DropDown::new(
+        more_button,
+        more_menu,
+        app.session.show_more_menu,
+    )
+    .width(Length::Fixed(crate::ui::MENU_WIDTH))
+    .alignment(iced_aw::core::alignment::Alignment::BottomEnd)
+    .on_dismiss(Message::ToggleMoreMenu);
+
     let toolbar_actions = row![
         icon_button(
             Icon::Add,
@@ -134,20 +158,7 @@ fn list_view(app: &App) -> Element<'_, Message> {
             Message::RefreshSessions,
             Position::Bottom
         ),
-        icon_button(
-            Icon::ArrowImport,
-            ACTION_ICON_SIZE,
-            t!("session.import"),
-            Message::ImportSessions,
-            Position::Bottom
-        ),
-        icon_button(
-            Icon::ArrowExport,
-            ACTION_ICON_SIZE,
-            t!("session.export"),
-            Message::ExportSessions,
-            Position::Bottom
-        ),
+        Element::from(more_dropdown),
     ]
     .spacing(6)
     .align_y(iced::alignment::Vertical::Center);

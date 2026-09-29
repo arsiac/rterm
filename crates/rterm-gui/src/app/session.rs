@@ -218,6 +218,8 @@ pub struct State {
     pub selected_session: Option<String>,
     /// 被折叠的分组键集合（空串表示「未分组」区块），点击分组头在集合内增删以切换展开态。
     pub collapsed_groups: HashSet<String>,
+    /// 工具栏「更多」 dropdown 是否展开。
+    pub show_more_menu: bool,
     /// 会话编辑器中的草稿（无则未编辑）。
     pub editor: Option<EditorDraft>,
 }
@@ -231,6 +233,7 @@ impl State {
             hovered_session: None,
             selected_session: None,
             collapsed_groups: HashSet::new(),
+            show_more_menu: false,
             editor: None,
         }
     }
@@ -317,6 +320,8 @@ pub enum Message {
     /// 打开某会话的文件管理（携带会话 id），右键菜单「打开文件管理」触发：
     /// 经 `Event::OpenFiles` 上行，由父层打开对应标签的 SFTP。
     OpenFiles(String),
+    /// 切换工具栏「更多」dropdown显隐。
+    ToggleMoreMenu,
     /// 打开系统文件选择器以指定导出目标文件（结果经 `Event::Emit` 自回路流入
     /// [`Message::ExportSessionsToFile]`）。
     ExportSessions,
@@ -491,18 +496,25 @@ impl State {
                 // 右键「打开文件管理」：打开 SFTP 由父层经 `Event::OpenFiles` 处理。
                 Task::done(Event::OpenFiles(id))
             }
-            Message::ExportSessions => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .set_title(t!("session.export"))
-                        .set_file_name("rterm-sessions.toml")
-                        .add_filter("TOML", &["toml"])
-                        .save_file()
-                        .await
-                        .map(|f| f.path().to_path_buf())
-                },
-                |path| Event::Emit(Box::new(Message::ExportSessionsToFile(path))),
-            ),
+            Message::ToggleMoreMenu => {
+                self.show_more_menu = !self.show_more_menu;
+                Task::none()
+            }
+            Message::ExportSessions => {
+                self.show_more_menu = false;
+                Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title(t!("session.export"))
+                            .set_file_name("rterm-sessions.toml")
+                            .add_filter("TOML", &["toml"])
+                            .save_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    |path| Event::Emit(Box::new(Message::ExportSessionsToFile(path))),
+                )
+            }
             Message::ExportSessionsToFile(path) => {
                 if let Some(p) = path {
                     // 导出仅含连接配置、不含凭证，无需保险库，故不要求 vault 就绪。
@@ -520,17 +532,20 @@ impl State {
                     Task::none()
                 }
             }
-            Message::ImportSessions => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .set_title(t!("session.import"))
-                        .add_filter("TOML", &["toml"])
-                        .pick_file()
-                        .await
-                        .map(|f| f.path().to_path_buf())
-                },
-                |path| Event::Emit(Box::new(Message::ImportSessionsFromFile(path))),
-            ),
+            Message::ImportSessions => {
+                self.show_more_menu = false;
+                Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title(t!("session.import"))
+                            .add_filter("TOML", &["toml"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    |path| Event::Emit(Box::new(Message::ImportSessionsFromFile(path))),
+                )
+            }
             Message::ImportSessionsFromFile(path) => {
                 if let Some(p) = path {
                     match import_sessions(&p) {

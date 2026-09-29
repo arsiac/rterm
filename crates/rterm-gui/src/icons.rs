@@ -32,65 +32,62 @@ macro_rules! svg_bytes {
     };
 }
 
-/// 全部可用图标。变体名对应 `icons/` 下文件名（去掉 `-16-filled` / `-24-filled` 后缀，转 PascalCase），
-/// 集中枚举以避免散落的字符串文件名常量。
+/// 全部可用图标
+/// 变体名对应 `icons/` 下文件
 pub enum Icon {
-    /// 活动栏“会话管理”。
+    /// 列表栏
     ListBar,
-    /// 活动栏“文件管理”（已连接时的正常图标）。
+    /// 多个文件夹
     FolderMultiple,
-    /// 活动栏“文件管理”（图标含禁止符号，用于表达未连接时不可用）。
+    /// 带禁止符号的文件夹
     FolderJunk,
-    /// 目录条目标记（与「折叠 / 展开」无关，后者用 `ChevronCircleRight` / `ChevronCircleDown`）；
-    /// 也用作设置面板中「打开日志目录」等目录类按钮图标。
+    /// 文件夹
     Folder,
-    /// 上传文件夹（文件夹 + 向上箭头，文件夹上传按钮专用）。
+    /// 文件夹 + 向上箭头
     FolderArrowUp,
-    /// 普通文件条目标记。
+    /// 文档
     Document,
-    /// 新建 / 添加。
+    /// 加号
     Add,
-    /// 上传文件。
+    /// 云 + 向上箭头（上传）
     CloudArrowUp,
-    /// 上传文件（文档 + 向上箭头，文件上传按钮专用）。
+    /// 文档 + 向上箭头
     DocumentArrowUp,
-    /// 下载文件。
+    /// 云 + 向下箭头（下载）
     CloudArrowDown,
-    /// 新建目录。
+    /// 文件夹 + 加号
     FolderAdd,
-    /// 返回上级目录。
+    /// 返回箭头
     ArrowReply,
-    /// 刷新当前目录。
+    /// 顺时针环形箭头（刷新）
     ArrowClockwise,
-    /// 取消操作。
+    /// 叉号
     Dismiss,
-    /// 应用设置（活动栏底部入口）。
+    /// 齿轮
     Settings,
-    /// 分组收起态（指向右，点击展开）。
+    /// 圆圈内向右箭头
     ChevronCircleRight,
-    /// 分组展开态（指向下，点击收起）。
+    /// 圆圈内向下箭头
     ChevronCircleDown,
-    /// 标签列表 dropdown 收起态（指向下，点击展开）。
+    /// 向下箭头
     ChevronDown,
-    /// 标签列表 dropdown 展开态（指向上，点击收起）。
+    /// 向上箭头
     ChevronUp,
-    /// 导出会话到文件。
-    ArrowExport,
-    /// 从文件导入会话。
-    ArrowImport,
-    /// 传输面板（上传 + 下载，活动栏入口与面板标题）。
+    /// 竖向三点省略号
+    MoreVertical,
+    /// 上传 + 下载双向箭头
     ArrowSort,
-    /// 传输完成。
+    /// 对勾
     Checkmark,
-    /// 传输失败。
+    /// 警告三角
     Warning,
-    /// 活动栏顶部「收起中间面板」（面板在左侧，箭头向左收拢）。
+    /// 左侧面板收拢
     PanelLeftContract,
-    /// 活动栏顶部「展开中间面板」（收起态时显示，箭头向左展开）。
+    /// 左侧面板展开
     PanelLeftExpand,
-    /// 文件管理「进入终端目录」：点击后跳转到终端当前所在目录。
+    /// 进入箭头
     ArrowEnter,
-    /// 用系统文件管理器打开本地文件所在文件夹（传输完成后定位）。
+    /// 打开状文件夹
     FolderOpen,
 }
 
@@ -117,8 +114,7 @@ impl Icon {
             Icon::ChevronCircleDown => svg_bytes!("chevron-circle-down-16-filled"),
             Icon::ChevronDown => svg_bytes!("chevron-down-16-filled"),
             Icon::ChevronUp => svg_bytes!("chevron-up-16-filled"),
-            Icon::ArrowExport => svg_bytes!("arrow-export-16-filled"),
-            Icon::ArrowImport => svg_bytes!("arrow-import-16-filled"),
+            Icon::MoreVertical => svg_bytes!("more-vertical-16-filled"),
             Icon::ArrowSort => svg_bytes!("arrow-sort-16-filled"),
             Icon::Checkmark => svg_bytes!("checkmark-16-filled"),
             Icon::Warning => svg_bytes!("warning-16-filled"),
