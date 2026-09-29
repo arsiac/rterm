@@ -11,6 +11,7 @@ use iced::mouse::{Cursor, ScrollDelta};
 use iced::widget::canvas::{Path, Text};
 use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_core::clipboard::Kind as ClipboardKind;
+use iced_core::input_method::{self, InputMethod, Purpose};
 use iced_core::keyboard::{Key, Modifiers, key::Named};
 use iced_core::mouse::{self, Click};
 use iced_core::text::{Alignment, LineHeight, Shaping};
@@ -401,6 +402,56 @@ impl<'a> TerminalView<'a> {
 
         None
     }
+
+    /// 处理输入法事件：提交文本写入 PTY，预编辑串暂存待绘制。
+    fn handle_input_method_event(
+        state: &mut TerminalViewState,
+        event: &input_method::Event,
+    ) -> Option<Command> {
+        match event {
+            // 上屏：候选文本写入 PTY，本次组合随之结束。
+            input_method::Event::Commit(text) => {
+                state.preedit = None;
+                if text.is_empty() {
+                    return None;
+                }
+
+                Some(Command::Write(text.as_bytes().to_vec()))
+            }
+            // 组合中的文本（如拼音串）：空串表示组合被清空，否则暂存待逐帧绘制。
+            input_method::Event::Preedit(content, _selection) => {
+                state.preedit = (!content.is_empty()).then(|| content.clone());
+                None
+            }
+            // 输入法开启 / 关闭不携带文本，按组合结束处理。
+            input_method::Event::Opened | input_method::Event::Closed => {
+                state.preedit = None;
+                None
+            }
+        }
+    }
+
+    /// 计算输入法候选框锚定的字符格矩形：由终端光标格换算到窗口坐标并裁剪进内容区。
+    fn caret_rect(bounds: Rectangle, padding: f32, content: &RenderableContent) -> Rectangle {
+        let cell_size = Size::new(
+            content.terminal_size.cell_width as f32,
+            content.terminal_size.cell_height as f32,
+        );
+        let cursor = content.grid.cursor.point;
+        let display_offset = content.grid.display_offset() as f32;
+        let x = bounds.x + padding + cursor.column.0 as f32 * cell_size.width;
+        let y = bounds.y + padding + ((cursor.line.0 as f32) + display_offset) * cell_size.height;
+
+        // 光标滚出可视区（回滚历史）时把锚点收回内容区，避免候选框落到窗口外。
+        let inner = bounds.shrink(padding);
+        let max_x = (inner.x + inner.width - cell_size.width).max(inner.x);
+        let max_y = (inner.y + inner.height - cell_size.height).max(inner.y);
+
+        Rectangle::new(
+            Point::new(x.clamp(inner.x, max_x), y.clamp(inner.y, max_y)),
+            cell_size,
+        )
+    }
 }
 
 /// 把 `Ctrl+字母/数字/符号` 转成对应的 ASCII 控制字符（如 `Ctrl+C` => `\x03`）。
@@ -778,6 +829,40 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                         bg_batch_rect.color,
                     );
                 }
+
+                // 输入法预编辑串叠加在网格之上：先用终端底色盖住光标格（否则实心光标块会
+                // 吃掉首字），再按终端字体左对齐、垂直居中绘制，字形间距由字体自行推进。
+                if let Some(preedit) = state.preedit.as_ref() {
+                    let cursor = content.grid.cursor.point;
+                    let cell_x =
+                        layout_offset_x + self.padding + cursor.column.0 as f32 * cell_width;
+                    let cell_y = layout_offset_y
+                        + self.padding
+                        + ((cursor.line.0 as f32) + display_offset) * cell_height;
+
+                    frame.fill(
+                        &Path::rectangle(
+                            Point::new(cell_x, cell_y),
+                            Size::new(cell_width, cell_height),
+                        ),
+                        default_bg,
+                    );
+                    frame.fill_text(Text {
+                        content: preedit.clone(),
+                        position: Point::new(cell_x, cell_y + cell_height * 0.5),
+                        font: self.term.font.font_type,
+                        size: iced_core::Pixels(font_size),
+                        color: self
+                            .term
+                            .theme
+                            .get_color(ansi::Color::Named(NamedColor::Foreground)),
+                        align_x: Alignment::Left,
+                        align_y: Vertical::Center,
+                        shaping: Shaping::Advanced,
+                        line_height: LineHeight::Relative(font_scale_factor),
+                        ..Default::default()
+                    });
+                }
             }); // with_clip
         });
 
@@ -799,6 +884,31 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
     ) {
         let state = tree.state.downcast_mut::<TerminalViewState>();
         self.handle_resize(state, layout, shell);
+
+        // 输入法策略逐帧续期：iced 每次事件分发都以 `InputMethod::Disabled` 起算、合并全树部件
+        // 的申请，且只在重绘路径把结果落到窗口（交互路径会丢弃），故申请必须挂在重绘事件上。
+        // 未聚焦则不再申请，窗口 IME 随之关闭，同时清掉残留的预编辑串。
+        if matches!(
+            event,
+            iced_core::Event::Window(iced::window::Event::RedrawRequested(_))
+        ) {
+            if self.focused {
+                // 预编辑由本部件就地绘制（见 `draw`），无需 iced 的 over-the-spot 覆盖层。
+                let input_method: InputMethod<&str> = InputMethod::Enabled {
+                    cursor: Self::caret_rect(
+                        layout.bounds(),
+                        self.padding,
+                        self.term.backend.renderable_content(),
+                    ),
+                    purpose: Purpose::Terminal,
+                    preedit: None,
+                };
+                shell.request_input_method(&input_method);
+            } else if state.preedit.take().is_some() {
+                // 未聚焦：不再申请，窗口 IME 随之关闭；残留的预编辑串一并清掉。
+                self.term.cache.clear();
+            }
+        }
 
         let is_cursor_in_layout = self.is_cursor_in_layout(cursor, layout);
 
@@ -839,6 +949,20 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                 self.handle_keyboard_event(state, clipboard, keyboard_event)
                     .into_iter()
                     .collect()
+            }
+            iced::Event::InputMethod(input_method_event) => {
+                if !self.focused {
+                    return;
+                }
+
+                let previous = state.preedit.clone();
+                let command = Self::handle_input_method_event(state, input_method_event);
+                if state.preedit != previous {
+                    // 预编辑串参与几何缓存，内容变化须清缓存并在本帧重绘。
+                    self.term.cache.clear();
+                    shell.request_redraw();
+                }
+                command.into_iter().collect()
             }
             _ => Vec::new(),
         };
@@ -901,6 +1025,8 @@ struct TerminalViewState {
     mouse_position_on_grid: TerminalGridPoint,
     /// 上次绘制时记录的焦点状态：焦点变化但布局尺寸不变时，几何缓存不会重跑，故在 `draw` 中据此判断是否需清缓存以重绘光标（实心/空心）。
     last_focus: Cell<bool>,
+    /// 输入法预编辑串（组合中、尚未上屏的文本），由本部件绘制在光标格处。
+    preedit: Option<String>,
 }
 
 impl TerminalViewState {
@@ -914,6 +1040,7 @@ impl TerminalViewState {
             size: Size::from([0.0, 0.0]),
             mouse_position_on_grid: TerminalGridPoint::default(),
             last_focus: Cell::new(false),
+            preedit: None,
         }
     }
 }
@@ -1472,6 +1599,106 @@ mod tests {
             assert_eq!(commands.len(), 1);
             assert!(matches!(commands[0], Command::Scroll(-3)));
             assert_eq!(state.scroll_pixels, -5.4000034);
+        }
+    }
+
+    mod handle_input_method_event_tests {
+        use super::*;
+
+        #[test]
+        fn commit_writes_utf8_and_ends_composition() {
+            let mut state = TerminalViewState::new();
+            state.preedit = Some("nihao".to_owned());
+
+            let command = TerminalView::handle_input_method_event(
+                &mut state,
+                &input_method::Event::Commit("你好".to_owned()),
+            );
+
+            assert!(matches!(
+                command,
+                Some(Command::Write(bytes)) if bytes == "你好".as_bytes()
+            ));
+            assert_eq!(state.preedit, None);
+        }
+
+        #[test]
+        fn commit_without_text_writes_nothing() {
+            let mut state = TerminalViewState::new();
+
+            let command = TerminalView::handle_input_method_event(
+                &mut state,
+                &input_method::Event::Commit(String::new()),
+            );
+
+            assert!(command.is_none());
+        }
+
+        #[test]
+        fn preedit_is_stored_until_emptied() {
+            let mut state = TerminalViewState::new();
+
+            TerminalView::handle_input_method_event(
+                &mut state,
+                &input_method::Event::Preedit("nihao".to_owned(), None),
+            );
+            assert_eq!(state.preedit.as_deref(), Some("nihao"));
+
+            // 空串表示组合被清空（提交前输入法会先发一次空预编辑串）。
+            let command = TerminalView::handle_input_method_event(
+                &mut state,
+                &input_method::Event::Preedit(String::new(), None),
+            );
+            assert!(command.is_none());
+            assert_eq!(state.preedit, None);
+        }
+
+        #[test]
+        fn closed_clears_preedit() {
+            let mut state = TerminalViewState::new();
+            state.preedit = Some("nihao".to_owned());
+
+            let command =
+                TerminalView::handle_input_method_event(&mut state, &input_method::Event::Closed);
+
+            assert!(command.is_none());
+            assert_eq!(state.preedit, None);
+        }
+    }
+
+    mod caret_rect_tests {
+        use alacritty_terminal::index::{Column, Line};
+
+        use super::*;
+
+        /// 构造光标位于指定网格点的渲染内容；默认单元格为 1×1 像素，故断言可直接按格数书写。
+        fn content_at(line: i32, column: usize) -> RenderableContent {
+            let mut content = RenderableContent::default();
+            content.grid.cursor.point = TerminalGridPoint {
+                line: Line(line),
+                column: Column(column),
+            };
+            content
+        }
+
+        #[test]
+        fn anchors_to_cursor_cell() {
+            let bounds = Rectangle::new(Point::new(100.0, 50.0), Size::new(400.0, 300.0));
+
+            let rect = TerminalView::caret_rect(bounds, TEST_PADDING, &content_at(2, 3));
+
+            assert_eq!(rect.x, 100.0 + TEST_PADDING + 3.0);
+            assert_eq!(rect.y, 50.0 + TEST_PADDING + 2.0);
+        }
+
+        #[test]
+        fn clamps_into_content_area_when_cursor_is_out_of_view() {
+            let bounds = Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0));
+
+            // 光标滚出可视区（回滚历史）时把锚点收回内容区底边，避免候选框落到窗口外。
+            let rect = TerminalView::caret_rect(bounds, TEST_PADDING, &content_at(1000, 0));
+
+            assert_eq!(rect.y, 100.0 - TEST_PADDING - 1.0);
         }
     }
 }
