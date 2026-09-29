@@ -4,7 +4,7 @@ use crate::widget::term::terminal::{Event, Terminal};
 use alacritty_terminal::index::Point as TerminalGridPoint;
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::{TermMode, cell};
-use alacritty_terminal::vte::ansi::{self as ansi, NamedColor};
+use alacritty_terminal::vte::ansi::{self as ansi, CursorShape, NamedColor};
 use iced::alignment::Vertical;
 use iced::font::{Style as FontStyle, Weight as FontWeight};
 use iced::mouse::{Cursor, ScrollDelta};
@@ -688,29 +688,59 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     }
 
                     // 处理光标渲染
-                    if content.grid.cursor.point == indexed.point
-                        && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
-                    {
+                    let cursor_on_cell = content.grid.cursor.point == indexed.point
+                        && content.terminal_mode.contains(TermMode::SHOW_CURSOR);
+                    // 实心块会铺满整格，此时字形须改用单元格背景色，否则与块同色不可见。
+                    let mut cursor_inverts_text = false;
+
+                    if cursor_on_cell && content.cursor_shape != CursorShape::Hidden {
                         let cursor_color = self.term.theme.get_color(content.cursor.fg);
-                        let cursor_rect = Path::rectangle(Point::new(x, y), cell_size);
-                        // 聚焦（可接收键盘输入）画实心块；焦点在其它组件时画空心块轮廓。
-                        if self.focused {
-                            frame.fill(&cursor_rect, cursor_color);
+                        let block_width = if indexed.cell.flags.contains(cell::Flags::WIDE_CHAR) {
+                            cell_width * 2.0
                         } else {
-                            frame.stroke(
-                                &cursor_rect,
-                                Stroke::default()
-                                    .with_width(font_size * 0.1)
-                                    .with_color(cursor_color),
-                            );
+                            cell_width
+                        };
+                        let cursor_rect =
+                            Path::rectangle(Point::new(x, y), Size::new(block_width, cell_height));
+                        let outline = Stroke::default()
+                            .with_width(font_size * 0.1)
+                            .with_color(cursor_color);
+                        let bar_width = font_size * 0.15;
+
+                        // 焦点在其它组件时一律画空心框，只提示光标位置。
+                        if !self.focused {
+                            frame.stroke(&cursor_rect, outline);
+                        } else {
+                            match content.cursor_shape {
+                                CursorShape::Block => {
+                                    frame.fill(&cursor_rect, cursor_color);
+                                    cursor_inverts_text = true;
+                                }
+                                CursorShape::HollowBlock => {
+                                    frame.stroke(&cursor_rect, outline);
+                                }
+                                CursorShape::Beam => {
+                                    let beam = Path::rectangle(
+                                        Point::new(x, y),
+                                        Size::new(bar_width, cell_height),
+                                    );
+                                    frame.fill(&beam, cursor_color);
+                                }
+                                CursorShape::Underline => {
+                                    let underline = Path::rectangle(
+                                        Point::new(x, y + cell_height - bar_width),
+                                        Size::new(block_width, bar_width),
+                                    );
+                                    frame.fill(&underline, cursor_color);
+                                }
+                                CursorShape::Hidden => {}
+                            }
                         }
                     }
 
                     // 绘制文本
                     if indexed.c != ' ' && indexed.c != '\t' {
-                        if content.grid.cursor.point == indexed.point
-                            && content.terminal_mode.contains(TermMode::APP_CURSOR)
-                        {
+                        if cursor_inverts_text {
                             fg = bg;
                         }
                         // 由格子标志解析字体样式（粗体/斜体）

@@ -12,6 +12,7 @@ use alacritty_terminal::term::{
     self, Term, TermMode, cell::Cell, test::TermSize, viewport_to_point,
 };
 use alacritty_terminal::tty::EventedPty;
+use alacritty_terminal::vte::ansi::CursorShape;
 use alacritty_terminal::{Grid, tty};
 use iced::keyboard::Modifiers;
 use iced_core::Size;
@@ -261,6 +262,7 @@ impl Backend {
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
 
         let cursor = term.grid_mut().cursor_cell().clone();
+        let cursor_shape = term.cursor_style().shape;
 
         let initial_content = RenderableContent {
             grid: term.grid().clone(),
@@ -268,6 +270,7 @@ impl Backend {
             terminal_mode: *term.mode(),
             terminal_size,
             cursor: cursor.clone(),
+            cursor_shape,
             hovered_hyperlink: None,
         };
 
@@ -615,6 +618,7 @@ impl Backend {
         self.last_content.grid = terminal.grid().clone();
         self.last_content.selectable_range = selectable_range;
         self.last_content.cursor = cursor.clone();
+        self.last_content.cursor_shape = terminal.cursor_style().shape;
         self.last_content.terminal_mode = *terminal.mode();
         self.last_content.terminal_size = self.size;
     }
@@ -664,6 +668,8 @@ pub struct RenderableContent {
     pub selectable_range: Option<SelectionRange>,
     /// 当前光标所在单元格。
     pub cursor: Cell,
+    /// 当前光标形状（由 DECSCUSR 序列设定）。
+    pub cursor_shape: CursorShape,
     /// 当前 alacritty 终端模式。
     pub terminal_mode: TermMode,
     /// 当前终端几何尺寸。
@@ -678,6 +684,7 @@ impl Default for RenderableContent {
             hovered_hyperlink: None,
             selectable_range: None,
             cursor: Cell::default(),
+            cursor_shape: CursorShape::default(),
             terminal_mode: TermMode::empty(),
             terminal_size: TerminalSize::default(),
         }
