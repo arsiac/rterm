@@ -48,6 +48,9 @@ fn build_secrets(cfg: &SessionConfig, vault: &Vault) -> Result<SessionSecrets, S
 /// SFTP 视图归属于该会话的某个终端标签（每标签独立记录自己的文件上下文）：
 /// 优先使用当前活动标签（若它正属于该会话），否则取该会话的第一个标签。
 ///
+/// 目标标签已打开文件管理时只切视图与活动标签，不重复派发打开消息：那会重置浏览路径与
+/// 列表，把用户已深入的目录打回远端家目录。
+///
 /// 返回 `Task<sftp::Message>`：由调用方 `.map(Message::Sftp)` 接入顶层路由。
 /// 父层只挑标签与切导航态，**不写 SFTP 视图**——那部分在 `sftp::Message::SftpOpenSession`
 /// 里由模块自己完成。
@@ -78,6 +81,10 @@ pub(crate) fn open_files(app: &mut App, id: &str) -> Task<sftp::Message> {
     app.center = CenterView::Files;
     app.tabs.set_active(tab_id);
     app.active_session = Some(id.to_string());
+    // 该标签已打开文件管理：保留其浏览位置与进行中的内联输入，仅切到此视图即可。
+    if app.sftp.tab_session(tab_id).is_some() {
+        return Task::none();
+    }
     // 优先复用该标签已建立的 SFTP 通道；否则取该标签独占的 SSH 连接用于新建通道。
     let client = app.sftp.tab(tab_id).and_then(|s| s.client.clone());
     let conn = app
