@@ -287,6 +287,8 @@ pub enum Message {
     NewSession,
     /// 编辑已有会话（携带会话 id）。
     EditSession(String),
+    /// 复制已有会话（携带会话 id）：副本名称追加数字后缀，凭据信封原样克隆。
+    DuplicateSession(String),
     /// 删除会话（携带会话 id）。
     DeleteSession(String),
     /// 保存当前编辑器中的会话。
@@ -379,6 +381,25 @@ impl State {
                     self.editor = Some(draft);
                 }
                 Task::none()
+            }
+            Message::DuplicateSession(id) => {
+                let Some(src) = self.sessions.iter().find(|s| s.id == id).cloned() else {
+                    return Task::none();
+                };
+                // 保险库未就绪时先行守卫：否则只落内存副本，落盘被跳过、刷新后凭空消失。
+                if ctx.vault.is_none() {
+                    return Task::done(Event::Status(Some(t!("app.vault_locked"))));
+                }
+                let copy = duplicated(&src, &self.sessions);
+                let name = copy.name.clone();
+                self.selected_session = Some(copy.id.clone());
+                self.sessions.push(copy);
+                // 落盘失败时以错误覆盖成功提示，避免报告一个并未持久化的副本。
+                let status = match self.save(ctx) {
+                    Some(e) => e,
+                    None => t!("app.session_duplicated", name => name),
+                };
+                Task::done(Event::Status(Some(status)))
             }
             Message::DeleteSession(id) => {
                 // 从列表移除会话；标签关闭由父层经 `Event::SessionDeleted` 处理。
@@ -595,6 +616,24 @@ fn group_ac_state(initial: &str, sessions: &[SessionConfig]) -> AcState<String> 
     )
 }
 
+/// 由现有会话生成副本：换新 id，名称追加「空格 + 数字」后缀（后缀不含可翻译词，
+/// 故无需为其准备文案），其余字段——含凭据密文信封——原样克隆。
+///
+/// 信封与源同属当前保险库 DEK，克隆即可解出同一凭据，故不必解密再加密。
+fn duplicated(src: &SessionConfig, existing: &[SessionConfig]) -> SessionConfig {
+    let mut n = 2;
+    let mut name = format!("{} {n}", src.name);
+    while existing.iter().any(|s| s.name == name) {
+        n += 1;
+        name = format!("{} {n}", src.name);
+    }
+    SessionConfig {
+        id: new_id(),
+        name,
+        ..src.clone()
+    }
+}
+
 /// 将编辑器字段变更应用到草稿。
 fn apply_editor_field(draft: &mut EditorDraft, field: SessionField, value: String) {
     match field {
@@ -607,5 +646,78 @@ fn apply_editor_field(draft: &mut EditorDraft, field: SessionField, value: Strin
         SessionField::KeyPath => draft.key_path = value,
         SessionField::Passphrase => draft.passphrase = value,
         SessionField::Group => draft.group = value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rterm_config::AuthMethod;
+
+    /// 构造测试用会话配置（名称与认证方式可变，其余字段固定）。
+    fn cfg(name: &str, auth: AuthMethod) -> SessionConfig {
+        SessionConfig {
+            id: new_id(),
+            name: name.to_string(),
+            host: "example.com".into(),
+            port: 2222,
+            username: "root".into(),
+            auth,
+            group: Some("prod".into()),
+        }
+    }
+
+    #[test]
+    fn duplicate_assigns_new_id_and_keeps_fields() {
+        let vault = Vault::new("test-master");
+        let src = cfg(
+            "web",
+            AuthMethod::Password {
+                password: Some(vault.encrypt("secret")),
+            },
+        );
+
+        let copy = duplicated(&src, std::slice::from_ref(&src));
+
+        assert_ne!(copy.id, src.id);
+        assert_eq!(copy.name, "web 2");
+        assert_eq!(copy.host, src.host);
+        assert_eq!(copy.port, src.port);
+        assert_eq!(copy.username, src.username);
+        assert_eq!(copy.group, src.group);
+        // 信封原样克隆：同一 DEK 下仍解出源的凭据，无需重新加密。
+        match (&src.auth, &copy.auth) {
+            (
+                AuthMethod::Password {
+                    password: Some(src_env),
+                },
+                AuthMethod::Password {
+                    password: Some(copy_env),
+                },
+            ) => assert_eq!(src_env, copy_env),
+            _ => panic!("凭据信封应被原样保留"),
+        }
+    }
+
+    #[test]
+    fn duplicate_skips_taken_numbers() {
+        let src = cfg("web", AuthMethod::Agent);
+        let sessions = vec![
+            src.clone(),
+            cfg("web 2", AuthMethod::Agent),
+            cfg("web 3", AuthMethod::Agent),
+        ];
+
+        assert_eq!(duplicated(&src, &sessions).name, "web 4");
+    }
+
+    #[test]
+    fn duplicate_of_credential_less_session_stays_credential_less() {
+        let src = cfg("bare", AuthMethod::Password { password: None });
+
+        let copy = duplicated(&src, &[]);
+
+        assert_eq!(copy.name, "bare 2");
+        assert_eq!(copy.auth, AuthMethod::Password { password: None });
     }
 }

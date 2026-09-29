@@ -74,6 +74,7 @@ session:
   export: Export sessions
   connect: Connect
   edit: Edit
+  copy: Duplicate
   delete: Delete
   open_files: Open file manager
   ungrouped: Ungrouped
@@ -241,6 +242,7 @@ app:
     error: Error
     warning: Warning
   session_saved: Session saved
+  session_duplicated: 'Session duplicated as "%{name}"'
   no_password: Session is missing login password; please fill it in the editor and retry
   tab_closed: "Tab closed, discarding connection result: %{id}"
   conn_established: "Connection established for new tab: %{id}"

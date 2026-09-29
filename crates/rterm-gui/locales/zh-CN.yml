@@ -74,6 +74,7 @@ session:
   export: 导出会话
   connect: 连接
   edit: 编辑
+  copy: 复制
   delete: 删除
   open_files: 打开文件管理
   ungrouped: 未分组
@@ -241,6 +242,7 @@ app:
     error: 错误
     warning: 警告
   session_saved: 会话已保存
+  session_duplicated: 已复制会话「%{name}」
   tab_closed: "标签已关闭，丢弃连接结果: %{id}"
   conn_established: "已为新标签建立连接: %{id}"
   disconnected: "连接已断开: %{id}"

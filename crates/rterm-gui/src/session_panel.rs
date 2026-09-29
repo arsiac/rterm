@@ -246,13 +246,14 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
     .into();
 
     // 右键菜单按列表项各自触发，空白处（无列表项）因此不弹菜单；
-    // 含“新建会话”与连接 / 编辑 / 删除，已连接再追加“打开文件管理”。
+    // 含“新建会话”与连接 / 编辑 / 复制 / 删除，已连接再追加“打开文件管理”。
     let id = s.id.clone();
     let menu_overlay = move || {
         let mut actions = column![
             menu_entry(t!("session.new"), Message::NewSession),
             menu_entry(t!("session.connect"), Message::ConnectSession(id.clone())),
             menu_entry(t!("session.edit"), Message::EditSession(id.clone())),
+            menu_entry(t!("session.copy"), Message::DuplicateSession(id.clone())),
             menu_entry(t!("session.delete"), Message::DeleteSession(id.clone())),
         ]
         .spacing(2);
