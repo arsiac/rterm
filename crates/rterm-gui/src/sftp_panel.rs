@@ -100,7 +100,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     panel(app)
 }
 
-/// 面板主体：导航栏 + 工具条 + 列表（反馈横幅已迁至 toast，进度也不在本面板内）。
+/// 面板主体：导航栏 + 工具条 + 列表。
 fn panel(app: &App) -> Element<'_, Message> {
     // 渲染当前活动标签的 SFTP 视图；无活动标签或该标签尚未打开 SFTP 时显示占位。
     let Some(sftp) = app.active_sftp() else {
@@ -111,9 +111,7 @@ fn panel(app: &App) -> Element<'_, Message> {
 
     // 文件操作反馈横幅已统一交由 `crate::widget::toast` 渲染，本面板只保留文件操作区。
 
-    // 工具栏：一排操作按钮（返回上级、刷新、新建目录、上传），当前路径输入框独立显示在下方，
-    // 全部复用 icon_button 的带延迟 tooltip。
-    // 当 CWD_BOOTSTRAP 关闭时，「进入终端目录」按钮不显示（无 cwd 追踪能力）。
+    // 工具栏：一排操作按钮，当前路径输入框独立显示在下方
     let mut btns: Vec<Element<'_, Message>> = vec![icon_button(
         Icon::ArrowReply,
         ACTION_ICON_SIZE,
@@ -121,6 +119,8 @@ fn panel(app: &App) -> Element<'_, Message> {
         crate::app::sftp::Message::SftpParent,
         Position::Bottom,
     )];
+
+    // 当 CWD_BOOTSTRAP 关闭时，「进入终端目录」按钮不显示。
     if app.config.terminal.cwd_bootstrap {
         btns.push(icon_button(
             Icon::ArrowEnter,
@@ -167,8 +167,8 @@ fn panel(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .align_x(iced::alignment::Horizontal::Right);
 
-    // 当前路径以 text_input 显示：圆角 6px、内边距与文件列表项一致（上下 6、左右 8），
-    // 背景与列表项常态同色；编辑后回车（on_submit）即跳转到该路径。
+    // 当前路径以 text_input 显示
+    // 编辑后回车（on_submit）即跳转到该路径。
     let path_input = text_input(&t!("sftp.go_path_placeholder"), &sftp.path_input)
         .on_input(crate::app::sftp::Message::SftpPathInput)
         .on_submit(crate::app::sftp::Message::SftpCd(
@@ -183,7 +183,7 @@ fn panel(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .style(crate::ui::text_input_style);
 
-    // 当前路径输入框作为独立一行置于工具栏下方，宽度填满，便于输入较长绝对路径。
+    // 当前路径输入框作为独立一行置于工具栏下方，宽度填满。
     let path_row = row![path_input].align_y(iced::alignment::Vertical::Center);
 
     // 文件条目列表：每行类型图标 + 名称 + 大小，右键弹出操作菜单。
@@ -329,12 +329,14 @@ fn panel(app: &App) -> Element<'_, Message> {
         entries.insert(0, parent_entry(&sftp.path, selected, hovered));
     }
 
-    // 预留右侧空间给覆盖式滚动条，避免其出现时遮挡行尾内容。
-    let list = scrollable(column(entries).spacing(4).padding(iced::Padding {
-        right: 12.0,
-        ..Default::default()
-    }))
-    .height(Length::Fill);
+    // 使用细滚动条避免内容被覆盖
+    let list = scrollable(column(entries).spacing(4))
+        .height(Length::Fill)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new()
+                .width(6.0)
+                .scroller_width(4.0),
+        ));
 
     // 列表整体只套一层 `ContextMenu`：右键落在条目上时渲染行菜单，落在空白处或 “..”
     // 合成项上时渲染空白菜单。全局仅此一层——若逐行与整列表各套一层，右键会被两层同时
