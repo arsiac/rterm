@@ -145,10 +145,12 @@ async fn pump<W, R>(
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
-    // 复用的收发缓冲区（8 KiB 已满足交互式终端吞吐）。
-    let mut socket_buf = [0u8; 8192];
-    let mut channel_buf = [0u8; 8192];
-    // OSC 7 序列可能被 8 KiB 缓冲边界切断，故跨读保留未终结的序列尾部，
+    // 复用的收发缓冲区：远端大输出（如 cat 日志）时按块转发，块越大每字节的系统调用
+    // 与事件唤醒越少，故取 64 KiB（8 KiB 会让同样流量产生 8 倍次数的读写与后续同步）。
+    const PUMP_BUFFER: usize = 64 * 1024;
+    let mut socket_buf = [0u8; PUMP_BUFFER];
+    let mut channel_buf = [0u8; PUMP_BUFFER];
+    // OSC 7 序列可能被缓冲边界切断，故跨读保留未终结的序列尾部，
     // 与下一读拼接后再解析（见 `scan_osc7_cwd`）。
     let mut osc_carry = Vec::new();
     let mut total_remote = 0usize;
@@ -219,8 +221,9 @@ async fn wait_stop(stop: Arc<AtomicBool>) {
 /// 扫描字节流中的 OSC 7 序列（`ESC ]7;file://<path> BEL|ST`），提取路径写入 `cwd`。
 ///
 /// OSC 7 序列可能跨多次 `read` 被截断，故用 `carry` 保留「已出现 `ESC ]7;` 起始、
-/// 但尚未遇到终结符」的尾部，与下一读拼接后继续解析。`carry` 长度设上限，
-/// 长时间找不到终结符时清空，避免异常输出持续堆积。
+/// 但尚未遇到终结符」的尾部，与下一读拼接后继续解析。本次扫描未出现任何起始标记时，
+/// `carry` 只保留末尾几个字节（起始标记本身可能被读边界切断），使普通日志输出下
+/// `carry` 的长度恒为常数，不会随输出累积、也不会被反复重扫。
 ///
 /// 只认标准 `file://` 前缀：钩子输出形如 `file:///home/user`，故取 `file://` 之后
 /// 的内容即为绝对路径（含开头 `/`）。其他内容（如 `file://host/path`）会被忽略，
@@ -267,11 +270,12 @@ fn scan_osc7_cwd(carry: &mut Vec<u8>, chunk: &[u8], cwd: &Arc<Mutex<Option<Strin
         // 跳过已消费序列（含终结符；ST 占两字节）。
         i = if carry[end] == 0x1b { end + 2 } else { end + 1 };
     }
-    // 仅保留未处理尾部；无进展且超长则清空（防异常输出堆积）。
+    // 仅保留未处理尾部：有进展时从上次消费处截断；本次完全没有出现起始标记时，
+    // 只保留末尾几个字节（标记可能被读边界切断），避免下一次重复扫描整段累积内容。
     if i > 0 {
         *carry = carry.split_off(i);
-    } else if carry.len() > 4096 {
-        carry.clear();
+    } else if carry.len() > MARK.len() - 1 {
+        *carry = carry.split_off(carry.len() - (MARK.len() - 1));
     }
 }
 

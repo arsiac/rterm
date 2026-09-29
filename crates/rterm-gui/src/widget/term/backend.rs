@@ -11,16 +11,16 @@ use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{
     self, Term, TermMode, cell::Cell, test::TermSize, viewport_to_point,
 };
+use alacritty_terminal::tty;
 use alacritty_terminal::tty::EventedPty;
 use alacritty_terminal::vte::ansi::CursorShape;
-use alacritty_terminal::{Grid, tty};
 use iced::keyboard::Modifiers;
 use iced_core::Size;
 use log::warn;
 use std::borrow::Cow;
 use std::cmp::min;
 use std::io::Result;
-use std::ops::{Index, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -189,6 +189,8 @@ pub struct Backend {
     notifier: Notifier,
     /// 上一次同步后的可渲染内容快照。
     last_content: RenderableContent,
+    /// 最近一次已下发 PTY 的行列数；用于抑制重复的 window-change 请求。
+    last_pty_size: Option<(u16, u16)>,
     /// 用于识别超链接的 URL 正则（crate 内可见）。
     pub(crate) url_regex: RegexSearch,
     /// 复制时是否去除每行尾部空格。
@@ -261,18 +263,8 @@ impl Backend {
 
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
 
-        let cursor = term.grid_mut().cursor_cell().clone();
-        let cursor_shape = term.cursor_style().shape;
-
-        let initial_content = RenderableContent {
-            grid: term.grid().clone(),
-            selectable_range: None,
-            terminal_mode: *term.mode(),
-            terminal_size,
-            cursor: cursor.clone(),
-            cursor_shape,
-            hovered_hyperlink: None,
-        };
+        let mut initial_content = RenderableContent::default();
+        Self::capture_viewport(&mut initial_content, &mut term, terminal_size);
 
         let term = Arc::new(FairMutex::new(term));
 
@@ -287,54 +279,99 @@ impl Backend {
             size: terminal_size,
             notifier,
             last_content: initial_content,
+            last_pty_size: None,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
             trim_trailing_whitespace,
         })
     }
 
+    /// 捕获终端可见区到 `content`：只遍历视口行，并复用 `content.cells` 已有分配。
+    ///
+    /// 视口大小为「可见行数 × 列数」（约数千格），与 scrollback 长度无关，
+    /// 故本函数可在每条事件后调用而不引入随历史增长的开销。
+    fn capture_viewport(
+        content: &mut RenderableContent,
+        terminal: &mut Term<EventProxy>,
+        size: TerminalSize,
+    ) {
+        let cursor = terminal.grid_mut().cursor_cell().clone();
+        let selectable_range = match &terminal.selection {
+            Some(s) => s.to_range(terminal),
+            None => None,
+        };
+        let cursor_shape = terminal.cursor_style().shape;
+        let terminal_mode = *terminal.mode();
+        let grid = terminal.grid();
+
+        content.cells.clear();
+        content
+            .cells
+            .extend(grid.display_iter().map(|indexed| indexed.cell.clone()));
+        content.columns = grid.columns();
+        content.display_offset = grid.display_offset();
+        content.cursor_point = grid.cursor.point;
+        content.cursor = cursor;
+        content.cursor_shape = cursor_shape;
+        content.selectable_range = selectable_range;
+        content.terminal_mode = terminal_mode;
+        content.terminal_size = size;
+    }
+
     /// 处理一条宿主下发的 `Command`，返回需要宿主执行的 `Action`。
+    ///
+    /// 终端锁按需获取：仅 `Wakeup` 这类纯重绘信号的事件不取锁，避免与解析线程争抢。
     pub fn handle(&mut self, cmd: Command) -> Action {
-        let mut action = Action::default();
-        let term = self.term.clone();
-        let mut term = term.lock();
         match cmd {
-            Command::ProcessAlacrittyEvent(event) => {
-                match event {
-                    Event::Exit => {
-                        action = Action::Shutdown;
-                    }
-                    Event::Title(title) => {
-                        action = Action::ChangeTitle(title);
-                    }
-                    Event::PtyWrite(pty) => self.notifier.notify(pty.into_bytes()),
-                    _ => {}
-                };
-            }
+            Command::ProcessAlacrittyEvent(event) => match event {
+                Event::Exit => Action::Shutdown,
+                Event::Title(title) => Action::ChangeTitle(title),
+                Event::PtyWrite(pty) => {
+                    self.notifier.notify(pty.into_bytes());
+                    Action::default()
+                }
+                _ => Action::default(),
+            },
             Command::Write(input) => {
                 self.write(input);
-                term.scroll_display(Scroll::Bottom);
+                let term = self.term.clone();
+                term.lock().scroll_display(Scroll::Bottom);
+                Action::default()
             }
             Command::Scroll(delta) => {
+                let term = self.term.clone();
+                let mut term = term.lock();
                 self.scroll(&mut term, delta);
+                Action::default()
             }
             Command::Resize(layout_size, font_measure) => {
+                let term = self.term.clone();
+                let mut term = term.lock();
                 self.resize(&mut term, layout_size, font_measure);
+                Action::default()
             }
             Command::SelectStart(selection_type, (x, y)) => {
+                let term = self.term.clone();
+                let mut term = term.lock();
                 self.start_selection(&mut term, selection_type, x, y);
+                Action::default()
             }
             Command::SelectUpdate((x, y)) => {
+                let term = self.term.clone();
+                let mut term = term.lock();
                 self.update_selection(&mut term, x, y);
+                Action::default()
             }
             Command::ProcessLink(link_action, point) => {
+                let term = self.term.clone();
+                let term = term.lock();
                 self.process_link_action(&term, link_action, point);
+                Action::default()
             }
             Command::MouseReport(button, modifiers, point, pressed) => {
                 self.process_mouse_report(button, modifiers, point, pressed);
+                Action::default()
             }
-        };
-
-        action
+        }
     }
 
     /// 处理超链接动作：悬停时计算匹配范围、清除或打开链接。
@@ -353,19 +390,23 @@ impl Backend {
                 self.last_content.hovered_hyperlink = None;
             }
             LinkAction::Open => {
-                self.open_link();
+                self.open_link(terminal);
             }
         };
     }
 
     /// 用系统默认程序打开当前悬停的超链接。
-    fn open_link(&self) {
+    ///
+    /// 直接在已持锁的 `terminal` 上取字符：超链接范围可能落在视口之外，
+    /// 视口快照不保证覆盖，故不能改从 `last_content` 读取。
+    fn open_link(&self, terminal: &Term<EventProxy>) {
         if let Some(range) = &self.last_content.hovered_hyperlink {
             let start = range.start();
             let end = range.end();
+            let grid = terminal.grid();
 
-            let mut url = String::from(self.last_content.grid.index(*start).c);
-            for indexed in self.last_content.grid.iter_from(*start) {
+            let mut url = String::from(grid[*start].c);
+            for indexed in grid.iter_from(*start) {
                 url.push(indexed.c);
                 if indexed.point == *end {
                     break;
@@ -532,7 +573,12 @@ impl Backend {
         if lines > 0 && cols > 0 {
             self.size.num_lines = lines;
             self.size.num_cols = cols;
-            self.notifier.on_resize(self.size.into());
+            // 宿主在每条命令后都会推送一次字体测量结果，同一尺寸会被反复下发；
+            // 而每次下发都对应一个 SSH window-change 请求，故仅在尺寸真正变化时通知远端。
+            if self.last_pty_size != Some((cols, lines)) {
+                self.last_pty_size = Some((cols, lines));
+                self.notifier.on_resize(self.size.into());
+            }
             terminal.resize(TermSize::new(
                 self.size.num_cols as usize,
                 self.size.num_lines as usize,
@@ -571,12 +617,21 @@ impl Backend {
 
     /// 返回当前选中范围内的纯文本（去除网格控制字符）。
     /// 若 `trim_trailing_whitespace` 开启，各行的尾部空格与制表符将被去除。
+    ///
+    /// 选区可能跨越视口之外的历史行，故直接遍历网格而非视口快照。
     pub fn selectable_content(&self) -> String {
-        let content = self.renderable_content();
+        let term = self.term.clone();
+        let term = term.lock();
+        let grid = term.grid();
+        let range = match &term.selection {
+            Some(s) => s.to_range(&term),
+            None => None,
+        };
+
         let mut result = String::new();
-        if let Some(range) = content.selectable_range {
+        if let Some(range) = range {
             let mut last_line: i32 = i32::MIN;
-            for indexed in content.grid.display_iter() {
+            for indexed in grid.display_iter() {
                 if range.contains(indexed.point) {
                     // 换行时插入 \n
                     if indexed.point.line.0 != last_line {
@@ -607,20 +662,9 @@ impl Backend {
         self.internal_sync(&mut term);
     }
 
-    /// 内部同步：刷新网格、选区、光标与终端模式快照。
+    /// 内部同步：刷新视口单元格、选区、光标与终端模式快照。
     fn internal_sync(&mut self, terminal: &mut Term<EventProxy>) {
-        let selectable_range = match &terminal.selection {
-            Some(s) => s.to_range(terminal),
-            None => None,
-        };
-
-        let cursor = terminal.grid_mut().cursor_cell().clone();
-        self.last_content.grid = terminal.grid().clone();
-        self.last_content.selectable_range = selectable_range;
-        self.last_content.cursor = cursor.clone();
-        self.last_content.cursor_shape = terminal.cursor_style().shape;
-        self.last_content.terminal_mode = *terminal.mode();
-        self.last_content.terminal_size = self.size;
+        Self::capture_viewport(&mut self.last_content, terminal, self.size);
     }
 
     /// 返回最近一次同步的可渲染内容快照。
@@ -658,10 +702,20 @@ fn visible_regex_match_iter<'a>(
         .take_while(move |rm| rm.start().line <= viewport_end)
 }
 
-/// 一次渲染所需的终端内容快照。
+/// 一次渲染所需的终端可见区快照。
+///
+/// 只含视口内容（可见行数 × 列数），不含 scrollback：捕获开销与历史长度无关。
+/// `cells` 按行主序排列，`i` 号格子对应网格点
+/// `(Line(i / columns - display_offset), Column(i % columns))`。
 pub struct RenderableContent {
-    /// 当前网格（含所有单元格）。
-    pub grid: Grid<Cell>,
+    /// 视口内单元格，按行主序。
+    pub cells: Vec<Cell>,
+    /// 视口列数，用于把 `cells` 下标还原为行列。
+    pub columns: usize,
+    /// 视口滚动偏移（0 表示贴住实时输出）。
+    pub display_offset: usize,
+    /// 当前光标所在的网格坐标。
+    pub cursor_point: Point,
     /// 当前悬停命中、可点击的超链接坐标范围。
     pub hovered_hyperlink: Option<RangeInclusive<Point>>,
     /// 当前选区对应的可复制范围（无选区则为 `None`）。
@@ -677,10 +731,13 @@ pub struct RenderableContent {
 }
 
 impl Default for RenderableContent {
-    /// 返回全空的 RenderableContent 默认值。
+    /// 返回空视口的 RenderableContent 默认值。
     fn default() -> Self {
         Self {
-            grid: Grid::new(0, 0, 0),
+            cells: Vec::new(),
+            columns: 1,
+            display_offset: 0,
+            cursor_point: Point::default(),
             hovered_hyperlink: None,
             selectable_range: None,
             cursor: Cell::default(),
@@ -706,5 +763,90 @@ impl EventListener for EventProxy {
     /// 以阻塞方式将 alacritty 事件发送到宿主通道。
     fn send_event(&self, event: Event) {
         let _ = self.0.blocking_send(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::vte::ansi::Processor;
+
+    /// 构造无 PTY 的终端：历史缓冲 10 行，视口取 [`TerminalSize::default`]（80×50）。
+    fn test_term() -> Term<EventProxy> {
+        let (tx, _rx) = mpsc::channel(16);
+        let config = term::Config {
+            scrolling_history: 10,
+            ..Default::default()
+        };
+        Term::new(config, &TerminalSize::default(), EventProxy(tx))
+    }
+
+    /// 把字节流喂给终端解析（不涉及 PTY，仅驱动 vt 状态机）。
+    fn feed(term: &mut Term<EventProxy>, input: &[u8]) {
+        let mut parser: Processor = Processor::new();
+        parser.advance(term, input);
+    }
+
+    /// 写入字节并捕获一次视口快照。
+    fn snapshot_after(term: &mut Term<EventProxy>, input: &[u8]) -> RenderableContent {
+        feed(term, input);
+        let mut content = RenderableContent::default();
+        Backend::capture_viewport(&mut content, term, TerminalSize::default());
+        content
+    }
+
+    #[test]
+    fn viewport_snapshot_covers_visible_area_only() {
+        let mut term = test_term();
+        let content = snapshot_after(&mut term, b"abc\r\ndefg");
+        let size = TerminalSize::default();
+
+        assert_eq!(content.columns, size.columns());
+        assert_eq!(content.cells.len(), size.screen_lines() * size.columns());
+        assert_eq!(content.display_offset, 0);
+    }
+
+    #[test]
+    fn viewport_snapshot_maps_row_major_from_top_visible_line() {
+        let mut term = test_term();
+        let content = snapshot_after(&mut term, b"abc\r\ndefg");
+        let columns = content.columns;
+
+        assert_eq!(content.cells[0].c, 'a');
+        assert_eq!(content.cells[2].c, 'c');
+        assert_eq!(content.cells[columns].c, 'd');
+        assert_eq!(content.cells[columns + 3].c, 'g');
+        assert_eq!(content.cursor_point, Point::new(Line(1), Column(4)));
+    }
+
+    #[test]
+    fn viewport_snapshot_matches_alacritty_viewport_mapping() {
+        let mut term = test_term();
+        // 写满一屏并溢出一部分，再回滚 5 行，覆盖 display_offset != 0 的历史行。
+        let input: String = (0..60).map(|i| format!("L{i}\r\n")).collect();
+        feed(&mut term, input.as_bytes());
+        term.grid_mut().scroll_display(Scroll::Delta(5));
+
+        let mut content = RenderableContent::default();
+        Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+
+        assert_eq!(content.display_offset, 5);
+        let size = TerminalSize::default();
+        let columns = content.columns;
+        assert_eq!(columns, size.columns());
+        assert_eq!(content.cells.len(), size.screen_lines() * columns);
+
+        // 以 alacritty 自身的「屏幕点 → 网格点」换算为对照，逐格核对下标映射与滚动偏移。
+        let grid = term.grid();
+        for row in 0..size.screen_lines() {
+            for col in 0..columns {
+                let point = viewport_to_point(5, Point::new(row, Column(col)));
+                assert_eq!(
+                    content.cells[row * columns + col],
+                    grid[point],
+                    "row {row} col {col}"
+                );
+            }
+        }
     }
 }

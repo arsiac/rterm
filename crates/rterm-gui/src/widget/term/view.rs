@@ -1,7 +1,7 @@
 use crate::widget::term::backend::{Backend, Command, LinkAction, MouseButton, RenderableContent};
 use crate::widget::term::bindings::{BindingAction, BindingsLayout, InputKind};
 use crate::widget::term::terminal::{Event, Terminal};
-use alacritty_terminal::index::Point as TerminalGridPoint;
+use alacritty_terminal::index::{Column, Line, Point as TerminalGridPoint};
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::{TermMode, cell};
 use alacritty_terminal::vte::ansi::{self as ansi, CursorShape, NamedColor};
@@ -206,7 +206,7 @@ impl<'a> TerminalView<'a> {
             cursor_x,
             cursor_y,
             &terminal_content.terminal_size,
-            terminal_content.grid.display_offset(),
+            terminal_content.display_offset,
         );
 
         // 根据终端模式与修饰键，分派命令或选区更新
@@ -437,8 +437,8 @@ impl<'a> TerminalView<'a> {
             content.terminal_size.cell_width as f32,
             content.terminal_size.cell_height as f32,
         );
-        let cursor = content.grid.cursor.point;
-        let display_offset = content.grid.display_offset() as f32;
+        let cursor = content.cursor_point;
+        let display_offset = content.display_offset as f32;
         let x = bounds.x + padding + cursor.column.0 as f32 * cell_size.width;
         let y = bounds.y + padding + ((cursor.line.0 as f32) + display_offset) * cell_size.height;
 
@@ -623,7 +623,7 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
 
             frame.with_clip(clip_rect, |frame| {
                 // 预计算内循环使用的常量
-                let display_offset = content.grid.display_offset() as f32;
+                let display_offset = content.display_offset as f32;
                 let cell_size = Size::new(cell_width, cell_height);
                 let half_w = cell_width * 0.5;
                 let half_h = cell_height * 0.5;
@@ -636,11 +636,15 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
 
                 let mut last_line: Option<i32> = None;
                 let mut bg_batch_rect = BackgroundRect::default();
+                // 视口快照首行对应的网格行号；第 i 行即网格行 `first_line + i`。
+                let first_line = -(display_offset as i32);
+                let columns = content.columns.max(1);
 
-                for indexed in content.grid.display_iter() {
+                for (index, cell) in content.cells.iter().enumerate() {
                     // 低成本计算每格几何信息
-                    let line = indexed.point.line.0;
-                    let col = indexed.point.column.0 as f32;
+                    let line = first_line + (index / columns) as i32;
+                    let col = (index % columns) as f32;
+                    let point = TerminalGridPoint::new(Line(line), Column(index % columns));
 
                     // 解析该格的位置点（含内边距偏移）
                     let x = layout_offset_x + self.padding + (col * cell_width);
@@ -651,8 +655,8 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     let cell_center_x = x + half_w;
 
                     // 解析该格的颜色
-                    let mut fg = self.term.theme.get_color(indexed.fg);
-                    let mut bg = self.term.theme.get_color(indexed.bg);
+                    let mut fg = self.term.theme.get_color(cell.fg);
+                    let mut bg = self.term.theme.get_color(cell.bg);
 
                     // 若检测到换行，
                     // 需要刷新待绘背景矩形并初始化新矩形
@@ -671,17 +675,14 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     }
 
                     // 处理暗淡、反显与选中文本
-                    if indexed
-                        .cell
+                    if cell
                         .flags
                         .intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD)
                     {
                         fg.a *= 0.7;
                     }
-                    if indexed.cell.flags.contains(cell::Flags::INVERSE)
-                        || content
-                            .selectable_range
-                            .is_some_and(|r| r.contains(indexed.point))
+                    if cell.flags.contains(cell::Flags::INVERSE)
+                        || content.selectable_range.is_some_and(|r| r.contains(point))
                     {
                         std::mem::swap(&mut fg, &mut bg);
                     }
@@ -721,9 +722,8 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
 
                     // 绘制悬浮超链接下划线（较少见，逐格绘制以保证正确）
                     if content.hovered_hyperlink.as_ref().is_some_and(|range| {
-                        range.contains(&indexed.point)
-                            && range.contains(&state.mouse_position_on_grid)
-                    }) || indexed.cell.flags.contains(cell::Flags::UNDERLINE)
+                        range.contains(&point) && range.contains(&state.mouse_position_on_grid)
+                    }) || cell.flags.contains(cell::Flags::UNDERLINE)
                     {
                         let underline_height = y + cell_size.height;
                         let underline = Path::line(
@@ -739,14 +739,14 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     }
 
                     // 处理光标渲染
-                    let cursor_on_cell = content.grid.cursor.point == indexed.point
+                    let cursor_on_cell = content.cursor_point == point
                         && content.terminal_mode.contains(TermMode::SHOW_CURSOR);
                     // 实心块会铺满整格，此时字形须改用单元格背景色，否则与块同色不可见。
                     let mut cursor_inverts_text = false;
 
                     if cursor_on_cell && content.cursor_shape != CursorShape::Hidden {
                         let cursor_color = self.term.theme.get_color(content.cursor.fg);
-                        let block_width = if indexed.cell.flags.contains(cell::Flags::WIDE_CHAR) {
+                        let block_width = if cell.flags.contains(cell::Flags::WIDE_CHAR) {
                             cell_width * 2.0
                         } else {
                             cell_width
@@ -790,24 +790,23 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     }
 
                     // 绘制文本
-                    if indexed.c != ' ' && indexed.c != '\t' {
+                    if cell.c != ' ' && cell.c != '\t' {
                         if cursor_inverts_text {
                             fg = bg;
                         }
                         // 由格子标志解析字体样式（粗体/斜体）
                         let mut font = self.term.font.font_type;
-                        if indexed
-                            .cell
+                        if cell
                             .flags
                             .intersects(cell::Flags::BOLD | cell::Flags::DIM_BOLD)
                         {
                             font.weight = FontWeight::Bold;
                         }
-                        if indexed.cell.flags.contains(cell::Flags::ITALIC) {
+                        if cell.flags.contains(cell::Flags::ITALIC) {
                             font.style = FontStyle::Italic;
                         }
                         let text = Text {
-                            content: indexed.cell.c.to_string(),
+                            content: cell.c.to_string(),
                             position: Point::new(cell_center_x, cell_center_y),
                             font,
                             size: iced_core::Pixels(font_size),
@@ -833,7 +832,7 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                 // 输入法预编辑串叠加在网格之上：先用终端底色盖住光标格（否则实心光标块会
                 // 吃掉首字），再按终端字体左对齐、垂直居中绘制，字形间距由字体自行推进。
                 if let Some(preedit) = state.preedit.as_ref() {
-                    let cursor = content.grid.cursor.point;
+                    let cursor = content.cursor_point;
                     let cell_x =
                         layout_offset_x + self.padding + cursor.column.0 as f32 * cell_width;
                     let cell_y = layout_offset_y
@@ -1673,12 +1672,13 @@ mod tests {
 
         /// 构造光标位于指定网格点的渲染内容；默认单元格为 1×1 像素，故断言可直接按格数书写。
         fn content_at(line: i32, column: usize) -> RenderableContent {
-            let mut content = RenderableContent::default();
-            content.grid.cursor.point = TerminalGridPoint {
-                line: Line(line),
-                column: Column(column),
-            };
-            content
+            RenderableContent {
+                cursor_point: TerminalGridPoint {
+                    line: Line(line),
+                    column: Column(column),
+                },
+                ..Default::default()
+            }
         }
 
         #[test]

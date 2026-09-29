@@ -13,7 +13,9 @@ use iced::widget::canvas::Cache;
 use std::hash::{Hash, Hasher};
 use std::io::Result;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{self, Receiver};
 
 #[derive(Debug, Clone)]
@@ -132,6 +134,9 @@ impl Terminal {
             }
             Command::ChangeFont(font_settings) => {
                 self.font = TermFont::new(font_settings);
+                // 只有字体变更才需重新测量：单字测量要构造段落走一遍文本管线，
+                // 若挂在每条命令上，PTY 输出路径每条事件都要白付一次。
+                self.sync_font();
             }
             Command::AddBindings(bindings) => {
                 self.bindings.add_bindings(bindings);
@@ -141,15 +146,9 @@ impl Terminal {
             }
         };
 
-        self.sync_and_redraw();
-        action
-    }
-
-    /// 同步字体与后端状态并清空缓存触发重绘。
-    fn sync_and_redraw(&mut self) {
-        self.sync_font();
         self.backend.sync();
         self.redraw();
+        action
     }
 
     /// 同步字体度量并通知后端按新字形尺寸重排。
@@ -181,7 +180,58 @@ impl Hash for TerminalSubscriptionData {
     }
 }
 
+/// 纯输出突发的合并窗口：窗口内到达的 `Wakeup` 合并为一次同步，等价于按帧节流。
+const EVENT_BATCH_WINDOW: Duration = Duration::from_millis(8);
+
+/// 一批待转发的后端事件：`Wakeup` 只保留一次，其余事件按原顺序逐条保留。
+#[derive(Default)]
+struct EventBatch {
+    /// 需要逐条透传的事件（标题、PTY 写入、退出等带副作用的事件）。
+    others: Vec<AlacrittyEvent>,
+    /// 是否收到过 `Wakeup`（重绘信号，合并为一次即可）。
+    wakeup: bool,
+}
+
+impl EventBatch {
+    /// 收下一条事件：`Wakeup` 只置位，其余入队。
+    fn push(&mut self, event: AlacrittyEvent) {
+        if matches!(event, AlacrittyEvent::Wakeup) {
+            self.wakeup = true;
+        } else {
+            self.others.push(event);
+        }
+    }
+
+    /// 本批是否为纯输出突发（只含 `Wakeup`）。
+    fn is_wakeup_only(&self) -> bool {
+        self.wakeup && self.others.is_empty()
+    }
+}
+
+/// 阻塞等待一条后端事件；通道关闭（终端部件已销毁）时返回 `None`。
+async fn recv_event(receiver: &Arc<Mutex<Receiver<AlacrittyEvent>>>) -> Option<AlacrittyEvent> {
+    receiver.lock().await.recv().await
+}
+
+/// 取走通道中当前已就绪的全部事件（不等待），并入 `batch`。
+async fn drain_events(receiver: &Arc<Mutex<Receiver<AlacrittyEvent>>>, batch: &mut EventBatch) {
+    let mut receiver = receiver.lock().await;
+    loop {
+        match receiver.try_recv() {
+            Ok(event) => batch.push(event),
+            Err(TryRecvError::Empty) => return,
+            // 发送端已丢弃：后续不会再有事件，收完当前批次即退出。
+            Err(TryRecvError::Disconnected) => return,
+        }
+    }
+}
+
 /// 订阅流：循环接收后端事件并封装为 [`Event`] 回流到 App。
+///
+/// PTY 输出产生的 `Wakeup` 是电平信号（「有变化，去重绘」），高频输出时可达每秒上百条；
+/// 若逐条回流，每条都会触发一次网格同步。故同一突发内的 `Wakeup` 合并为一条消息，
+/// 并按 [`EVENT_BATCH_WINDOW`] 节流（等价于每帧最多同步一次）。
+/// 其余事件带副作用（标题、PTY 写入、退出等），一律原样逐条透传，不参与合并。
 ///
 /// 流的生命周期由 iced 管理：标签页关闭 / 连接断开时，宿主会丢弃终端部件并取消订阅，
 /// 此时后端事件通道（`Sender`）被丢弃，`recv()` 返回 `None`；或 iced 在拆栈时先丢弃
@@ -191,25 +241,32 @@ fn terminal_subscription_stream(data: &TerminalSubscriptionData) -> BoxStream<'s
     let event_receiver = data.event_receiver.clone();
     iced::stream::channel(1000, async move |mut output| {
         loop {
-            let mut event_receiver = event_receiver.lock().await;
-            match event_receiver.recv().await {
-                Some(event) => {
-                    // 订阅被 iced 拆栈（标签页已关闭）时 `output` 已失效，`send` 失败属正常，
-                    // 直接退出；否则把后端事件照常回流给 App。
-                    if output
-                        .send(Event::BackendCall(
-                            id,
-                            backend::Command::ProcessAlacrittyEvent(event),
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+            let Some(first) = recv_event(&event_receiver).await else {
+                break;
+            };
+
+            let mut batch = EventBatch::default();
+            batch.push(first);
+            // 先取走已积压的事件，把同一波突发尽量压成一条消息。
+            drain_events(&event_receiver, &mut batch).await;
+
+            // 纯输出突发：等一个合并窗口再收一轮，使窗口内的输出并入同一次同步。
+            if batch.is_wakeup_only() {
+                tokio::time::sleep(EVENT_BATCH_WINDOW).await;
+                drain_events(&event_receiver, &mut batch).await;
+            }
+
+            // 带副作用的事件先按原顺序透传，最后再补一条合并后的 `Wakeup` 触发重绘。
+            if batch.wakeup {
+                batch.others.push(AlacrittyEvent::Wakeup);
+            }
+            for event in batch.others {
+                let message =
+                    Event::BackendCall(id, backend::Command::ProcessAlacrittyEvent(event));
+                // 订阅被 iced 拆栈（标签页已关闭）时 `output` 已失效，`send` 失败属正常，直接退出。
+                if output.send(message).await.is_err() {
+                    return;
                 }
-                // 后端事件通道关闭：终端部件已销毁（关标签 / 断线），`Sender` 被丢弃。
-                // 这是预期的正常拆栈，退出流交由 iced 回收，不应 panic。
-                None => break,
             }
         }
     })
