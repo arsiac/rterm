@@ -10,6 +10,8 @@ pub enum Action {
     Shutdown,
     /// 请求把窗口 / 标签标题改为携带的字符串。
     ChangeTitle(String),
+    /// 终端收到响铃（BEL）。
+    Bell,
     /// 无需处理的事件（默认分支）。
     #[default]
     Ignore,

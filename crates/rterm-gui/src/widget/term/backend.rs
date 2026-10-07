@@ -323,13 +323,12 @@ impl Backend {
     pub fn handle(&mut self, cmd: Command) -> Action {
         match cmd {
             Command::ProcessAlacrittyEvent(event) => match event {
-                Event::Exit => Action::Shutdown,
-                Event::Title(title) => Action::ChangeTitle(title),
+                // PtyWrite 需要访问 notifier，单独分支；其余事件走无状态的纯映射。
                 Event::PtyWrite(pty) => {
                     self.notifier.notify(pty.into_bytes());
                     Action::default()
                 }
-                _ => Action::default(),
+                event => action_for_event(event),
             },
             Command::Write(input) => {
                 self.write(input);
@@ -684,6 +683,16 @@ impl Backend {
     }
 }
 
+/// 把 alacritty 事件归约为宿主动作：退出 / 标题 / 响铃需要宿主响应，其余静默忽略。
+fn action_for_event(event: Event) -> Action {
+    match event {
+        Event::Exit => Action::Shutdown,
+        Event::Title(title) => Action::ChangeTitle(title),
+        Event::Bell => Action::Bell,
+        _ => Action::default(),
+    }
+}
+
 /// 复制自 alacritty/src/display/hint.rs：
 /// 遍历所有可见的正则匹配。
 fn visible_regex_match_iter<'a>(
@@ -848,5 +857,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 响铃必须显式映射为 `Action::Bell`，不能落进兜底分支被静默吞掉。
+    #[test]
+    fn bell_event_maps_to_a_bell_action() {
+        assert_eq!(action_for_event(Event::Bell), Action::Bell);
+        assert_eq!(
+            action_for_event(Event::Title("t".into())),
+            Action::ChangeTitle("t".to_string())
+        );
+        // 无宿主响应义务的事件仍须静默。
+        assert_eq!(action_for_event(Event::Wakeup), Action::Ignore);
+    }
+
+    /// 端到端钉住「BEL 字节到达解析层就会产生 `Event::Bell`」这一前提：
+    /// 喂真实字节流（而非直接构造事件），上游 alacritty 若改了行为这里有红灯。
+    #[test]
+    fn a_bel_byte_in_the_stream_emits_a_bell_event() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut term = Term::new(
+            term::Config::default(),
+            &TerminalSize::default(),
+            EventProxy(tx),
+        );
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"\x07");
+
+        let events: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Bell)),
+            "\\x07 应产生 Bell 事件，实际：{events:?}"
+        );
     }
 }

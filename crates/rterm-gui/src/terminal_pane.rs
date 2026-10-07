@@ -120,6 +120,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             let label = tab_label(app.tabs.list(), tab);
             // 标签自己的连接状态，驱动行首状态圆点；同会话其它标签的状态不影响本标签。
             let status = tab.status;
+            // 响铃视觉提示：本标签正在闪烁（见 `app::tabs`），标签样式短暂切为强调实底。
+            let flash = tab.bell_flash.is_some();
             // 关闭按钮常态透明，仅悬停 / 按下时显示红色背景（见 `theme::tab_close_style`，
             // 它忽略主题参数）；未着色是刻意让图标在活动 / 非活动标签上都保持低调。
             let close = button(Icon::Dismiss.svg(12.0))
@@ -145,7 +147,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .align_y(iced::alignment::Vertical::Center),
             )
             .on_press(Message::Tabs(tabs::Message::SelectTab(tab.id)))
-            .style(move |theme, st| crate::theme::tab_style(theme, st, active, focused))
+            .style(move |theme, st| crate::theme::tab_style(theme, st, active, focused, flash))
             .padding([4, 6])
             .into()
         })

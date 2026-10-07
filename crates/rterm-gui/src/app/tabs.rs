@@ -12,6 +12,7 @@ use rterm_core::{ConnectionStatus, SshConnection};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// 终端桥接就绪后回传的结果：conout 读端、conin 写端、断开标志与尺寸发送端。
 /// 抽成别名以免 `TerminalOpened` 变体与 `terminal_opened` 参数触发 `type_complexity`。
@@ -24,6 +25,9 @@ type BridgeResult = Result<
     ),
     String,
 >;
+
+/// 响铃视觉提示（标签闪烁）的持续时长。
+const BELL_FLASH_DURATION: Duration = Duration::from_millis(150);
 
 /// 标签模块只读上下文：来自父层 `App` 的共享导航态（供联动写回判定）。
 /// 每次 `update` 前重建，确保读到最新父状态；仅持有 owned 数据，不借用 `App`，
@@ -51,6 +55,8 @@ pub struct State {
     pub(crate) show_tab_list: bool,
     /// 标签栏水平 scrollable 的部件 id，供 dropdown 选签后程序化滚动定位。
     pub(crate) tab_bar_scroll: Id,
+    /// 下一个响铃提示序号（自增；到期消息按序号匹配，作废旧计时器）。
+    pub(crate) next_bell_seq: u64,
 }
 
 /// 标签模块内部消息：UI 意图与后台任务结果，由父层经 `Message::Tabs` 路由进本模块。
@@ -78,6 +84,10 @@ pub enum Message {
     SessionConnected(u64, String, Result<Arc<SshConnection>, String>),
     /// 窗口焦点变化：保存 / 还原终端聚焦态。
     WindowFocused(bool),
+    /// 终端收到响铃（BEL）：置本标签的闪烁提示并安排到期清除（开关已由父层按配置过滤）。
+    Bell(u64),
+    /// 响铃闪烁到期（携带标签 id 与本次提示序号）：序号匹配才清除，旧计时器不得熄灭新闪烁。
+    BellFlashExpired(u64, u64),
 }
 
 /// 标签模块上行事件：需父层配合的副作用。模块绝不写 `App`。
@@ -126,6 +136,7 @@ impl State {
             next_tab_id: 1,
             show_tab_list: false,
             tab_bar_scroll: Id::unique(),
+            next_bell_seq: 0,
         }
     }
 
@@ -194,6 +205,7 @@ impl State {
             disconnect: None,
             cwd: std::sync::Arc::new(Mutex::new(None)),
             title,
+            bell_flash: None,
         });
         self.active_tab = Some(tab_id);
         tab_id
@@ -229,6 +241,11 @@ impl State {
                 self.session_connected(tab_id, id, result)
             }
             Message::WindowFocused(focused) => self.window_focused(focused, ctx),
+            Message::Bell(tab_id) => self.bell_flash(tab_id),
+            Message::BellFlashExpired(tab_id, seq) => {
+                self.clear_bell_flash(tab_id, seq);
+                Task::none()
+            }
         }
     }
 
@@ -434,5 +451,83 @@ impl State {
                 Task::done(Event::SetTerminalFocused(false)),
             ])
         }
+    }
+
+    /// 置本标签的响铃闪烁并安排到期清除：到期消息经自回路回流（同 `app::transfer` 的退避
+    /// 定时器），不新增订阅；期间标签被关闭则到期时查无此人，静默跳过。
+    fn bell_flash(&mut self, tab_id: u64) -> Task<Event> {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) else {
+            return Task::none();
+        };
+        let seq = self.next_bell_seq;
+        self.next_bell_seq += 1;
+        tab.bell_flash = Some(seq);
+        Task::perform(
+            // `sleep` 必须写在 `async` 块内部：`update` 里没有 tokio 运行时上下文，
+            // 在外层构造 `tokio::time::sleep` 会直接 panic（同 `app::transfer::retry_timer`）。
+            async move { tokio::time::sleep(BELL_FLASH_DURATION).await },
+            move |()| Event::Emit(Box::new(Message::BellFlashExpired(tab_id, seq))),
+        )
+    }
+
+    /// 清除响铃闪烁；仅当序号仍为本次提示时生效，旧计时器的到期消息到此作废。
+    fn clear_bell_flash(&mut self, tab_id: u64, seq: u64) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
+            && tab.bell_flash == Some(seq)
+        {
+            tab.bell_flash = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 只读上下文桩：响铃路径不读其中任何字段，取默认值即可。
+    fn ctx() -> Ctx {
+        Ctx {
+            center: crate::state::CenterView::Sessions,
+            active_session: None,
+            terminal_focused: true,
+            window_focus_saved: None,
+        }
+    }
+
+    /// 到期消息必须按序号匹配：连续响铃时，旧计时器不得提前熄灭新一轮的闪烁。
+    #[test]
+    fn only_the_latest_bell_expiry_clears_the_flash() {
+        let mut state = State::new();
+        let tab = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::Bell(tab), &ctx(), &sftp);
+        let first = state.list()[0].bell_flash.expect("响铃后应处于闪烁态");
+        let _ = state.update(Message::Bell(tab), &ctx(), &sftp);
+        let _ = state.update(Message::BellFlashExpired(tab, first), &ctx(), &sftp);
+        assert!(
+            state.list()[0].bell_flash.is_some(),
+            "旧到期消息不得清掉新闪烁"
+        );
+
+        let latest = state.list()[0].bell_flash.expect("第二轮闪烁仍在");
+        let _ = state.update(Message::BellFlashExpired(tab, latest), &ctx(), &sftp);
+        assert!(state.list()[0].bell_flash.is_none(), "本次到期应清除闪烁");
+    }
+
+    /// 迟到 / 落空的响铃消息（标签已关闭）不得 panic，也不得影响其它标签。
+    #[test]
+    fn a_bell_for_an_unknown_tab_is_a_no_op() {
+        let mut state = State::new();
+        let tab = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::Bell(tab), &ctx(), &sftp);
+        let _ = state.update(Message::Bell(404), &ctx(), &sftp);
+        let _ = state.update(Message::BellFlashExpired(404, 0), &ctx(), &sftp);
+        assert!(
+            state.list()[0].bell_flash.is_some(),
+            "其它标签的闪烁不受影响"
+        );
     }
 }

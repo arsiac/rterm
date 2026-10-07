@@ -321,7 +321,8 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// “终端”分类：配色、字体、字号（外观子区）与滚动缓冲、目录追踪、回显、去尾空格（行为子区）。
+/// “终端”分类。
+/// 配色、字体、字号（外观子区）与滚动缓冲、目录追踪、回显、去尾空格、响铃（行为子区）
 fn terminal_pane(app: &App) -> Element<'_, Message> {
     let terminal_theme_picker = pick_list(
         crate::terminal_theme::TERMINAL_THEME_NAMES,
@@ -390,6 +391,11 @@ fn terminal_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.trim_trailing_whitespace_hint")),
+        checkbox(app.config.terminal.bell)
+            .label(t!("settings.bell"))
+            .on_toggle(|v| Message::Settings(settings::Message::Bell(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.bell_hint")),
     ]
     .spacing(10)
     .into()

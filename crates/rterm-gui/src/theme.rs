@@ -414,12 +414,27 @@ pub fn pane_divider_color(theme: &Theme) -> Color {
 /// - 活动且聚焦：强调色半透明底，表示按键会落入此终端。
 /// - 活动但未聚焦：中性低饱和底（随主题 surface 派生），与「聚焦」态在色相 / 饱和度上明显不同，
 ///   避免用户误以为焦点仍在终端（如焦点已落在文件管理输入框）。
+///
+/// `flash`（响铃视觉提示）优先级最高：以实底强调色盖过上述所有状态；持续时长由标签模块控制。
 pub fn tab_style(
     theme: &Theme,
     status: button::Status,
     active: bool,
     focused: bool,
+    flash: bool,
 ) -> iced::widget::button::Style {
+    if flash {
+        return iced::widget::button::Style {
+            background: Some(accent_color(theme).into()),
+            // 实底强调色下固定白字：跟随主题的文本色在浅色主题是深字，会与实底糊在一起。
+            text_color: Color::WHITE,
+            border: iced::Border {
+                radius: TAB_RADIUS.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    }
     let background = if active {
         // 活动标签常亮高亮，不再叠加悬浮反馈。
         if focused {

@@ -101,6 +101,8 @@ pub enum Message {
     SuppressBootstrapEcho(bool),
     /// 修改「复制时去除行尾空格」设置（携带开关状态，即时持久化）。
     TrimTrailingWhitespace(bool),
+    /// 修改「响铃视觉提示」设置（携带开关状态，即时持久化；关闭后新响铃不再闪烁标签）。
+    Bell(bool),
     /// 修改「记住窗口大小」设置（携带开关状态，即时持久化；关闭时清除已存尺寸）。
     RememberWindowSize(bool),
 }
@@ -149,6 +151,8 @@ pub enum Event {
     SuppressBootstrapEcho(bool),
     /// 写回"复制时去除行尾空格"配置（携带开关状态）。
     TrimTrailingWhitespace(bool),
+    /// 写回"响铃视觉提示"配置（携带开关状态）。
+    Bell(bool),
     /// 写回"记住窗口大小"配置（携带开关状态）。
     RememberWindowSize(bool),
 }
@@ -235,6 +239,7 @@ impl State {
             Message::CwdBootstrap(v) => Task::done(Event::CwdBootstrap(v)),
             Message::SuppressBootstrapEcho(v) => Task::done(Event::SuppressBootstrapEcho(v)),
             Message::TrimTrailingWhitespace(v) => Task::done(Event::TrimTrailingWhitespace(v)),
+            Message::Bell(v) => Task::done(Event::Bell(v)),
             Message::RememberWindowSize(v) => Task::done(Event::RememberWindowSize(v)),
         }
     }

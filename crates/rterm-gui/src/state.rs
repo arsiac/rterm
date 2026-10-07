@@ -56,6 +56,12 @@ pub struct TerminalTab {
     pub cwd: Arc<Mutex<Option<String>>>,
     /// 标签标题（默认取会话名）。
     pub title: String,
+    /// 响铃视觉提示
+    ///
+    /// `Some(seq)` 表示该标签正在闪烁，值为本次提示的序号。
+    /// 终端收到 BEL 时由标签模块置位、短延时后清除。
+    /// 序号用于让旧提示的到期消息作废——连续响铃时，上一轮的到期清除不得提前熄灭新一轮的闪烁。
+    pub bell_flash: Option<u64>,
 }
 
 /// 待确认的主机密钥弹窗（连接握手暂停期间挂起，渲染与决策均取队首）。

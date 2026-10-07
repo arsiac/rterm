@@ -1,6 +1,7 @@
 //! 终端 widget 与 PTY 桥接的生命周期及事件转发。
 
 use crate::app::App;
+use crate::app::contexts;
 use crate::app::tabs;
 use crate::app::tasks::open_terminal_task;
 use crate::font;
@@ -8,6 +9,7 @@ use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
 use crate::t;
 use crate::terminal_theme;
+use crate::widget::term::actions::Action;
 use crate::widget::term::settings::{
     BackendSettings, FontSettings, Settings as TermSettings, ThemeSettings,
 };
@@ -198,7 +200,7 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             if is_user_interaction {
                 app.terminal_focused = true;
             }
-            if let Some(tab) = app.tabs.tab_mut(id) {
+            let action = if let Some(tab) = app.tabs.tab_mut(id) {
                 // 本地终端尺寸变化时，转发到远端（window-change）。
                 if let BackendCommand::Resize(Some(layout), Some(font)) = &backend_cmd {
                     let cols = (layout.width / font.width).floor().max(1.0) as u32;
@@ -207,10 +209,21 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
                         let _ = tx.try_send((cols, rows));
                     }
                 }
-                // 将命令转交终端组件（写入 PTY / 调整布局等）。
-                if let Some(term) = tab.terminal.as_mut() {
-                    term.handle(TermCommand::ProxyToBackend(backend_cmd));
-                }
+                // 将命令转交终端组件（写入 PTY / 调整布局等），并取回宿主动作。
+                tab.terminal
+                    .as_mut()
+                    .map(|term| term.handle(TermCommand::ProxyToBackend(backend_cmd)))
+                    .unwrap_or_default()
+            } else {
+                Action::default()
+            };
+            // 响铃视觉提示。
+            if matches!(action, Action::Bell) && app.config.terminal.bell {
+                let ctx = contexts::tabs_ctx(app);
+                return app
+                    .tabs
+                    .update(tabs::Message::Bell(id), &ctx, &app.sftp)
+                    .map(Message::TabsEvent);
             }
             Task::none()
         }
