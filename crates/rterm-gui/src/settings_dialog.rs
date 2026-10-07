@@ -275,10 +275,14 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// “连接与传输”分类：连接超时、最大并发传输数、失败自动重试次数。
+/// “连接与传输”分类
+/// 连接超时、SSH 保活间隔、最大并发传输数、失败自动重试次数。
 fn connection_pane(app: &App) -> Element<'_, Message> {
     let timeout_input = text_input("30", &app.config.connection.timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
+        .style(crate::ui::text_input_style);
+    let keepalive_input = text_input("20", &app.config.connection.keepalive.to_string())
+        .on_input(|s| Message::Settings(settings::Message::Keepalive(s)))
         .style(crate::ui::text_input_style);
     // 并发数是 1..=8 的小整数枚举：滑块从交互上直接消除非法输入，故不用文本框
     // （「连接超时」用文本框是因为它取值范围开放）。
@@ -305,6 +309,9 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
         crate::ui::section_title(t!("settings.sub_connection")),
         crate::ui::field_label(t!("settings.connect_timeout")),
         timeout_input,
+        crate::ui::field_label(t!("settings.keepalive")),
+        keepalive_input,
+        crate::ui::hint_text(t!("settings.keepalive_hint")),
         crate::ui::section_title(t!("settings.sub_transfer")),
         crate::ui::field_label(t!("settings.max_concurrent")),
         row![concurrency_slider, concurrency_value]

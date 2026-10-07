@@ -67,6 +67,8 @@ pub enum Message {
     CategorySelected(SettingsCategory),
     /// 修改“连接超时”设置（携带输入框最新文本，解析失败则忽略）。
     ConnectTimeout(String),
+    /// 修改“SSH 保活间隔”设置（携带输入框最新文本，解析失败则忽略；0 表示关闭）。
+    Keepalive(String),
     /// 修改“历史缓冲行数”设置（携带输入框最新文本，解析失败则忽略）。
     Scrollback(String),
     /// 修改“最大并发传输数”设置（携带滑块最新值，即时生效但不落盘）。
@@ -114,6 +116,8 @@ pub enum Message {
 pub enum Event {
     /// 写回“连接超时”配置（携带解析后的秒数）。
     ConnectTimeout(u64),
+    /// 写回“SSH 保活间隔”配置（携带解析后的秒数，0 = 关闭；仅对新建连接生效）。
+    Keepalive(u64),
     /// 写回“历史缓冲行数”配置（携带解析后的行数）。
     Scrollback(usize),
     /// 写回“最大并发传输数”配置（携带裁剪后的值），并立即重新调度传输队列。
@@ -181,6 +185,11 @@ impl State {
             // 0 表示不限制超时；仅可解析为非负整数时才上行写回。
             Message::ConnectTimeout(text) => match text.parse::<u64>() {
                 Ok(timeout) => Task::done(Event::ConnectTimeout(timeout)),
+                Err(_) => Task::none(),
+            },
+            // 0 表示关闭保活；仅可解析为非负整数时才上行写回。
+            Message::Keepalive(text) => match text.parse::<u64>() {
+                Ok(keepalive) => Task::done(Event::Keepalive(keepalive)),
                 Err(_) => Task::none(),
             },
             // 仅可解析为非负整数时才上行写回；0 表示不保留历史。

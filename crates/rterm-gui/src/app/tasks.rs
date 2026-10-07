@@ -20,20 +20,22 @@ use tokio::time::sleep;
 ///
 /// 握手遇到未知 / 变更主机密钥时，把弹窗消息转发给 GUI 并原地等待用户决定，
 /// 最终结果（无论成败）经 `SessionConnected` 回流。超时分段计量：弹窗等待
-/// 不计入，用户答复后重新计满；`timeout` 为 0 表示不限制。
+/// 不计入，用户答复后重新计满；`timeout` 为 0 表示不限制。`keepalive` 为
+/// 保活间隔（`None` = 关闭），取自应用配置。
 pub(crate) async fn connect_stream_task(
     tab_id: u64,
     id: String,
     config: SessionConfig,
     secrets: SessionSecrets,
     timeout: u64,
+    keepalive: Option<Duration>,
     output: &mut futures::channel::mpsc::Sender<Message>,
 ) {
     let (prompt_tx, mut prompt_rx) = mpsc::channel(1);
     // 握手跑在独立任务：超时 / 放弃时可 abort 彻底清理——russh 的 Handle::drop
     // 不会中止会话任务，仅靠丢弃句柄会泄漏悬挂的握手。
     let mut connect = tokio::spawn(async move {
-        SshConnection::connect(&config, &secrets, prompt_tx)
+        SshConnection::connect(&config, &secrets, keepalive, prompt_tx)
             .await
             .map(Arc::new)
     });

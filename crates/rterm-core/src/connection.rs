@@ -199,21 +199,28 @@ pub struct SshConnection {
     handle: Arc<AsyncMutex<Handle<ClientHandler>>>,
 }
 
+/// 组装 russh 客户端配置：保活间隔由宿主传入（`None` = 关闭），其余取 russh 默认。
+fn client_config(keepalive: Option<Duration>) -> Config {
+    Config {
+        keepalive_interval: keepalive,
+        ..Default::default()
+    }
+}
+
 impl SshConnection {
     /// 根据会话配置建立并认证一条 SSH 连接。
     ///
     /// 认证方式依据 [`AuthMethod`]：密码 / 公钥文件 / SSH agent。
     /// 主机密钥未经 known_hosts 确认时经 `prompt_tx` 请求 GUI 弹窗，等待用户决定。
+    /// `keepalive` 为保活间隔（`None` = 关闭），由宿主从应用配置解析后传入。
     pub async fn connect(
         config: &SessionConfig,
         secrets: &SessionSecrets,
+        keepalive: Option<Duration>,
         prompt_tx: mpsc::Sender<(HostKeyPrompt, HostKeyReply)>,
     ) -> Result<Self, CoreError> {
         debug!("正在连接 {}:{}", config.host, config.port);
-        let ssh_config = Config {
-            keepalive_interval: Some(Duration::from_secs(20)),
-            ..Default::default()
-        };
+        let ssh_config = client_config(keepalive);
 
         let handler = ClientHandler {
             host: config.host.clone(),
@@ -356,5 +363,20 @@ impl SshConnection {
             .await
             .map_err(|e| CoreError::sftp(CoreErrorKind::SftpInit, e))?;
         Ok(sftp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 宿主传入的保活选择必须原样进入 russh 客户端配置（防止退回硬编码）。
+    #[test]
+    fn client_config_carries_the_host_keepalive_choice() {
+        assert_eq!(
+            client_config(Some(Duration::from_secs(45))).keepalive_interval,
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(client_config(None).keepalive_interval, None);
     }
 }

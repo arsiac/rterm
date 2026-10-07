@@ -19,6 +19,8 @@ settings:
   sub_terminal_appearance: 外观
   sub_terminal_behavior: 行为
   connect_timeout: 连接超时（秒，0 表示不限制）
+  keepalive: SSH 保活间隔（秒，0 表示关闭）
+  keepalive_hint: 连接空闲时周期性发送保活包，避免被 NAT / 防火墙静默断开；仅对新建连接生效。
   max_concurrent: 最大并发传输数
   max_concurrent_hint: 即时生效：调大后立刻启动更多排队任务；调小不会打断进行中的传输，待其完成后收敛。
   retry_attempts: 失败自动重试次数

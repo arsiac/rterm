@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// 日志级别（设置中切换，重启生效）。
 ///
@@ -139,13 +140,30 @@ pub struct ConnectionConfig {
     /// 连接超时（秒），0 表示不限制。
     #[serde(default = "default_timeout")]
     pub timeout: u64,
+    /// SSH 保活间隔（秒），0 表示关闭保活。
+    ///
+    /// 连接建立后每隔该时长向服务器发送保活包，避免空闲连接被 NAT / 防火墙
+    /// 静默断开。
+    #[serde(default = "default_keepalive")]
+    pub keepalive: u64,
+}
+
+impl ConnectionConfig {
+    /// 保活间隔的 russh 语义：0 表示关闭（`None`），其余为对应秒数。
+    pub fn keepalive_interval(&self) -> Option<Duration> {
+        match self.keepalive {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        }
+    }
 }
 
 impl Default for ConnectionConfig {
-    /// 超时默认 30 秒。
+    /// 超时默认 30 秒，保活间隔默认 20 秒。
     fn default() -> Self {
         Self {
             timeout: default_timeout(),
+            keepalive: default_keepalive(),
         }
     }
 }
@@ -421,6 +439,11 @@ fn default_timeout() -> u64 {
     30
 }
 
+/// SSH 保活间隔默认值：20 秒（与历史硬编码一致）。
+fn default_keepalive() -> u64 {
+    20
+}
+
 /// 全局最大并发传输数默认值：3。
 fn default_max_concurrent() -> usize {
     3
@@ -578,6 +601,8 @@ impl From<LegacyAppConfig> for AppConfig {
             path: PathBuf::new(),
             connection: ConnectionConfig {
                 timeout: l.connect_timeout,
+                // 旧版没有保活间隔字段：取默认（20 秒）。
+                keepalive: default_keepalive(),
             },
             terminal: TerminalConfig {
                 font: l.terminal_font,
@@ -862,6 +887,8 @@ window_height = 720.0
         let (config, migrated) = parse_config(legacy).expect("解析旧配置应成功");
         assert!(migrated, "旧扁平格式应被识别为迁移");
         assert_eq!(config.connection.timeout, 45);
+        // 旧格式无保活间隔字段：迁移后取默认 20 秒。
+        assert_eq!(config.connection.keepalive, 20);
         assert_eq!(config.terminal.font, "JetBrains Mono");
         assert_eq!(config.terminal.font_size, 18.0);
         assert_eq!(config.terminal.theme, "One Dark");
@@ -890,6 +917,7 @@ window_height = 720.0
         let sectioned = r#"
 [connection]
 timeout = 12
+keepalive = 5
 
 [terminal]
 font = "Fira Code"
@@ -901,6 +929,7 @@ theme = "Light"
         let (config, migrated) = parse_config(sectioned).expect("解析新配置应成功");
         assert!(!migrated, "新分组格式不应触发迁移");
         assert_eq!(config.connection.timeout, 12);
+        assert_eq!(config.connection.keepalive, 5);
         assert_eq!(config.terminal.font, "Fira Code");
         assert_eq!(config.terminal.font_size, 20.0);
         assert_eq!(config.appearance.theme, "Light");
@@ -915,12 +944,31 @@ theme = "Light"
         let (config, migrated) = parse_config("").expect("空配置应成功");
         assert!(!migrated);
         assert_eq!(config.connection.timeout, 30);
+        assert_eq!(config.connection.keepalive, 20);
         assert_eq!(config.terminal.font_size, 14.0);
         assert_eq!(config.terminal.theme, "Default");
         assert_eq!(config.appearance.theme, "Dark");
         // 缺失的 [transfer] 段整体回退默认：并发 3、重试 2。
         assert_eq!(config.transfer.max_concurrent, 3);
         assert_eq!(config.transfer.retry_attempts, 2);
+    }
+
+    #[test]
+    fn keepalive_interval_maps_zero_to_disabled() {
+        let mut connection = ConnectionConfig::default();
+        assert_eq!(connection.keepalive, 20);
+        assert_eq!(
+            connection.keepalive_interval(),
+            Some(Duration::from_secs(20))
+        );
+        // 0 表示关闭保活。
+        connection.keepalive = 0;
+        assert_eq!(connection.keepalive_interval(), None);
+        connection.keepalive = 45;
+        assert_eq!(
+            connection.keepalive_interval(),
+            Some(Duration::from_secs(45))
+        );
     }
 
     #[test]

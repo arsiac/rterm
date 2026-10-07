@@ -141,14 +141,15 @@ pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Mess
     let id = id.to_string();
     // 开始建立连接：记录会话与标签，便于追踪连接生命周期与失败排查。
     log::info!("Establishing connection: session {id} (tab {tab_id})");
-    // 连接超时取自应用配置；0 表示不限制。
+    // 连接超时与保活间隔均取自应用配置；超时 0 表示不限制，保活 0 表示关闭。
     // 用 stream 而非 perform：握手可能在主机密钥弹窗处中途暂停，需要向 GUI
     // 发送中途消息后再等用户决定，perform 只有唯一最终输出无法胜任。
     let timeout = app.config.connection.timeout;
+    let keepalive = app.config.connection.keepalive_interval();
     Task::stream(iced::stream::channel(
         8,
         move |mut output: futures::channel::mpsc::Sender<Message>| async move {
-            connect_stream_task(tab_id, id, cfg, secrets, timeout, &mut output).await;
+            connect_stream_task(tab_id, id, cfg, secrets, timeout, keepalive, &mut output).await;
         },
     ))
 }
