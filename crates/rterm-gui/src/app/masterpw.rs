@@ -640,14 +640,10 @@ mod tests {
     use super::*;
     use crate::app::contexts;
     use futures::StreamExt;
-    use std::sync::Mutex;
 
-    /// 串行化涉及「真实文件系统（状态根）」的测试。
-    ///
-    /// 这些测试都会改写进程级全局状态根（`rterm_config::paths::set_test_root`）并读写
-    /// `sessions.toml`，若并行执行会相互覆盖会话文件，导致「重启」后读到的加密头与设置时
-    /// 的不一致。用一把模块级互斥锁保证同一时刻只有一个此类测试在跑。
-    static STATE_LOCK: Mutex<()> = Mutex::new(());
+    // 与 settings 等模块共用跨模块互斥锁（`crate::app::STATE_ROOT_LOCK`）：
+    // 状态根全局唯一，跨模块测试并行会相互覆盖对方重定向的临时目录。
+    use crate::app::STATE_ROOT_LOCK as STATE_LOCK;
 
     /// 在临时 tokio 运行时里把 `Task<Event>` 跑完并收集产出的事件。
     ///

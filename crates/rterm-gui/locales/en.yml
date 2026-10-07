@@ -59,6 +59,12 @@ settings:
   bell_hint: When enabled, the tab briefly flashes when the terminal receives a bell character (BEL), so programs can alert you without a sound.
   remember_window_size: Remember window size
   remember_window_size_hint: Restores the last non-maximized window size on startup. Closing a maximized window keeps the previous non-maximized size. Turning this off clears the saved size.
+  sub_known_hosts: Known hosts
+  known_hosts_desc: Hosts you approved on first connection are recorded here. Forgetting one makes the next connection ask for confirmation again.
+  known_hosts_empty: No trusted hosts yet.
+  known_hosts_forget: Forget
+  known_hosts_filter_placeholder: Filter by host or port…
+  known_hosts_no_match: No matching hosts.
   updates: Updates
   auto_check_updates: Automatically check for updates on startup
   check_now: Check now

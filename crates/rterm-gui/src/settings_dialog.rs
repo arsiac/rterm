@@ -14,13 +14,14 @@ use crate::app::App;
 use crate::app::masterpw;
 use crate::app::settings;
 use crate::app::updates;
-use crate::icons::{Icon, icon_button};
+use crate::icons::{ICON_SIZE, Icon, icon_button};
 use crate::message::Message;
 use crate::sftp_dialogs;
 use crate::theme;
+use iced::widget::text::Wrapping;
 use iced::widget::{
-    button, checkbox, column, combo_box, container, pick_list, row, scrollable, slider, text,
-    text_input,
+    button, checkbox, column, combo_box, container, mouse_area, pick_list, row, scrollable, slider,
+    text, text_input,
 };
 use iced::{Border, Element, Length, Theme};
 use rterm_config::{Language, LogLevel, MAX_CONCURRENT, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT};
@@ -509,8 +510,13 @@ fn about_pane() -> Element<'static, Message> {
     .into()
 }
 
+/// 已知主机列表内滚封顶高度（约 6 行）：长列表自身滚动，不把上方主密码区顶走；
+/// `Scrollable` 无 `max_height`，故由外层容器封顶，配合 `Length::Shrink` 少条目时自适应收缩。
+const KNOWN_HOSTS_LIST_MAX_H: f32 = 320.0;
+
 /// 「安全」分类：按当前模式（随机密钥 / 已设主密码）展示主密码状态与可用操作，
-/// 以及「本机记住主密码」自动解锁开关。
+/// 以及「本机记住主密码」自动解锁开关；下方列出已信任主机（known_hosts），
+/// 支持按 `host:port` 过滤、逐条「忘记」，列表内滚封顶。
 ///
 /// - 模式 0（未设主密码）：状态说明 + 「设置主密码」按钮（升级到模式 1，凭据重新加密）；
 ///   随机密钥必然在钥匙串，不显示「本机记住」开关。
@@ -579,7 +585,127 @@ fn security_pane(app: &App) -> Element<'_, Message> {
             ));
     }
 
+    // 已信任主机（known_hosts）：进入本分类时由模块重读，这里只渲染缓存。
+    col = col
+        .push(crate::ui::section_title(t!("settings.sub_known_hosts")))
+        .push(crate::ui::hint_text(t!("settings.known_hosts_desc")));
+    if let Some(err) = &app.settings.known_hosts_error {
+        col = col.push(text(err.clone()).size(12).color(crate::ui::DANGER));
+    } else if app.settings.known_hosts.is_empty() {
+        col = col.push(crate::ui::hint_text(t!("settings.known_hosts_empty")));
+    } else {
+        // 过滤为纯展示操作：匹配 `host:port` 显示串，不动磁盘（见模块 `filtered_known_hosts`）。
+        col = col.push(
+            text_input(
+                &t!("settings.known_hosts_filter_placeholder"),
+                &app.settings.known_hosts_filter,
+            )
+            .on_input(|text| Message::Settings(settings::Message::KnownHostFilterChanged(text)))
+            .size(14)
+            .padding([6u16, 8u16])
+            .width(Length::Fill)
+            .style(crate::ui::text_input_style),
+        );
+        let filtered = settings::filtered_known_hosts(
+            &app.settings.known_hosts,
+            &app.settings.known_hosts_filter,
+        );
+        if filtered.is_empty() {
+            col = col.push(crate::ui::hint_text(t!("settings.known_hosts_no_match")));
+        } else {
+            let mut rows = column![].spacing(12);
+            for entry in filtered {
+                rows = rows.push(known_host_row(app, entry));
+            }
+            // 内层滚动 + 外层封顶（见 `KNOWN_HOSTS_LIST_MAX_H`）；滚轮到内层边缘后外层接管。
+            col = col.push(
+                container(scrollable(rows).width(Length::Fill).height(Length::Shrink))
+                    .width(Length::Fill)
+                    .max_height(KNOWN_HOSTS_LIST_MAX_H),
+            );
+        }
+    }
+
     col.spacing(12).into()
+}
+
+/// known_hosts 单行：钥匙图标 + `host:port` / 指纹两行文本 + 删除图标按钮（悬停提示
+/// 「忘记」），排布对齐文件列表条目（悬浮高亮、圆角 6、`[6, 8]` 内边距）。
+///
+/// 「忘记」只是删除本机信任记录，下次连接会重新走一遍确认（误点至多多答一次），
+/// 故用普通图标样式而非危险红；红色留给「关闭主密码」这类真正不可逆的操作。
+fn known_host_row<'a>(
+    app: &'a App,
+    entry: &'a rterm_core::host_key::KnownHostEntry,
+) -> Element<'a, Message> {
+    let key = format!("{}:{}", entry.host, entry.port);
+    let hovered = app.settings.known_hosts_hovered.as_deref() == Some(key.as_str());
+
+    // 超长时单行截断，不撑宽面板；刻意不挂悬浮提示——host:port 几乎不会截断，
+    // 行悬浮高亮已足够反馈。
+    let name_clipped = container(text(key.clone()).size(14).wrapping(Wrapping::None))
+        .width(Length::Fill)
+        .clip(true);
+    let info = container(
+        column![
+            name_clipped,
+            text(entry.fingerprint.clone())
+                .size(12)
+                .wrapping(Wrapping::None)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(crate::theme::custom_palette(theme).text_secondary),
+                }),
+        ]
+        .spacing(2),
+    )
+    .width(Length::Fill)
+    .clip(true);
+
+    let content = row![
+        Icon::Key.svg(ICON_SIZE),
+        info,
+        icon_button(
+            Icon::Delete,
+            ICON_SIZE,
+            t!("settings.known_hosts_forget"),
+            Message::Settings(settings::Message::ForgetKnownHost(
+                entry.host.clone(),
+                entry.port,
+            )),
+            iced::widget::tooltip::Position::Bottom,
+        ),
+    ]
+    .spacing(8)
+    .align_y(iced::alignment::Vertical::Center);
+
+    // padding 与背景样式都放在 `mouse_area` 内部，使整行视觉区域都在悬浮命中范围内
+    // （与文件列表一致，避免边缘内边距形成“看得见但悬浮不亮”的死区）。
+    mouse_area(
+        container(content)
+            .padding([6u16, 8u16])
+            .width(Length::Fill)
+            .style(move |theme| {
+                // 面板底是 `surface_raised`，与 `list_row_bg` 的悬浮档 `hover` 同值
+                // （悬浮即“消失”）；悬浮改用再抬一档的 `hover_raised`，常态保持 `surface` 底。
+                let mut style = if hovered {
+                    crate::theme::plain_background(crate::theme::custom_palette(theme).hover_raised)
+                } else {
+                    crate::theme::list_row_bg(
+                        theme,
+                        false,
+                        false,
+                        rterm_core::ConnectionStatus::Disconnected,
+                    )
+                };
+                style.border.radius = 6.0.into();
+                style
+            }),
+    )
+    .on_enter(Message::Settings(settings::Message::KnownHostEnter(
+        key.clone(),
+    )))
+    .on_exit(Message::Settings(settings::Message::KnownHostExit))
+    .into()
 }
 
 /// “外观”分类：程序主题与界面字体。

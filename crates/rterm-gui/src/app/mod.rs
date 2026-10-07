@@ -18,6 +18,13 @@ pub(crate) mod transfer;
 pub(crate) mod updates;
 pub(crate) mod window;
 
+/// 串行化所有改写进程级全局状态根（`rterm_config::paths::set_test_root`）的测试。
+///
+/// 状态根全局唯一，跨模块并行的测试会相互覆盖对方重定向的临时目录（如 masterpw 的
+/// `sessions.toml` 与 settings 的 `known_hosts`），故各模块的此类测试共用这一把锁。
+#[cfg(test)]
+pub(crate) static STATE_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use crate::layout;
 use crate::message::Message;
 use crate::state::{CenterView, SftpView};

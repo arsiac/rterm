@@ -89,6 +89,10 @@ pub enum Icon {
     ArrowEnter,
     /// 打开状文件夹
     FolderOpen,
+    /// 钥匙（已信任主机密钥）
+    Key,
+    /// 垃圾桶（删除）
+    Delete,
 }
 
 impl Icon {
@@ -122,6 +126,8 @@ impl Icon {
             Icon::PanelLeftExpand => svg_bytes!("panel-left-expand-16-filled"),
             Icon::ArrowEnter => svg_bytes!("arrow-enter-16-filled"),
             Icon::FolderOpen => svg_bytes!("folder-open-16-filled"),
+            Icon::Key => svg_bytes!("key-16-filled"),
+            Icon::Delete => svg_bytes!("delete-16-filled"),
         }
     }
 

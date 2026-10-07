@@ -59,6 +59,12 @@ settings:
   bell_hint: 开启后终端收到响铃字符（BEL，即 \a）时对应标签短暂闪烁，作为程序提示音的可视替代。
   remember_window_size: 记住窗口大小
   remember_window_size_hint: 下次启动恢复上次非最大化的窗口大小；若关闭时处于最大化，则保留上一次非最大化尺寸。关闭此开关会同时清除已保存的尺寸。
+  sub_known_hosts: 已知主机
+  known_hosts_desc: 首次连接时确认过的主机密钥会记录在此；忘记后再次连接将重新询问是否信任。
+  known_hosts_empty: 暂无已信任的主机。
+  known_hosts_forget: 忘记
+  known_hosts_filter_placeholder: 按主机名或端口过滤…
+  known_hosts_no_match: 没有匹配的主机。
   updates: 更新
   auto_check_updates: 启动时自动检查更新
   check_now: 立即检查
