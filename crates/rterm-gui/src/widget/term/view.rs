@@ -93,13 +93,14 @@ impl<'a> TerminalView<'a> {
         }
     }
 
-    /// 分发鼠标事件为后端命令（鼠标报告、选区、滚轮滚动等）。
+    /// 分发鼠标事件为后端命令（鼠标报告、选区、滚轮滚动、中键粘贴等）。
     fn handle_mouse_event(
         &self,
         state: &mut TerminalViewState,
         layout_position: Point,
         cursor_position: Point,
         event: &iced::mouse::Event,
+        clipboard: &dyn iced_graphics::core::Clipboard,
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let terminal_content = self.term.backend.renderable_content();
@@ -145,6 +146,20 @@ impl<'a> TerminalView<'a> {
                     &self.term.bindings,
                     &mut commands,
                 );
+            }
+            iced_core::mouse::Event::ButtonPressed(iced_core::mouse::Button::Middle) => {
+                if !self.focused {
+                    return Vec::default();
+                }
+
+                Self::handle_middle_button_pressed(state, &terminal_mode, clipboard, &mut commands);
+            }
+            iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Middle) => {
+                if !self.focused {
+                    return Vec::default();
+                }
+
+                Self::handle_middle_button_released(state, &terminal_mode, &mut commands);
             }
             iced::mouse::Event::WheelScrolled { delta } => {
                 Self::handle_wheel_scrolled(state, *delta, &self.term.font.measure, &mut commands);
@@ -265,6 +280,43 @@ impl<'a> TerminalView<'a> {
         }
     }
 
+    /// 处理鼠标中键按下：鼠标模式下作为 button 2 上报给远端应用，否则粘贴
+    /// （PRIMARY 优先，Linux 惯例；见 `read_middle_paste`）。
+    fn handle_middle_button_pressed(
+        state: &TerminalViewState,
+        terminal_mode: &TermMode,
+        clipboard: &dyn iced_graphics::core::Clipboard,
+        commands: &mut Vec<Command>,
+    ) {
+        if terminal_mode.intersects(TermMode::MOUSE_MODE) {
+            commands.push(Command::MouseReport(
+                MouseButton::MiddleButton,
+                state.keyboard_modifiers,
+                state.mouse_position_on_grid,
+                true,
+            ));
+        } else if let Some(data) = read_middle_paste(clipboard) {
+            let bracketed = terminal_mode.contains(TermMode::BRACKETED_PASTE);
+            commands.push(Command::Write(paste_bytes(&data, bracketed)));
+        }
+    }
+
+    /// 处理鼠标中键释放：仅鼠标模式下把释放（button 2）上报给远端应用。
+    fn handle_middle_button_released(
+        state: &TerminalViewState,
+        terminal_mode: &TermMode,
+        commands: &mut Vec<Command>,
+    ) {
+        if terminal_mode.intersects(TermMode::MOUSE_MODE) {
+            commands.push(Command::MouseReport(
+                MouseButton::MiddleButton,
+                state.keyboard_modifiers,
+                state.mouse_position_on_grid,
+                false,
+            ));
+        }
+    }
+
     /// 处理滚轮滚动：按行或像素折算为历史回滚命令。
     fn handle_wheel_scrolled(
         state: &mut TerminalViewState,
@@ -371,24 +423,13 @@ impl<'a> TerminalView<'a> {
             }
             BindingAction::Paste => {
                 if let Some(data) = clipboard.read(ClipboardKind::Standard) {
-                    let mut input: Vec<u8> = data.bytes().collect();
-                    // 若远端应用已开启 bracketed paste 模式(发送过 \e[?2004h),
-                    // 用 \e[200~ … \e[201~ 包裹粘贴内容,使 vim 等程序能识别为
-                    // “粘贴”而非逐字符输入,从而避免自动缩进叠加。
-                    if self
+                    let bracketed = self
                         .term
                         .backend
                         .renderable_content()
                         .terminal_mode
-                        .contains(TermMode::BRACKETED_PASTE)
-                    {
-                        let mut wrapped = Vec::with_capacity(input.len() + 12);
-                        wrapped.extend_from_slice(b"\x1b[200~");
-                        wrapped.append(&mut input);
-                        wrapped.extend_from_slice(b"\x1b[201~");
-                        input = wrapped;
-                    }
-                    return Some(Command::Write(input));
+                        .contains(TermMode::BRACKETED_PASTE);
+                    return Some(Command::Write(paste_bytes(&data, bracketed)));
                 }
             }
             BindingAction::Copy => {
@@ -452,6 +493,30 @@ impl<'a> TerminalView<'a> {
             cell_size,
         )
     }
+}
+
+/// 按 bracketed-paste 模式包裹粘贴内容：远端应用发过 `\e[?2004h` 时用
+/// `\e[200~ … \e[201~` 包裹，使其识别为「粘贴」而非逐字符输入（避免 vim 等自动缩进叠加）。
+fn paste_bytes(data: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return data.as_bytes().to_vec();
+    }
+    let bytes = data.as_bytes();
+    let mut wrapped = Vec::with_capacity(bytes.len() + 12);
+    wrapped.extend_from_slice(b"\x1b[200~");
+    wrapped.extend_from_slice(bytes);
+    wrapped.extend_from_slice(b"\x1b[201~");
+    wrapped
+}
+
+/// 中键粘贴的数据源：PRIMARY 优先（Linux 惯例），空或不可用（Windows / macOS 无 PRIMARY）
+/// 时回退标准剪贴板。
+fn read_middle_paste(clipboard: &dyn iced_graphics::core::Clipboard) -> Option<String> {
+    clipboard
+        .read(ClipboardKind::Primary)
+        .filter(|data| !data.is_empty())
+        .or_else(|| clipboard.read(ClipboardKind::Standard))
+        .filter(|data| !data.is_empty())
 }
 
 /// 把 `Ctrl+字母/数字/符号` 转成对应的 ASCII 控制字符（如 `Ctrl+C` => `\x03`）。
@@ -932,12 +997,36 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     }
                     Vec::new()
                 } else {
-                    self.handle_mouse_event(
+                    let was_dragged = state.is_dragged;
+                    let commands = self.handle_mouse_event(
                         state,
                         layout.position(),
                         cursor.position().unwrap(),
                         mouse_event,
-                    )
+                        clipboard,
+                    );
+
+                    // 左键拖选结束即把选区写入 PRIMARY（Linux 惯例：中键粘贴刚选中的内容，
+                    // 供本应用及系统其它应用使用）。鼠标模式下的拖拽是上报而非选区，不写。
+                    if was_dragged
+                        && matches!(
+                            mouse_event,
+                            iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Left)
+                        )
+                        && !self
+                            .term
+                            .backend
+                            .renderable_content()
+                            .terminal_mode
+                            .intersects(TermMode::MOUSE_MODE)
+                    {
+                        let selection = self.term.backend.selectable_content();
+                        if !selection.is_empty() {
+                            clipboard.write(ClipboardKind::Primary, selection);
+                        }
+                    }
+
+                    commands
                 }
             }
             iced::Event::Keyboard(keyboard_event) => {
@@ -1522,6 +1611,199 @@ mod tests {
                     }
                 ),
             ));
+        }
+    }
+
+    mod middle_paste_tests {
+        use super::*;
+        use alacritty_terminal::index::{Column, Line};
+
+        /// 剪贴板桩：分别预置 PRIMARY / 标准剪贴板的内容；写入忽略（本组用例只验证读取与决策）。
+        #[derive(Default)]
+        struct StubClipboard {
+            primary: Option<String>,
+            standard: Option<String>,
+        }
+
+        impl iced_graphics::core::Clipboard for StubClipboard {
+            fn read(&self, kind: ClipboardKind) -> Option<String> {
+                match kind {
+                    ClipboardKind::Primary => self.primary.clone(),
+                    ClipboardKind::Standard => self.standard.clone(),
+                }
+            }
+
+            fn write(&mut self, _kind: ClipboardKind, _contents: String) {}
+        }
+
+        #[test]
+        fn paste_bytes_keeps_data_without_bracketed_paste() {
+            assert_eq!(paste_bytes("ls\n", false), b"ls\n".to_vec());
+        }
+
+        #[test]
+        fn paste_bytes_wraps_data_in_bracketed_paste() {
+            assert_eq!(
+                paste_bytes("ls\n", true),
+                b"\x1b[200~ls\n\x1b[201~".to_vec()
+            );
+        }
+
+        #[test]
+        fn middle_paste_prefers_primary_over_standard() {
+            let clipboard = StubClipboard {
+                primary: Some("primary".into()),
+                standard: Some("standard".into()),
+            };
+
+            assert_eq!(read_middle_paste(&clipboard).as_deref(), Some("primary"));
+        }
+
+        #[test]
+        fn middle_paste_falls_back_to_standard_when_primary_empty_or_unavailable() {
+            let empty_primary = StubClipboard {
+                primary: Some(String::new()),
+                standard: Some("standard".into()),
+            };
+            assert_eq!(
+                read_middle_paste(&empty_primary).as_deref(),
+                Some("standard")
+            );
+
+            let missing_primary = StubClipboard {
+                primary: None,
+                standard: Some("standard".into()),
+            };
+            assert_eq!(
+                read_middle_paste(&missing_primary).as_deref(),
+                Some("standard")
+            );
+        }
+
+        #[test]
+        fn middle_paste_yields_nothing_when_both_empty() {
+            let empty_both = StubClipboard {
+                primary: Some(String::new()),
+                standard: Some(String::new()),
+            };
+            assert!(read_middle_paste(&empty_both).is_none());
+
+            let missing_both = StubClipboard::default();
+            assert!(read_middle_paste(&missing_both).is_none());
+        }
+
+        #[test]
+        fn middle_press_reports_in_mouse_mode() {
+            let state = TerminalViewState::new();
+            let clipboard = StubClipboard {
+                primary: Some("ignored".into()),
+                standard: None,
+            };
+            let mut commands = Vec::new();
+            let _modifiers = Modifiers::empty();
+
+            TerminalView::handle_middle_button_pressed(
+                &state,
+                &TermMode::MOUSE_MODE,
+                &clipboard,
+                &mut commands,
+            );
+
+            assert_eq!(commands.len(), 1);
+            assert!(matches!(
+                commands[0],
+                Command::MouseReport(
+                    MouseButton::MiddleButton,
+                    _modifiers,
+                    TerminalGridPoint {
+                        line: Line(0),
+                        column: Column(0),
+                    },
+                    true,
+                )
+            ));
+        }
+
+        #[test]
+        fn middle_press_pastes_outside_mouse_mode() {
+            let state = TerminalViewState::new();
+            let clipboard = StubClipboard {
+                primary: Some("primary".into()),
+                standard: None,
+            };
+            let mut commands = Vec::new();
+
+            TerminalView::handle_middle_button_pressed(
+                &state,
+                &TermMode::empty(),
+                &clipboard,
+                &mut commands,
+            );
+
+            assert_eq!(commands.len(), 1);
+            assert!(matches!(
+                &commands[0],
+                Command::Write(bytes) if bytes == b"primary"
+            ));
+        }
+
+        #[test]
+        fn middle_press_wraps_paste_when_bracketed() {
+            let state = TerminalViewState::new();
+            let clipboard = StubClipboard {
+                primary: Some("primary".into()),
+                standard: None,
+            };
+            let mut commands = Vec::new();
+
+            TerminalView::handle_middle_button_pressed(
+                &state,
+                &TermMode::BRACKETED_PASTE,
+                &clipboard,
+                &mut commands,
+            );
+
+            assert_eq!(commands.len(), 1);
+            assert!(matches!(
+                &commands[0],
+                Command::Write(bytes) if bytes == b"\x1b[200~primary\x1b[201~"
+            ));
+        }
+
+        #[test]
+        fn middle_press_with_empty_clipboard_writes_nothing() {
+            let state = TerminalViewState::new();
+            let mut commands = Vec::new();
+
+            TerminalView::handle_middle_button_pressed(
+                &state,
+                &TermMode::empty(),
+                &StubClipboard::default(),
+                &mut commands,
+            );
+
+            assert!(commands.is_empty());
+        }
+
+        #[test]
+        fn middle_release_reports_only_in_mouse_mode() {
+            let state = TerminalViewState::new();
+
+            let mut commands = Vec::new();
+            TerminalView::handle_middle_button_released(
+                &state,
+                &TermMode::MOUSE_MODE,
+                &mut commands,
+            );
+            assert_eq!(commands.len(), 1);
+            assert!(matches!(
+                commands[0],
+                Command::MouseReport(MouseButton::MiddleButton, _, _, false)
+            ));
+
+            let mut commands = Vec::new();
+            TerminalView::handle_middle_button_released(&state, &TermMode::empty(), &mut commands);
+            assert!(commands.is_empty());
         }
     }
 
