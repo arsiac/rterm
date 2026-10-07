@@ -57,6 +57,10 @@ pub struct State {
     pub(crate) tab_bar_scroll: Id,
     /// 下一个响铃提示序号（自增；到期消息按序号匹配，作废旧计时器）。
     pub(crate) next_bell_seq: u64,
+    /// 正在拖拽的标签 id（按下标签即置位，左键释放 / 窗口失焦时清除）。
+    dragging_tab: Option<u64>,
+    /// 光标当前悬停的标签 id（驱动标签悬停底色；拖拽中同时驱动实时重排）。
+    hovered_tab: Option<u64>,
 }
 
 /// 标签模块内部消息：UI 意图与后台任务结果，由父层经 `Message::Tabs` 路由进本模块。
@@ -72,6 +76,14 @@ pub enum Message {
     WindowClosing,
     /// 切换标签列表 dropdown 显隐。
     ToggleTabList,
+    /// 标签被按下：立即激活该标签并进入拖拽态。
+    TabPressed(u64),
+    /// 光标进入某标签：更新悬停；若正在拖拽且目标不是被拖标签，则实时重排。
+    TabHoverEnter(u64),
+    /// 光标离开某标签：仅当悬停者正是它时清空（避免重排后错序的 exit 误清他人）。
+    TabHoverExit(u64),
+    /// 左键释放（全局订阅兜底）：结束拖拽态。
+    TabDragEnd,
     /// 终端桥接就绪：挂载终端组件（父层执行）。
     TerminalOpened(u64, BridgeResult),
     /// 终端桥接断开：置标签为 Error。
@@ -137,6 +149,8 @@ impl State {
             show_tab_list: false,
             tab_bar_scroll: Id::unique(),
             next_bell_seq: 0,
+            dragging_tab: None,
+            hovered_tab: None,
         }
     }
 
@@ -153,6 +167,16 @@ impl State {
     /// 标签列表 dropdown 是否展开（只读）。
     pub(crate) fn show_list(&self) -> bool {
         self.show_tab_list
+    }
+
+    /// 是否正处于标签拖拽中（订阅按此条件挂载拖拽结束监听）。
+    pub(crate) fn dragging(&self) -> bool {
+        self.dragging_tab.is_some()
+    }
+
+    /// 光标当前悬停的标签 id（渲染层据此驱动悬停底色）。
+    pub(crate) fn hovered(&self) -> Option<u64> {
+        self.hovered_tab
     }
 
     /// 标签栏滚动部件 id（克隆，供 scroll_to 操作）。
@@ -231,6 +255,29 @@ impl State {
             Message::WindowClosing => self.window_closing(),
             Message::ToggleTabList => {
                 self.show_tab_list = !self.show_tab_list;
+                Task::none()
+            }
+            Message::TabPressed(tab_id) => {
+                self.dragging_tab = Some(tab_id);
+                self.select_tab(tab_id, ctx, sftp)
+            }
+            Message::TabHoverEnter(tab_id) => {
+                self.hovered_tab = Some(tab_id);
+                if let Some(dragged) = self.dragging_tab
+                    && dragged != tab_id
+                {
+                    move_tab(&mut self.tabs, dragged, tab_id);
+                }
+                Task::none()
+            }
+            Message::TabHoverExit(tab_id) => {
+                if self.hovered_tab == Some(tab_id) {
+                    self.hovered_tab = None;
+                }
+                Task::none()
+            }
+            Message::TabDragEnd => {
+                self.dragging_tab = None;
                 Task::none()
             }
             Message::TerminalOpened(tab_id, result) => self.terminal_opened(tab_id, result, ctx),
@@ -446,6 +493,8 @@ impl State {
             ])
         } else {
             // 窗口失去焦点：终端必然不再接收键盘输入，先保存当前态再置否。
+            // 拖拽态一并清除：窗外释放不保证送达（拖拽结束订阅收不到），否则拖拽会一直挂着。
+            self.dragging_tab = None;
             Task::batch([
                 Task::done(Event::SetWindowFocusSaved(Some(ctx.terminal_focused))),
                 Task::done(Event::SetTerminalFocused(false)),
@@ -478,6 +527,26 @@ impl State {
             tab.bell_flash = None;
         }
     }
+}
+
+/// 把 `dragged` 标签移到 `target` 标签的**当前索引**处（占据其位置，其余相对顺序不变）。
+///
+/// 先取目标原索引再 remove / insert，使被拖标签落在目标标签所在的一侧（向左拖到目标左侧、
+/// 向右拖到目标右侧），连续扫过即逐格归位。任一 id 不存在、或二者相同时不动，
+/// 返回是否发生移动。重排只动 `Vec` 顺序：`active_tab`、闪铃、SFTP 映射全部按 id 引用。
+fn move_tab(tabs: &mut Vec<TerminalTab>, dragged: u64, target: u64) -> bool {
+    let (Some(from), Some(to)) = (
+        tabs.iter().position(|t| t.id == dragged),
+        tabs.iter().position(|t| t.id == target),
+    ) else {
+        return false;
+    };
+    if from == to {
+        return false;
+    }
+    let tab = tabs.remove(from);
+    tabs.insert(to, tab);
+    true
 }
 
 #[cfg(test)]
@@ -529,5 +598,138 @@ mod tests {
             state.list()[0].bell_flash.is_some(),
             "其它标签的闪烁不受影响"
         );
+    }
+
+    mod drag_tests {
+        use super::*;
+
+        /// 建 n 个标签，返回按创建序的 id 列表。
+        fn tabs_with(state: &mut State, n: usize) -> Vec<u64> {
+            (1..=n)
+                .map(|i| state.add(format!("s{i}"), format!("t{i}")))
+                .collect()
+        }
+
+        /// 当前标签顺序（id 列表）。
+        fn order(state: &State) -> Vec<u64> {
+            state.list().iter().map(|t| t.id).collect()
+        }
+
+        #[test]
+        fn move_tab_right_places_dragged_at_target_index() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+
+            assert!(move_tab(&mut state.tabs, ids[0], ids[2]));
+            assert_eq!(order(&state), vec![ids[1], ids[2], ids[0], ids[3]]);
+        }
+
+        #[test]
+        fn move_tab_left_places_dragged_before_target() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+
+            assert!(move_tab(&mut state.tabs, ids[3], ids[1]));
+            assert_eq!(order(&state), vec![ids[0], ids[3], ids[1], ids[2]]);
+        }
+
+        #[test]
+        fn move_tab_covers_adjacent_and_boundary_positions() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+
+            // 相邻右移：A 越过 B。
+            assert!(move_tab(&mut state.tabs, ids[0], ids[1]));
+            assert_eq!(order(&state), vec![ids[1], ids[0], ids[2], ids[3]]);
+
+            // 从中间拖到末位。
+            assert!(move_tab(&mut state.tabs, ids[0], ids[3]));
+            assert_eq!(order(&state), vec![ids[1], ids[2], ids[3], ids[0]]);
+
+            // 从末位拖回首位。
+            assert!(move_tab(&mut state.tabs, ids[0], ids[1]));
+            assert_eq!(order(&state), ids);
+        }
+
+        #[test]
+        fn move_tab_ignores_unknown_or_same_ids() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 2);
+
+            assert!(!move_tab(&mut state.tabs, 999, ids[0]));
+            assert!(!move_tab(&mut state.tabs, ids[0], 999));
+            assert!(!move_tab(&mut state.tabs, ids[0], ids[0]));
+            assert_eq!(order(&state), ids);
+        }
+
+        #[test]
+        fn tab_pressed_activates_and_starts_dragging() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 2);
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::TabPressed(ids[0]), &ctx(), &sftp);
+
+            assert_eq!(state.active(), Some(ids[0]));
+            assert!(state.dragging());
+        }
+
+        #[test]
+        fn hover_without_drag_only_tracks_hovered() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 3);
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::TabHoverEnter(ids[2]), &ctx(), &sftp);
+
+            assert_eq!(state.hovered(), Some(ids[2]));
+            assert_eq!(order(&state), ids);
+        }
+
+        #[test]
+        fn hover_while_dragging_reorders_in_realtime() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+            let sftp = sftp::State::default();
+            let _ = state.update(Message::TabPressed(ids[0]), &ctx(), &sftp);
+
+            // 进入被拖标签自身：不重排。
+            let _ = state.update(Message::TabHoverEnter(ids[0]), &ctx(), &sftp);
+            assert_eq!(order(&state), ids);
+
+            // 进入 C：A 实时归位到 C 的索引处。
+            let _ = state.update(Message::TabHoverEnter(ids[2]), &ctx(), &sftp);
+            assert_eq!(order(&state), vec![ids[1], ids[2], ids[0], ids[3]]);
+        }
+
+        #[test]
+        fn hover_exit_does_not_clear_another_tab() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 2);
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::TabHoverEnter(ids[0]), &ctx(), &sftp);
+            // 重排后错序到达的 exit（悬停者已是别人）不得清空当前悬停。
+            let _ = state.update(Message::TabHoverExit(ids[1]), &ctx(), &sftp);
+            assert_eq!(state.hovered(), Some(ids[0]));
+
+            let _ = state.update(Message::TabHoverExit(ids[0]), &ctx(), &sftp);
+            assert_eq!(state.hovered(), None);
+        }
+
+        #[test]
+        fn drag_end_and_window_unfocus_clear_dragging() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 2);
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::TabPressed(ids[0]), &ctx(), &sftp);
+            let _ = state.update(Message::TabDragEnd, &ctx(), &sftp);
+            assert!(!state.dragging());
+
+            let _ = state.update(Message::TabPressed(ids[0]), &ctx(), &sftp);
+            let _ = state.update(Message::WindowFocused(false), &ctx(), &sftp);
+            assert!(!state.dragging());
+        }
     }
 }

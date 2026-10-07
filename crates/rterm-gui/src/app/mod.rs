@@ -190,6 +190,17 @@ impl App {
             _ => None,
         });
 
+        // 监听鼠标左键释放：拖拽标签期间挂载，兜底结束拖拽态。释放点可能落在终端区 /
+        // 其它面板甚至窗外，标签 mouse_area 的释放回调只在自身范围内触发，故须全局监听。
+        let drag_end = self.tabs.dragging().then(|| {
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::Tabs(tabs::Message::TabDragEnd)),
+                _ => None,
+            })
+        });
+
         // toast 通知的自动消失心跳：每 0.5s 触发一次，由 update 调用 `dismiss_expired` 移除到期项。
         let toast_tick = iced::time::every(Duration::from_millis(500)).map(|_| Message::ToastTick);
 
@@ -199,6 +210,7 @@ impl App {
                 .chain(std::iter::once(resize))
                 .chain(std::iter::once(keys))
                 .chain(std::iter::once(right_press))
+                .chain(drag_end)
                 .chain(std::iter::once(toast_tick))
                 .chain(std::iter::once(self.sftp.subscription().map(Message::Sftp)))
                 .chain(std::iter::once(

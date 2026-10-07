@@ -15,7 +15,7 @@ use crate::state::TerminalTab;
 use crate::widget::term::{Event as TerminalEvent, TerminalView};
 use iced::alignment::Horizontal;
 use iced::widget::tooltip::Position;
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
 use iced::{Border, Color, Element, Length, Padding};
 use rterm_core::ConnectionStatus;
 
@@ -122,6 +122,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
             let status = tab.status;
             // 响铃视觉提示：本标签正在闪烁（见 `app::tabs`），标签样式短暂切为强调实底。
             let flash = tab.bell_flash.is_some();
+            // 悬停态由模块跟踪（mouse_area 无内建视觉状态）：拖拽重排后错序到达的
+            // 进入 / 离开事件也由模块按 id 判定，整行样式不会跟随错误目标。
+            let hovered = app.tabs.hovered() == Some(tab.id);
             // 关闭按钮常态透明，仅悬停 / 按下时显示红色背景（见 `theme::tab_close_style`，
             // 它忽略主题参数）；未着色是刻意让图标在活动 / 非活动标签上都保持低调。
             let close = button(Icon::Dismiss.svg(12.0))
@@ -134,21 +137,41 @@ pub fn view(app: &App) -> Element<'_, Message> {
                         crate::theme::TOOLTIP_DELAY_MS,
                     ))
                     .style(crate::theme::tooltip_style);
-            // 整个标签（状态点 + 标题 + 关闭）做成单一按钮，悬浮反馈覆盖全部区域；
-            // 关闭为嵌套按钮，会捕获自身区域的点击，不会误触发切换。
+            // 整个标签（状态点 + 标题 + 关闭）由 mouse_area 包住：按下即激活并进入拖拽
+            // （button 做不到按下即拖拽；其内部按压态与拖拽重排的状态机相斥）。
+            // 关闭为嵌套按钮，按下即捕获，不会误触发标签的按下 / 拖拽。
             let focused = app.terminal_focused;
-            button(
-                row![
-                    status_dot(status),
-                    text(truncate_label(&label, TAB_TEXT_MAX_WIDTH)).size(12),
-                    close
-                ]
-                .spacing(4)
-                .align_y(iced::alignment::Vertical::Center),
+            let tab_container_style = move |theme: &iced::Theme| {
+                let style = tab_row_style(theme, active, focused, flash, hovered);
+                container::Style {
+                    background: style.background,
+                    border: style.border,
+                    ..container::Style::default()
+                }
+            };
+            // container 不像 button 那样把 text_color 透传给子文本，标题颜色须显式给。
+            let tab_text_style = move |theme: &iced::Theme| iced::widget::text::Style {
+                color: Some(tab_row_style(theme, active, focused, flash, hovered).text_color),
+            };
+            mouse_area(
+                container(
+                    row![
+                        status_dot(status),
+                        text(truncate_label(&label, TAB_TEXT_MAX_WIDTH))
+                            .size(12)
+                            .style(tab_text_style),
+                        close
+                    ]
+                    .spacing(4)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .padding([4, 6])
+                .style(tab_container_style),
             )
-            .on_press(Message::Tabs(tabs::Message::SelectTab(tab.id)))
-            .style(move |theme, st| crate::theme::tab_style(theme, st, active, focused, flash))
-            .padding([4, 6])
+            .interaction(iced::mouse::Interaction::Pointer)
+            .on_press(Message::Tabs(tabs::Message::TabPressed(tab.id)))
+            .on_enter(Message::Tabs(tabs::Message::TabHoverEnter(tab.id)))
+            .on_exit(Message::Tabs(tabs::Message::TabHoverExit(tab.id)))
             .into()
         })
         .collect::<Vec<Element<'_, Message>>>())
@@ -332,6 +355,25 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(2)
     .into()
+}
+
+/// 标签行当前样式：底 / 边框 / 文本色统一取自 [`crate::theme::tab_style`]。
+///
+/// mouse_area 包住的标签没有内建按压态，悬停档由模块的悬停跟踪补上（未活动标签的
+/// `Hovered` 与 `Pressed` 在 `tab_style` 里同档，一个悬停位即可）。
+fn tab_row_style(
+    theme: &iced::Theme,
+    active: bool,
+    focused: bool,
+    flash: bool,
+    hovered: bool,
+) -> iced::widget::button::Style {
+    let status = if hovered {
+        iced::widget::button::Status::Hovered
+    } else {
+        iced::widget::button::Status::Active
+    };
+    crate::theme::tab_style(theme, status, active, focused, flash)
 }
 
 /// 标签连接状态圆点：8px 圆，颜色编码 已连接 / 连接中 / 失败 / 未连接，
