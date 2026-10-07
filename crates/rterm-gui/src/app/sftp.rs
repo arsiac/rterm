@@ -126,8 +126,11 @@ pub enum Message {
     SftpDownload(String, std::path::PathBuf),
     /// SFTP 写操作完成（归属标签 id + 结果）。
     SftpActionDone(u64, Result<(), String>),
-    /// 请求打开“删除确认”对话框（携带名称）。
-    SftpDeleteConfirm(String),
+    /// 请求打开“删除确认”对话框（携带名称与是否为目录）。
+    ///
+    /// 条目类型由菜单快照随消息携带，而非在装配时重新查表：菜单项的渲染与动作出自
+    /// 同一份快照，重新查表会在列表刷新后与用户看到的那一项不一致。
+    SftpDeleteConfirm(String, bool),
     /// 请求打开“属性”对话框（携带名称，展示文件详细信息）。
     SftpShowProperties(String),
     /// 复制远端条目的完整路径到系统剪贴板（携带完整路径）。
@@ -508,12 +511,9 @@ impl State {
                     SftpDialog::Properties { .. } => Task::none(),
                 }
             }
-            Message::SftpDeleteConfirm(name) => {
+            Message::SftpDeleteConfirm(name, is_dir) => {
                 if let Some(tab) = self.per_tab.get_mut(&active_tab) {
-                    tab.dialog = Some(crate::state::SftpDialog::Delete {
-                        name,
-                        is_dir: false,
-                    });
+                    tab.dialog = Some(crate::state::SftpDialog::Delete { name, is_dir });
                 }
                 Task::none()
             }
@@ -672,4 +672,35 @@ fn list_task(tab_id: u64, client: Arc<SftpClient>, path: String) -> Task<Event> 
             ))),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 删除确认弹窗必须采用菜单快照携带的条目类型：装配处曾把它硬编码为 `false`，
+    /// 使目录删除永远发到 `remove_file` 上、必然失败。
+    #[test]
+    fn delete_dialog_carries_the_entry_kind_from_the_menu() {
+        let mut state = State::default();
+        state.ensure(7);
+
+        let _ = state.update(Message::SftpDeleteConfirm("docs".to_string(), true), 7);
+        match state.tab(7).and_then(|tab| tab.dialog.as_ref()) {
+            Some(SftpDialog::Delete { name, is_dir }) => {
+                assert_eq!(name, "docs");
+                assert!(*is_dir, "目录必须以 is_dir = true 装配");
+            }
+            other => panic!("期望删除确认弹窗，实际 {other:?}"),
+        }
+
+        let _ = state.update(
+            Message::SftpDeleteConfirm("notes.txt".to_string(), false),
+            7,
+        );
+        assert!(matches!(
+            state.tab(7).and_then(|tab| tab.dialog.as_ref()),
+            Some(SftpDialog::Delete { is_dir: false, .. })
+        ));
+    }
 }

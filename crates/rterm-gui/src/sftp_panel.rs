@@ -390,7 +390,7 @@ fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Mes
         ))
         .push(crate::ui::menu_entry(
             t!("sftp.delete"),
-            crate::app::sftp::Message::SftpDeleteConfirm(name.clone()),
+            crate::app::sftp::Message::SftpDeleteConfirm(name.clone(), is_dir),
         ))
         .push(crate::ui::menu_separator())
         .push(crate::ui::menu_entry(

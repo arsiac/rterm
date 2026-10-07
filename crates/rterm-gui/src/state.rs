@@ -76,7 +76,7 @@ pub enum SftpDialog {
     Delete {
         /// 待删除条目名称。
         name: String,
-        /// 是否为目录（决定递归删除与图标）。
+        /// 是否为目录。
         is_dir: bool,
     },
     /// 下载覆盖确认（携带远端名称、本地目标完整路径与对应传输任务 id）。

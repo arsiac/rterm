@@ -301,6 +301,7 @@ errors:
   sftp_create_dir: "Failed to create directory: %{detail}"
   sftp_delete_file: "Failed to delete file: %{detail}"
   sftp_delete_dir: "Failed to delete directory: %{detail}"
+  sftp_dir_not_empty: "The directory is not empty (recursive deletion is not supported yet)"
   sftp_rename: "Failed to rename: %{detail}"
   sftp_create_remote_file: "Failed to create remote file: %{detail}"
   sftp_write_remote: "Failed to write remote file: %{detail}"

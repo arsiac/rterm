@@ -301,6 +301,7 @@ errors:
   sftp_create_dir: "创建目录失败: %{detail}"
   sftp_delete_file: "删除文件失败: %{detail}"
   sftp_delete_dir: "删除目录失败: %{detail}"
+  sftp_dir_not_empty: 目录非空（暂不支持递归删除）
   sftp_rename: "重命名失败: %{detail}"
   sftp_create_remote_file: "创建远端文件失败: %{detail}"
   sftp_write_remote: "写入远端失败: %{detail}"

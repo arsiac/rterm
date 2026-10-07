@@ -91,6 +91,8 @@ pub enum CoreErrorKind {
     DeleteFile,
     /// 删除目录失败。
     DeleteDir,
+    /// 目录非空，无法删除。
+    DirNotEmpty,
     /// 重命名失败。
     Rename,
     /// 创建远端文件失败。

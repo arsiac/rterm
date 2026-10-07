@@ -61,6 +61,7 @@ pub fn localize_error(err: &CoreError) -> String {
                 CoreErrorKind::CreateDir => t!("errors.sftp_create_dir", detail => detail),
                 CoreErrorKind::DeleteFile => t!("errors.sftp_delete_file", detail => detail),
                 CoreErrorKind::DeleteDir => t!("errors.sftp_delete_dir", detail => detail),
+                CoreErrorKind::DirNotEmpty => t!("errors.sftp_dir_not_empty"),
                 CoreErrorKind::Rename => t!("errors.sftp_rename", detail => detail),
                 CoreErrorKind::CreateRemoteFile => {
                     t!("errors.sftp_create_remote_file", detail => detail)

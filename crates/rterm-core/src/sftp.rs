@@ -140,9 +140,17 @@ impl SftpClient {
             .map_err(|e| CoreError::sftp(CoreErrorKind::DeleteFile, e))
     }
 
-    /// 仅能删除空目录。
+    /// 删除目录（仅能删除空目录）。
     pub async fn remove_dir(&self, path: &str) -> Result<(), CoreError> {
         debug!("Removing directory: {path}");
+        match self.session.read_dir(path).await {
+            Ok(mut dir) => {
+                if dir.next().is_some() {
+                    return Err(CoreError::sftp_msg(CoreErrorKind::DirNotEmpty));
+                }
+            }
+            Err(e) => debug!("Could not probe {path} before removing it: {e}"),
+        }
         self.session
             .remove_dir(path)
             .await
