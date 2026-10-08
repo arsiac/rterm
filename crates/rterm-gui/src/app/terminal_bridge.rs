@@ -98,7 +98,6 @@ pub(crate) fn open_terminal_bridge(
 }
 
 /// 桥接就绪后用返回的本地 OUT/IN 双管道端创建终端组件，并自动聚焦。
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_terminal_widget(
     app: &mut App,
     tab_id: u64,
