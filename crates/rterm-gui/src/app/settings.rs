@@ -4,7 +4,8 @@ use iced::Task;
 use iced::widget::combo_box;
 use log::error;
 use rterm_config::{
-    AppConfig, Language, LogLevel, MAX_CONCURRENT, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT,
+    AppConfig, Language, LogLevel, MAX_CONCURRENT, MAX_KEEPALIVE_MAX, MAX_RETRY_ATTEMPTS,
+    MIN_CONCURRENT,
 };
 use rterm_core::host_key::KnownHostEntry;
 
@@ -115,6 +116,10 @@ pub enum Message {
     ConnectTimeout(String),
     /// 修改“SSH 保活间隔”设置（携带输入框最新文本，解析失败则忽略；0 表示关闭）。
     Keepalive(String),
+    /// 修改“SSH 保活判死次数”设置（携带滑块最新值，即时生效但不落盘）。
+    KeepaliveMax(f32),
+    /// 提交“SSH 保活判死次数”设置（滑块释放时触发，仅落盘）。
+    KeepaliveMaxPersist,
     /// 修改“历史缓冲行数”设置（携带输入框最新文本，解析失败则忽略）。
     Scrollback(String),
     /// 修改“最大并发传输数”设置（携带滑块最新值，即时生效但不落盘）。
@@ -172,6 +177,10 @@ pub enum Event {
     ConnectTimeout(u64),
     /// 写回“SSH 保活间隔”配置（携带解析后的秒数，0 = 关闭；仅对新建连接生效）。
     Keepalive(u64),
+    /// 写回“SSH 保活判死次数”配置（携带裁剪后的值；0 = 发保活但不因无应答判死；仅对新建连接生效）。
+    KeepaliveMax(u64),
+    /// 把当前“SSH 保活判死次数”落盘（滑块释放后调用）。
+    KeepaliveMaxPersist,
     /// 写回“历史缓冲行数”配置（携带解析后的行数）。
     Scrollback(usize),
     /// 写回“最大并发传输数”配置（携带裁剪后的值），并立即重新调度传输队列。
@@ -258,6 +267,13 @@ impl State {
                 Ok(keepalive) => Task::done(Event::Keepalive(keepalive)),
                 Err(_) => Task::none(),
             },
+            // 保活判死次数是 0..=3 的小整数枚举：滑块已消除非法输入，此处只做范围兜底。
+            // 刻意不重映射 0：russh 把 0 定义为「发保活但永不判死」，原样透传才是用户看到的语义。
+            Message::KeepaliveMax(value) => {
+                let n = (value.round() as i64).clamp(0, MAX_KEEPALIVE_MAX as i64);
+                Task::done(Event::KeepaliveMax(n as u64))
+            }
+            Message::KeepaliveMaxPersist => Task::done(Event::KeepaliveMaxPersist),
             // 仅可解析为非负整数时才上行写回；0 表示不保留历史。
             Message::Scrollback(text) => match text.parse::<usize>() {
                 Ok(scrollback) => Task::done(Event::Scrollback(scrollback)),

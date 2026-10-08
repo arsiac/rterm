@@ -6,7 +6,7 @@ use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
 use crate::t;
 use futures::SinkExt;
-use rterm_config::SessionConfig;
+use rterm_config::{ConnectOptions, SessionConfig};
 use rterm_core::{CoreError, FileEntry, SessionSecrets, SftpClient, SshConnection};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -20,26 +20,31 @@ use tokio::time::sleep;
 ///
 /// 握手遇到未知 / 变更主机密钥时，把弹窗消息转发给 GUI 并原地等待用户决定，
 /// 最终结果（无论成败）经 `SessionConnected` 回流。超时分段计量：弹窗等待
-/// 不计入，用户答复后重新计满；`timeout` 为 0 表示不限制。`keepalive` 为
-/// 保活间隔（`None` = 关闭），取自应用配置。
+/// 不计入，用户答复后重新计满。`opts` 是本次建连的配置快照（超时、保活间隔与保活判死
+/// 次数），三者只在建连时生效，改动配置需重连才见效。
 pub(crate) async fn connect_stream_task(
     tab_id: u64,
     id: String,
     config: SessionConfig,
     secrets: SessionSecrets,
-    timeout: u64,
-    keepalive: Option<Duration>,
+    opts: ConnectOptions,
     output: &mut futures::channel::mpsc::Sender<Message>,
 ) {
     let (prompt_tx, mut prompt_rx) = mpsc::channel(1);
     // 握手跑在独立任务：超时 / 放弃时可 abort 彻底清理——russh 的 Handle::drop
     // 不会中止会话任务，仅靠丢弃句柄会泄漏悬挂的握手。
     let mut connect = tokio::spawn(async move {
-        SshConnection::connect(&config, &secrets, keepalive, prompt_tx)
-            .await
-            .map(Arc::new)
+        SshConnection::connect(
+            &config,
+            &secrets,
+            opts.keepalive_interval,
+            opts.keepalive_max,
+            prompt_tx,
+        )
+        .await
+        .map(Arc::new)
     });
-    let mut deadline = connect_deadline(timeout);
+    let mut deadline = connect_deadline(opts.timeout);
     loop {
         tokio::select! {
             res = &mut connect => {
@@ -71,7 +76,7 @@ pub(crate) async fn connect_stream_task(
                 // sleep 记的是绝对时刻，故等待多久都会让 deadline 过期，下面必须重置。
                 let _ = reply.decided().await;
                 // 用户已答复，重新计满剩余流程（认证）的超时。
-                deadline = connect_deadline(timeout);
+                deadline = connect_deadline(opts.timeout);
                 // 注：`prompt_tx` 随连接任务终止而关闭后，`recv()` 会立刻反复返回 `None`，
                 // 随后的 if-let 不做事、直接回到 select——此时靠 `connect` 分支收尾。
             },

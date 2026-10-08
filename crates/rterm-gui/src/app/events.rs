@@ -206,6 +206,17 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::KeepaliveMax(v) => {
+            // 只写内存、不落盘（同并发数：拖动期间每个 step 都会触发本分支，落盘交给滑块释放时）。
+            // 也不必通知任何已打开的连接：保活参数在建连时已固化进 russh `Config`，
+            // 改动只作用于后续新建的连接。
+            app.config.connection.keepalive_max = v;
+            Task::none()
+        }
+        settings::Event::KeepaliveMaxPersist => {
+            contexts::save_config(app);
+            Task::none()
+        }
         settings::Event::Scrollback(v) => {
             // 仅对新建终端标签生效（alacritty `scrolling_history` 为构造期参数，无法热替换）。
             app.config.terminal.scrollback = v;

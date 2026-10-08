@@ -21,6 +21,8 @@ settings:
   connect_timeout: 连接超时（秒，0 表示不限制）
   keepalive: SSH 保活间隔（秒，0 表示关闭）
   keepalive_hint: 连接空闲时周期性发送保活包，避免被 NAT / 防火墙静默断开；仅对新建连接生效。
+  keepalive_max: 保活无应答判死次数（0 表示不判死）
+  keepalive_max_hint: 连续这么多次保活包无人应答就判定连接已断开，实际约需（该值 + 1）× 保活间隔才能发现断线。0 表示照常发送保活包但永不据此判死；调大更容忍链路抖动，调小更快发现断线。仅在保活间隔大于 0 时有意义，且只对新建连接生效。
   max_concurrent: 最大并发传输数
   max_concurrent_hint: 即时生效：调大后立刻启动更多排队任务；调小不会打断进行中的传输，待其完成后收敛。
   retry_attempts: 失败自动重试次数

@@ -24,7 +24,9 @@ use iced::widget::{
     text, text_input,
 };
 use iced::{Border, Element, Length, Theme};
-use rterm_config::{Language, LogLevel, MAX_CONCURRENT, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT};
+use rterm_config::{
+    Language, LogLevel, MAX_CONCURRENT, MAX_KEEPALIVE_MAX, MAX_RETRY_ATTEMPTS, MIN_CONCURRENT,
+};
 use std::fmt;
 
 /// 语言下拉框项的本地化展示名：随当前 UI 语言变化，避免英文界面仍显示「跟随系统」。
@@ -277,7 +279,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
 }
 
 /// “连接与传输”分类
-/// 连接超时、SSH 保活间隔、最大并发传输数、失败自动重试次数。
+/// 连接超时、SSH 保活间隔与判死次数、最大并发传输数、失败自动重试次数。
 fn connection_pane(app: &App) -> Element<'_, Message> {
     let timeout_input = text_input("30", &app.config.connection.timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
@@ -285,6 +287,15 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
     let keepalive_input = text_input("20", &app.config.connection.keepalive.to_string())
         .on_input(|s| Message::Settings(settings::Message::Keepalive(s)))
         .style(crate::ui::text_input_style);
+    // 保活判死次数是 0..=3 的小整数枚举（0 = 发保活但永不因无应答判死），与并发数同理用滑块。
+    let keepalive_max_slider = slider(
+        0.0_f32..=MAX_KEEPALIVE_MAX as f32,
+        app.config.connection.keepalive_max as f32,
+        |v| Message::Settings(settings::Message::KeepaliveMax(v)),
+    )
+    .step(1.0_f32)
+    .on_release(Message::Settings(settings::Message::KeepaliveMaxPersist));
+    let keepalive_max_value = text(app.config.connection.keepalive_max.to_string()).size(13);
     // 并发数是 1..=8 的小整数枚举：滑块从交互上直接消除非法输入，故不用文本框
     // （「连接超时」用文本框是因为它取值范围开放）。
     // 拖动（`on_input`）只写内存并触发重调度，松开（`on_release`）才落盘一次。
@@ -313,6 +324,11 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
         crate::ui::field_label(t!("settings.keepalive")),
         keepalive_input,
         crate::ui::hint_text(t!("settings.keepalive_hint")),
+        crate::ui::field_label(t!("settings.keepalive_max")),
+        row![keepalive_max_slider, keepalive_max_value]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+        crate::ui::hint_text(t!("settings.keepalive_max_hint")),
         crate::ui::section_title(t!("settings.sub_transfer")),
         crate::ui::field_label(t!("settings.max_concurrent")),
         row![concurrency_slider, concurrency_value]

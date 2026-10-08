@@ -199,10 +199,15 @@ pub struct SshConnection {
     handle: Arc<AsyncMutex<Handle<ClientHandler>>>,
 }
 
-/// 组装 russh 客户端配置：保活间隔由宿主传入（`None` = 关闭），其余取 russh 默认。
-fn client_config(keepalive: Option<Duration>) -> Config {
+/// 组装 russh 客户端配置：保活间隔与判死次数由宿主传入，其余取 russh 默认。
+///
+/// `keepalive_max` 语义照 russh：`0` = **照常发保活包但永不因无应答判死**；`n > 0` =
+/// 无应答计数超过 `n` 时断开，即约 `(n + 1)` 个保活周期后才判定连接已死。
+/// 上界由配置层裁剪（`rterm_config::MAX_KEEPALIVE_MAX`），此处不再兜底。
+fn client_config(keepalive: Option<Duration>, keepalive_max: usize) -> Config {
     Config {
         keepalive_interval: keepalive,
+        keepalive_max,
         ..Default::default()
     }
 }
@@ -212,15 +217,19 @@ impl SshConnection {
     ///
     /// 认证方式依据 [`AuthMethod`]：密码 / 公钥文件 / SSH agent。
     /// 主机密钥未经 known_hosts 确认时经 `prompt_tx` 请求 GUI 弹窗，等待用户决定。
-    /// `keepalive` 为保活间隔（`None` = 关闭），由宿主从应用配置解析后传入。
+    /// `keepalive` 为保活间隔（`None` = 关闭），`keepalive_max` 为无应答保活包达到多少时判死
+    /// （`0` = 不判死），两者均由宿主从应用配置解析后传入。**只在建连时生效**，
+    /// 改动配置不影响已打开的连接，需重连才生效。
     pub async fn connect(
         config: &SessionConfig,
         secrets: &SessionSecrets,
         keepalive: Option<Duration>,
+        keepalive_max: u64,
         prompt_tx: mpsc::Sender<(HostKeyPrompt, HostKeyReply)>,
     ) -> Result<Self, CoreError> {
         debug!("正在连接 {}:{}", config.host, config.port);
-        let ssh_config = client_config(keepalive);
+        // `keepalive_max` 已由配置层裁剪到上界，此处仅做 russh 所需的窄化。
+        let ssh_config = client_config(keepalive, keepalive_max as usize);
 
         let handler = ClientHandler {
             host: config.host.clone(),
@@ -371,12 +380,17 @@ mod tests {
     use super::*;
 
     /// 宿主传入的保活选择必须原样进入 russh 客户端配置（防止退回硬编码）。
+    ///
+    /// `keepalive_max = 0` 尤其要钉住：russh 把 0 解释为「照常发保活、但永不因无应答判死」，
+    /// 不能当作「未设置」而被隐式替换成某个正数。
     #[test]
     fn client_config_carries_the_host_keepalive_choice() {
-        assert_eq!(
-            client_config(Some(Duration::from_secs(45))).keepalive_interval,
-            Some(Duration::from_secs(45))
-        );
-        assert_eq!(client_config(None).keepalive_interval, None);
+        let cfg = client_config(Some(Duration::from_secs(45)), 2);
+        assert_eq!(cfg.keepalive_interval, Some(Duration::from_secs(45)));
+        assert_eq!(cfg.keepalive_max, 2);
+
+        let off = client_config(None, 0);
+        assert_eq!(off.keepalive_interval, None);
+        assert_eq!(off.keepalive_max, 0, "0 应原样透传");
     }
 }

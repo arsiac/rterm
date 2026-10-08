@@ -146,7 +146,28 @@ pub struct ConnectionConfig {
     /// 静默断开。
     #[serde(default = "default_keepalive")]
     pub keepalive: u64,
+    /// 连续多少个保活包无应答即判定连接已死，取值 `0..=`[`MAX_KEEPALIVE_MAX`]。
+    ///
+    /// 这是「半开连接」（拔网线、NAT 掉表、对端崩溃）唯一可发现的途径：russh 在每个保活
+    /// 周期触发时把无应答计数加一，**计数超过本值**才断开，故实际判死耗时约为
+    /// `(本值 + 1) × 保活间隔`。`0` 是 russh 的专用语义——**照常发送保活包，但永不因无应答
+    /// 判死**（只保留「续命、防 NAT 掉表」的作用），既不是「关闭」也不是「立即断开」；
+    /// 注意与 [`ConnectionConfig::keepalive`] 的 0（完全不发保活包）不同。
+    ///
+    /// 只在 [`ConnectionConfig::keepalive`] 大于 0 时有意义：间隔为 0 时根本不发保活包。
+    /// 加载后由 [`ConnectionConfig::normalize`] 裁剪上界（`0` 合法，不上调）。
+    ///
+    /// 取值是「误断开」与「发现断线快慢」的权衡：链路频繁停顿（移动网络、VPN）宜调大，
+    /// 内网宜调小以更快暴露死连接。仅对**新建连接**生效（保活参数在建连时组装）。
+    #[serde(default = "default_keepalive_max")]
+    pub keepalive_max: u64,
 }
+
+/// [`ConnectionConfig::keepalive_max`] 的上界：3。
+///
+/// 上界存在是兜住「手工把配置改成 999」：那会让半开连接长期不被发现，用户对着一个
+/// 冻结的终端持续敲键、静默丢失。3 已足以容忍连续几次丢包，再高对「发现断线」无收益。
+pub const MAX_KEEPALIVE_MAX: u64 = 3;
 
 impl ConnectionConfig {
     /// 保活间隔的 russh 语义：0 表示关闭（`None`），其余为对应秒数。
@@ -156,14 +177,45 @@ impl ConnectionConfig {
             secs => Some(Duration::from_secs(secs)),
         }
     }
+
+    /// 组装本次建连的参数快照，见 [`ConnectOptions`]。
+    pub fn connect_options(&self) -> ConnectOptions {
+        ConnectOptions {
+            timeout: self.timeout,
+            keepalive_interval: self.keepalive_interval(),
+            keepalive_max: self.keepalive_max,
+        }
+    }
+
+    /// 裁剪到合法区间：上界收到 [`MAX_KEEPALIVE_MAX`]，`0` 原样保留（russh 的「永不判死」语义）。
+    fn normalize(&mut self) {
+        self.keepalive_max = self.keepalive_max.min(MAX_KEEPALIVE_MAX);
+    }
+}
+
+/// 一次建连所使用的连接参数快照，由 [`ConnectionConfig::connect_options`] 派生。
+///
+/// 只在建连那一刻读取，故改动配置不影响已打开的连接，需重连才生效。刻意不实现
+/// `Serialize` / `Deserialize`：落盘一律走 [`ConnectionConfig`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectOptions {
+    /// 握手超时（秒），`0` 表示不限制。由 GUI 分段计量（主机密钥弹窗的等待时间不计入），
+    /// 不进入 russh 客户端配置。
+    pub timeout: u64,
+    /// 保活间隔；`None` 表示关闭保活（配置里 [`ConnectionConfig::keepalive`] 写 0）。
+    pub keepalive_interval: Option<Duration>,
+    /// 连续多少个无应答保活包即判定连接已死；`0` 表示照常发保活但**永不**据此判死。
+    /// 上界已在 [`ConnectionConfig::normalize`] 收口，此处不重复裁剪，避免掩盖真实配置值。
+    pub keepalive_max: u64,
 }
 
 impl Default for ConnectionConfig {
-    /// 超时默认 30 秒，保活间隔默认 20 秒。
+    /// 超时默认 30 秒，保活间隔默认 20 秒，保活判死次数默认 2（约 3 个周期判死）。
     fn default() -> Self {
         Self {
             timeout: default_timeout(),
             keepalive: default_keepalive(),
+            keepalive_max: default_keepalive_max(),
         }
     }
 }
@@ -444,6 +496,14 @@ fn default_keepalive() -> u64 {
     20
 }
 
+/// SSH 保活判死次数默认值：2（比 russh 默认的 3 更快发现半开连接）。
+///
+/// 默认 20s 间隔下判死约为 `3 × 20s = 60s`；取 russh 默认 3 则要等约 80s。
+/// 断线检测出来之前，终端是冻结的、用户键入会被丢弃，故宁可早一个周期判定。
+fn default_keepalive_max() -> u64 {
+    2
+}
+
 /// 全局最大并发传输数默认值：3。
 fn default_max_concurrent() -> usize {
     3
@@ -601,8 +661,9 @@ impl From<LegacyAppConfig> for AppConfig {
             path: PathBuf::new(),
             connection: ConnectionConfig {
                 timeout: l.connect_timeout,
-                // 旧版没有保活间隔字段：取默认（20 秒）。
+                // 旧版没有保活字段：两项都取默认（间隔 20 秒、判死次数 2）。
                 keepalive: default_keepalive(),
+                keepalive_max: default_keepalive_max(),
             },
             terminal: TerminalConfig {
                 font: l.terminal_font,
@@ -753,6 +814,8 @@ impl AppConfig {
         // 用户手改配置可能写出越界并发数（0 / 999）：解析后立刻裁剪，
         // 使内存值与磁盘值在本次落盘后一致（迁移分支紧随其后，会一并写入裁剪结果）。
         config.transfer.normalize();
+        // 保活判死次数同样兜住手改越界（如 999）：裁剪到上界，`0` 保留其「永不因保活判死」语义。
+        config.connection.normalize();
         if migrated {
             // 旧扁平格式：先备份旧文件，再落盘新分组格式。备份 / 写入失败均不致命——
             // 旧文件仍在磁盘上，下次启动会再次尝试迁移；本次以内存中的转换结果继续运行。
@@ -889,6 +952,8 @@ window_height = 720.0
         assert_eq!(config.connection.timeout, 45);
         // 旧格式无保活间隔字段：迁移后取默认 20 秒。
         assert_eq!(config.connection.keepalive, 20);
+        // 旧格式无保活判死次数字段：迁移后取默认 2。
+        assert_eq!(config.connection.keepalive_max, 2);
         assert_eq!(config.terminal.font, "JetBrains Mono");
         assert_eq!(config.terminal.font_size, 18.0);
         assert_eq!(config.terminal.theme, "One Dark");
@@ -930,6 +995,8 @@ theme = "Light"
         assert!(!migrated, "新分组格式不应触发迁移");
         assert_eq!(config.connection.timeout, 12);
         assert_eq!(config.connection.keepalive, 5);
+        // `[connection]` 段内未给出 `keepalive_max`：同段字段也各自回退默认。
+        assert_eq!(config.connection.keepalive_max, 2);
         assert_eq!(config.terminal.font, "Fira Code");
         assert_eq!(config.terminal.font_size, 20.0);
         assert_eq!(config.appearance.theme, "Light");
@@ -945,6 +1012,7 @@ theme = "Light"
         assert!(!migrated);
         assert_eq!(config.connection.timeout, 30);
         assert_eq!(config.connection.keepalive, 20);
+        assert_eq!(config.connection.keepalive_max, 2);
         assert_eq!(config.terminal.font_size, 14.0);
         assert_eq!(config.terminal.theme, "Default");
         assert_eq!(config.appearance.theme, "Dark");
@@ -969,6 +1037,23 @@ theme = "Light"
             connection.keepalive_interval(),
             Some(Duration::from_secs(45))
         );
+    }
+
+    /// 建连快照只做「配置 → 参数」的搬运：两个 0 各有各的语义，都不允许被重映射。
+    #[test]
+    fn connect_options_keeps_both_zero_semantics() {
+        let mut connection = ConnectionConfig::default();
+        let opts = connection.connect_options();
+        assert_eq!(opts.timeout, 30);
+        assert_eq!(opts.keepalive_interval, Some(Duration::from_secs(20)));
+        assert_eq!(opts.keepalive_max, 2);
+
+        // 间隔 0 = 不发保活（`None`）；判死次数 0 = 照常发保活但不据此判死（原样 0）。
+        connection.keepalive = 0;
+        connection.keepalive_max = 0;
+        let opts = connection.connect_options();
+        assert_eq!(opts.keepalive_interval, None);
+        assert_eq!(opts.keepalive_max, 0);
     }
 
     #[test]
@@ -1027,6 +1112,39 @@ theme = "Light"
             let config = AppConfig::new().expect("加载越界配置应成功");
             assert_eq!(
                 config.transfer.retry_attempts, expected,
+                "写入 {written} 应被裁剪为 {expected}"
+            );
+        }
+        crate::paths::set_test_root(None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn out_of_range_keepalive_max_is_clamped_but_zero_is_kept() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("rterm_cfg_ka_max_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("config")).expect("应能创建临时配置目录");
+        let cfg_path = dir.join("config").join("config.toml");
+
+        crate::paths::set_test_root(Some(dir.clone()));
+        // 999 会让半开连接长期不被发现（用户在冻结的终端上持续敲键），必须收口到上界；
+        // 0 是 russh 的合法专用语义（发保活但永不因无应答判死），不得上调。
+        for (written, expected) in [
+            (0u64, 0),
+            (2, 2),
+            (4, MAX_KEEPALIVE_MAX),
+            (999, MAX_KEEPALIVE_MAX),
+        ] {
+            fs::write(
+                &cfg_path,
+                format!("[connection]\nkeepalive_max = {written}\n"),
+            )
+            .expect("应能写入保活配置");
+            let config = AppConfig::new().expect("加载保活配置应成功");
+            assert_eq!(
+                config.connection.keepalive_max, expected,
                 "写入 {written} 应被裁剪为 {expected}"
             );
         }
