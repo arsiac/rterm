@@ -306,19 +306,8 @@ async fn pump<W, R>(
                 match n {
                     Ok(0) | Err(_) => {
                         // 通道 EOF 与传输死亡在 russh 里形态一致（都表现为读返回
-                        // `Ok(0)`），唯一的区分依据是会话任务是否已收尾：仍是活的
-                        // 说明只是这条 shell 通道结束了（远端 shell 退出）。
-                        //
-                        // 停止请求优先（同 `local_side_reason`）：关标签会先置位请求、
-                        // 随后连接对象才被丢弃，若不先判这个，一次正常关标签会被记成
-                        // 「传输死亡」。
-                        reason = if state.is_stop_requested() {
-                            DisconnectReason::LocalStop
-                        } else if conn.is_closed().await {
-                            DisconnectReason::TransportDied
-                        } else {
-                            DisconnectReason::ChannelEof
-                        };
+                        // `Ok(0)`），归因见 `channel_gone_reason`。
+                        reason = channel_gone_reason(&state, conn).await;
                         break;
                     }
                     Ok(n) => {
@@ -327,7 +316,8 @@ async fn pump<W, R>(
                             scan_osc7_cwd(&mut osc_carry, &channel_buf[..n], cwd);
                         }
                         if out_stream.write_all(&channel_buf[..n]).await.is_err() {
-                            reason = DisconnectReason::Unknown;
+                            // OUT 端写失败 ⇒ GUI 读端已关（关标签 / 关窗口 / 部件未挂成）。
+                            reason = local_side_reason(&state, conn).await;
                             break;
                         }
                         total_remote += n;
@@ -345,7 +335,9 @@ async fn pump<W, R>(
                     Ok(n) => {
                         let mut writer = channel.make_writer();
                         if writer.write_all(&socket_buf[..n]).await.is_err() {
-                            reason = local_side_reason(&state, conn).await;
+                            // 写失败即通道侧已亡（russh 只在会话收尾后才让写失败），
+                            // 归因同读 EOF。
+                            reason = channel_gone_reason(&state, conn).await;
                             break;
                         }
                         total_local += n;
@@ -373,7 +365,22 @@ async fn wait_stop(state: &BridgeState, rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// 本地一侧的退出归因（本地管道关端 / 写通道失败）：停止请求优先——
+/// 通道一侧的退出归因（读 EOF / 写失败）：停止请求优先——关标签会先置位请求、
+/// 随后连接对象才被丢弃，若不先判这个，一次正常关标签会被记成「传输死亡」；
+/// 写失败只会在会话收尾后发生（russh `ChannelTx` 仅在会话 Msg 通道关闭后才报错，
+/// 而该通道的关闭先于 `is_closed` 可见）；其余情况传输仍活，只是这条 shell 通道
+/// 结束了（远端 shell 退出）。
+async fn channel_gone_reason(state: &BridgeState, conn: &SshConnection) -> DisconnectReason {
+    if state.is_stop_requested() {
+        DisconnectReason::LocalStop
+    } else if conn.is_closed().await {
+        DisconnectReason::TransportDied
+    } else {
+        DisconnectReason::ChannelEof
+    }
+}
+
+/// 本地管道一侧的退出归因（IN 端读到 EOF / OUT 端写失败）：停止请求优先——
 /// 关标签会先置位请求、随后连接对象才被丢弃，若不先判这个，一次正常关标签
 /// 会被记成「传输死亡」；其余情况按传输层状态判定（本地端先没、传输已死
 /// 属于同一场故障）。无法归因时返回 [`DisconnectReason::Unknown`]。
