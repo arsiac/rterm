@@ -204,6 +204,23 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             if is_user_interaction {
                 app.terminal_focused = true;
             }
+            // 断开态闸门：桥接已死的终端会把键入静默丢进无人消费的后端通道，
+            // 故在转发之前拦下——回车转成重连请求，其余按键让横幅闪烁提示。
+            if let BackendCommand::Write(bytes) = &backend_cmd {
+                let gated = app
+                    .tabs
+                    .list()
+                    .iter()
+                    .find(|t| t.id == id)
+                    .and_then(|tab| disconnected_write_action(tab.status, id, bytes));
+                if let Some(msg) = gated {
+                    let ctx = contexts::tabs_ctx(app);
+                    return app
+                        .tabs
+                        .update(msg, &ctx, &app.sftp)
+                        .map(Message::TabsEvent);
+                }
+            }
             let action = if let Some(tab) = app.tabs.tab_mut(id) {
                 // 本地终端尺寸变化时，转发到远端（window-change）。
                 if let BackendCommand::Resize(Some(layout), Some(font)) = &backend_cmd {
@@ -238,6 +255,69 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
                 _ => {}
             }
             Task::none()
+        }
+    }
+}
+
+/// 断开态下键入的处置决定：返回 `Some` 时该次写入被拦下并转成标签消息。
+///
+/// 仅 `Error` / `Disconnected`（桥接已死）拦截；`Connected` / `Connecting` 的写入原样放行。
+/// 其中整批字节均为 `\r` / `\n`（即 Enter，含小键盘）判为回车，转成重连请求；
+/// 其余按键（含带换行的多行粘贴、空写入）只让横幅闪烁提示，不触发重连。
+fn disconnected_write_action(
+    status: ConnectionStatus,
+    tab_id: u64,
+    bytes: &[u8],
+) -> Option<tabs::Message> {
+    if !matches!(
+        status,
+        ConnectionStatus::Error | ConnectionStatus::Disconnected
+    ) {
+        return None;
+    }
+    let enter = !bytes.is_empty() && bytes.iter().all(|b| matches!(b, b'\r' | b'\n'));
+    Some(if enter {
+        tabs::Message::ReconnectRequested(tab_id)
+    } else {
+        tabs::Message::DisconnectedKeyPressed(tab_id)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 连接态的写入原样放行（含回车，绝不误触发重连）。
+    #[test]
+    fn writes_pass_through_while_connected() {
+        assert!(disconnected_write_action(ConnectionStatus::Connected, 1, b"\r").is_none());
+        assert!(disconnected_write_action(ConnectionStatus::Connecting, 1, b"a").is_none());
+    }
+
+    /// 断开态下纯回车（`\r` / `\n` 的组合）转成重连请求。
+    #[test]
+    fn enter_only_writes_request_reconnect_while_disconnected() {
+        for status in [ConnectionStatus::Error, ConnectionStatus::Disconnected] {
+            assert!(matches!(
+                disconnected_write_action(status, 7, b"\r"),
+                Some(tabs::Message::ReconnectRequested(7))
+            ));
+            assert!(matches!(
+                disconnected_write_action(status, 7, b"\r\n"),
+                Some(tabs::Message::ReconnectRequested(7))
+            ));
+        }
+    }
+
+    /// 断开态下其余按键只触发横幅闪烁，不触发重连。
+    #[test]
+    fn other_writes_only_flash_the_banner_while_disconnected() {
+        let samples: [&[u8]; 5] = [b"a", b"ls\r", b"\x1b[A", b"line1\nline2", b""];
+        for bytes in samples {
+            assert!(matches!(
+                disconnected_write_action(ConnectionStatus::Error, 7, bytes),
+                Some(tabs::Message::DisconnectedKeyPressed(7))
+            ));
         }
     }
 }

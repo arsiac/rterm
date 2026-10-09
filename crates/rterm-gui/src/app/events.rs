@@ -83,6 +83,12 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
         tabs::Event::OpenTerminalBridge(tab_id, conn) => {
             terminal_bridge::open_terminal_bridge(app, tab_id, conn)
         }
+        // 断开态下的重连请求（回车 / 横幅按钮）：走既有的「新标签连接」路径
+        // （开新标签 + 建连），原（已断开的）标签连同横幅保留在标签栏里。
+        tabs::Event::ReconnectTab(_tab_id, session_id) => {
+            let tab_id = connect::open_tab(app, &session_id);
+            connect::connect_session(app, tab_id, &session_id)
+        }
         // 桥接就绪后挂载终端组件（widget 生命周期属父层）。
         tabs::Event::SpawnTerminal(tab_id, conout, conin, disc, resize) => {
             terminal_bridge::spawn_terminal_widget(app, tab_id, conout, conin, disc, resize)

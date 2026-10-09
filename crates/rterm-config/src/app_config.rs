@@ -1068,7 +1068,7 @@ theme = "Light"
 
     #[test]
     fn missing_retry_attempts_falls_back_to_default() {
-        // 只写并发数的旧配置（阶段一产物）必须能继续加载，重试次数取默认 2。
+        // 只写并发数的旧配置必须能继续加载，重试次数取默认 2。
         let (config, _) =
             parse_config("[transfer]\nmax_concurrent = 6\n").expect("解析传输段应成功");
         assert_eq!(

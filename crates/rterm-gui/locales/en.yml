@@ -240,6 +240,9 @@ terminal:
   connecting_status: Connecting
   error_status: Connection failed
   disconnected: Disconnected
+  disconnected_banner: Disconnected · Press Enter to reconnect
+  press_enter_reconnect: Press Enter to reconnect
+  reconnect_button: Reconnect
   ready: Terminal ready
 activity:
   settings: Settings

@@ -28,6 +28,11 @@ type BridgeResult = Result<
 /// 响铃视觉提示（标签闪烁）的持续时长。
 const BELL_FLASH_DURATION: Duration = Duration::from_millis(150);
 
+/// 断开横幅闪烁提示（「按 Enter 重新连接」）的持续时长。
+///
+/// 比响铃闪烁长得多：响铃是「有事发生」的一瞥，而这条提示要让人读出下一步该按什么键。
+const BANNER_FLASH_DURATION: Duration = Duration::from_millis(1000);
+
 /// 标签模块只读上下文：来自父层 `App` 的共享导航态（供联动写回判定）。
 /// 每次 `update` 前重建，确保读到最新父状态；仅持有 owned 数据，不借用 `App`，
 /// 以免与 `self.tabs` 的可变借用冲突。SFTP 视图的查询经 `update` 的 `sftp` 参数单独传入。
@@ -56,6 +61,8 @@ pub struct State {
     pub(crate) tab_bar_scroll: Id,
     /// 下一个响铃提示序号（自增；到期消息按序号匹配，作废旧计时器）。
     pub(crate) next_bell_seq: u64,
+    /// 下一个断开横幅闪烁序号（自增；到期消息按序号匹配，作废旧计时器）。
+    pub(crate) next_banner_seq: u64,
     /// 正在拖拽的标签 id（按下标签即置位，左键释放 / 窗口失焦时清除）。
     dragging_tab: Option<u64>,
     /// 光标当前悬停的标签 id（驱动标签悬停底色；拖拽中同时驱动实时重排）。
@@ -99,6 +106,13 @@ pub enum Message {
     Bell(u64),
     /// 响铃闪烁到期（携带标签 id 与本次提示序号）：序号匹配才清除，旧计时器不得熄灭新闪烁。
     BellFlashExpired(u64, u64),
+    /// 断开态下按键被拦下（非回车，父层过滤后发来）：闪烁横幅提示「按 Enter 重新连接」，
+    /// 让按键有可见回执而不是被静默丢弃。
+    DisconnectedKeyPressed(u64),
+    /// 横幅闪烁到期（携带标签 id 与本次提示序号）：序号匹配才清除，旧计时器不得熄灭新闪烁。
+    BannerFlashExpired(u64, u64),
+    /// 断开态下按下回车 / 点击横幅「重新连接」按钮：请求重连该标签。
+    ReconnectRequested(u64),
 }
 
 /// 标签模块上行事件：需父层配合的副作用。模块绝不写 `App`。
@@ -134,6 +148,8 @@ pub enum Event {
     TerminalReady(u64),
     /// 切标签后滚动标签栏到目标位置。
     ScrollTo(f32),
+    /// 断开态下的重连请求（回车 / 横幅按钮）：父层据此发起重连连接。
+    ReconnectTab(u64, String),
     /// 自回路：把模块内部消息派发回自身（SwitchTab 复用 SelectTab）。
     Emit(Box<Message>),
 }
@@ -148,6 +164,7 @@ impl State {
             show_tab_list: false,
             tab_bar_scroll: Id::unique(),
             next_bell_seq: 0,
+            next_banner_seq: 0,
             dragging_tab: None,
             hovered_tab: None,
         }
@@ -230,6 +247,7 @@ impl State {
             cwd: std::sync::Arc::new(Mutex::new(None)),
             title,
             bell_flash: None,
+            banner_flash: None,
         });
         self.active_tab = Some(tab_id);
         tab_id
@@ -295,6 +313,15 @@ impl State {
                 self.clear_bell_flash(tab_id, seq);
                 Task::none()
             }
+            Message::DisconnectedKeyPressed(tab_id) => self.banner_flash(tab_id),
+            Message::BannerFlashExpired(tab_id, seq) => {
+                self.clear_banner_flash(tab_id, seq);
+                Task::none()
+            }
+            Message::ReconnectRequested(tab_id) => match self.reconnect_target(tab_id) {
+                Some(e) => Task::done(e),
+                None => Task::none(),
+            },
         }
     }
 
@@ -531,6 +558,56 @@ impl State {
             tab.bell_flash = None;
         }
     }
+
+    /// 置本标签断开横幅的闪烁并安排到期清除（自回路模式同 [`Self::bell_flash`]）。
+    ///
+    /// 断开态下的键入在父层被拦下（写进已死桥接只会静默丢弃），非回车的按键经此让横幅
+    /// 闪出「按 Enter 重新连接」——闪烁本身就是「按键收到了、但写不进去」的可见回执。
+    fn banner_flash(&mut self, tab_id: u64) -> Task<Event> {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) else {
+            return Task::none();
+        };
+        let seq = self.next_banner_seq;
+        self.next_banner_seq += 1;
+        tab.banner_flash = Some(seq);
+        Task::perform(
+            // `sleep` 必须写在 `async` 块内部（同 `bell_flash` 的说明）。
+            async move { tokio::time::sleep(BANNER_FLASH_DURATION).await },
+            move |()| Event::Emit(Box::new(Message::BannerFlashExpired(tab_id, seq))),
+        )
+    }
+
+    /// 清除横幅闪烁；仅当序号仍为本次提示时生效，旧计时器的到期消息到此作废。
+    fn clear_banner_flash(&mut self, tab_id: u64, seq: u64) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
+            && tab.banner_flash == Some(seq)
+        {
+            tab.banner_flash = None;
+        }
+    }
+
+    /// 校验并解析重连请求的目标（回车 / 横幅按钮）：仅断开中的标签接受。
+    ///
+    /// 排除 `Connected`（迟到触发不得再开连接）与 `Connecting`（该标签自己的重连已在途）；
+    /// 另排除「该会话已有标签在连接中」——连按回车时首条请求已开出新连接（落在新标签上），
+    /// 在途的重复请求到此时查到在途连接即被丢弃，不会并发起第二条。
+    fn reconnect_target(&self, tab_id: u64) -> Option<Event> {
+        let tab = self.tabs.iter().find(|t| t.id == tab_id)?;
+        if !matches!(
+            tab.status,
+            ConnectionStatus::Error | ConnectionStatus::Disconnected
+        ) {
+            return None;
+        }
+        let pending = self
+            .tabs
+            .iter()
+            .any(|t| t.status == ConnectionStatus::Connecting && t.session_id == tab.session_id);
+        if pending {
+            return None;
+        }
+        Some(Event::ReconnectTab(tab_id, tab.session_id.clone()))
+    }
 }
 
 /// 把 `dragged` 标签移到 `target` 标签的**当前索引**处（占据其位置，其余相对顺序不变）。
@@ -602,6 +679,79 @@ mod tests {
             state.list()[0].bell_flash.is_some(),
             "其它标签的闪烁不受影响"
         );
+    }
+
+    /// 断开横幅闪烁：同响铃序号语义，旧到期消息不得提前熄灭新一轮闪烁。
+    #[test]
+    fn only_the_latest_banner_expiry_clears_the_flash() {
+        let mut state = State::new();
+        let tab = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::DisconnectedKeyPressed(tab), &ctx(), &sftp);
+        let first = state.list()[0].banner_flash.expect("按键后横幅应闪烁");
+        let _ = state.update(Message::DisconnectedKeyPressed(tab), &ctx(), &sftp);
+        let _ = state.update(Message::BannerFlashExpired(tab, first), &ctx(), &sftp);
+        assert!(
+            state.list()[0].banner_flash.is_some(),
+            "旧到期消息不得清掉新闪烁"
+        );
+
+        let latest = state.list()[0].banner_flash.expect("第二轮闪烁仍在");
+        let _ = state.update(Message::BannerFlashExpired(tab, latest), &ctx(), &sftp);
+        assert!(state.list()[0].banner_flash.is_none(), "本次到期应清除闪烁");
+    }
+
+    /// 迟到 / 落空的横幅消息（标签已关闭）不得 panic。
+    #[test]
+    fn banner_messages_for_an_unknown_tab_are_no_ops() {
+        let mut state = State::new();
+        // 存在一个健康标签：落空的消息不得影响它。
+        let _ = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::DisconnectedKeyPressed(404), &ctx(), &sftp);
+        let _ = state.update(Message::BannerFlashExpired(404, 0), &ctx(), &sftp);
+        let _ = state.update(Message::ReconnectRequested(404), &ctx(), &sftp);
+        assert!(state.list()[0].banner_flash.is_none());
+    }
+
+    /// 重连请求只接受断开中的标签；该会话已有在途连接（连按回车的重复请求）同样拒绝。
+    #[test]
+    fn reconnect_target_accepts_only_disconnected_tabs_without_pending_connect() {
+        let mut state = State::new();
+        let a = state.add("s1".to_string(), "s1".to_string());
+        let set_status = |state: &mut State, id: u64, status| {
+            state.tabs.iter_mut().find(|t| t.id == id).unwrap().status = status;
+        };
+
+        // 断开态（Error / Disconnected）且无在途连接：接受。
+        set_status(&mut state, a, ConnectionStatus::Error);
+        assert!(matches!(
+            state.reconnect_target(a),
+            Some(Event::ReconnectTab(id, s)) if id == a && s == "s1"
+        ));
+        set_status(&mut state, a, ConnectionStatus::Disconnected);
+        assert!(state.reconnect_target(a).is_some());
+
+        // 标签已恢复 / 自己的重连在途：拒绝。
+        set_status(&mut state, a, ConnectionStatus::Connected);
+        assert!(state.reconnect_target(a).is_none());
+        set_status(&mut state, a, ConnectionStatus::Connecting);
+        assert!(state.reconnect_target(a).is_none());
+
+        // 同会话另一标签在连接中（连按回车开出的新连接在途）：重复请求被丢弃。
+        set_status(&mut state, a, ConnectionStatus::Error);
+        let b = state.add("s1".to_string(), "s1".to_string());
+        assert!(state.reconnect_target(a).is_none());
+
+        // 在途连接结束后重新接受。
+        set_status(&mut state, b, ConnectionStatus::Connected);
+        assert!(state.reconnect_target(a).is_some());
+
+        // 其它会话的在途连接不影响本会话的重连。
+        let _c = state.add("s2".to_string(), "s2".to_string());
+        assert!(state.reconnect_target(a).is_some());
     }
 
     mod drag_tests {

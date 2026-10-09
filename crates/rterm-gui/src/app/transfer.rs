@@ -2467,7 +2467,7 @@ mod tests {
         );
     }
 
-    /// 阶段二的清理会真的删本地文件，故用专属临时目录独立验证（不碰 `paths` 沙箱）。
+    /// 清理会真的删本地文件，故用专属临时目录独立验证（不碰 `paths` 沙箱）。
     fn cleanup_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rterm_transfer_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

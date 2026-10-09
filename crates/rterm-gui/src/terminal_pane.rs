@@ -341,20 +341,103 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .into(),
     };
 
-    column![
-        // 标签栏自身不设背景（透明，透出 pane 底色）；区分度靠活动标签的 `tab_style` 高亮，
-        // 而非标签栏底色。
-        container(tab_bar),
+    let banner: Option<Element<'_, Message>> = app
+        .tabs
+        .list()
+        .iter()
+        .find(|t| Some(t.id) == app.tabs.active())
+        .filter(|t| t.terminal.is_some() && t.disconnect_reason.is_some())
+        .map(disconnected_banner);
+
+    // 标签栏自身不设背景（透明，透出 pane 底色）；区分度靠活动标签的 `tab_style` 高亮，
+    // 而非标签栏底色。断开横幅插在标签栏与终端区之间，与终端区左右对齐。
+    let mut content = column![container(tab_bar)].spacing(2);
+    if let Some(banner) = banner {
+        content = content.push(container(banner).padding(Padding {
+            left: 4.0,
+            right: 2.0,
+            top: 0.0,
+            bottom: 0.0,
+        }));
+    }
+    content
         // 终端区域：仅左右下侧留白
-        container(body).height(Length::Fill).padding(Padding {
+        .push(container(body).height(Length::Fill).padding(Padding {
             left: 4.0,
             right: 2.0,
             top: 0.0,
             bottom: 2.0,
-        })
-    ]
-    .spacing(2)
+        }))
+        .into()
+}
+
+/// 断开态横幅：终端顶部窄条，告知连接已断并提供两条重连入口（Enter / 按钮）。
+///
+/// 只在终端已存在（连上过）且收到断开归因时渲染；首次连接失败没有终端可承载横幅，
+/// 走全屏 Error 覆盖层，两者因 `terminal` 是否为 `None` 而互斥。
+/// 断开态下按了非回车键（`banner_flash` 置位）时切换文案并强调配色，让「按键被拦下」
+/// 有可见回执，避免用户以为程序卡死。
+fn disconnected_banner(tab: &TerminalTab) -> Element<'_, Message> {
+    let flashing = tab.banner_flash.is_some();
+    let label = if flashing {
+        t!("terminal.press_enter_reconnect")
+    } else {
+        t!("terminal.disconnected_banner")
+    };
+    let reconnect = button(
+        text(t!("terminal.reconnect_button"))
+            .size(12)
+            .color(Color::WHITE),
+    )
+    .on_press(Message::Tabs(tabs::Message::ReconnectRequested(tab.id)))
+    .padding([2, 10])
+    .style(|_theme, _st| error_btn_style());
+    container(
+        row![
+            text(label)
+                .size(12)
+                .style(move |theme: &iced::Theme| iced::widget::text::Style {
+                    color: Some(banner_text_color(theme, flashing)),
+                })
+                .width(Length::Fill),
+            reconnect
+        ]
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center),
+    )
+    .padding([4, 8])
+    .width(Length::Fill)
+    .style(move |theme: &iced::Theme| banner_style(theme, flashing))
     .into()
+}
+
+/// 断开横幅的背景样式：常态沿用右键菜单基调（strong 底 + 细边框）；
+/// 闪烁时换成悬停底 + 错误红边框，作为「按键收到了、但写不进去」的强调。
+fn banner_style(theme: &iced::Theme, flashing: bool) -> container::Style {
+    let p = crate::theme::custom_palette(theme);
+    let (background, border_color) = if flashing {
+        (p.hover, crate::ui::ERROR)
+    } else {
+        (theme.extended_palette().background.strong.color, p.border)
+    };
+    container::Style {
+        background: Some(background.into()),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// 断开横幅的文字色：常态随主题正文色；闪烁时用错误红与边框呼应。
+fn banner_text_color(theme: &iced::Theme, flashing: bool) -> Color {
+    if flashing {
+        crate::ui::ERROR
+    } else {
+        theme.palette().text
+    }
 }
 
 /// 标签行当前样式：底 / 边框 / 文本色统一取自 [`crate::theme::tab_style`]。

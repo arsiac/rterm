@@ -1096,7 +1096,7 @@ mod tests {
             .expect("resize channel closed")
     }
 
-    /// 阶段 2 验收：喂一段输出 → 断开 → reattach → 再喂——
+    /// 喂一段输出 → 断开 → reattach → 再喂——
     /// 旧行留在历史缓冲、新输出被同一终端解析、旧循环在断开时自行收尾（发出 `Event::Exit`
     /// 即证明它没有对着已死的管道空转挂死）。
     #[cfg(unix)]
