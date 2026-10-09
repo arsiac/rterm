@@ -137,8 +137,9 @@ fn fail_tab(app: &mut App, tab_id: u64, msg: String) -> Task<Message> {
 /// 为指定标签发起 SSH 连接任务：解密凭据 → 生成连接配置 → 拉起异步握手。
 pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Message> {
     let Some(cfg) = app.session.sessions.iter().find(|s| s.id == id).cloned() else {
-        // 会话记录已不存在（该会话的标签会被一并关闭，此处仅为防御）。
-        return Task::none();
+        // 会话记录已不存在（其标签通常已被一并关闭，此处仅为防御）：退回失败态，
+        // 否则重连受理时置下的「连接中」无人复位，标签会卡在「正在重新连接…」。
+        return fail_tab(app, tab_id, t!("app.session_missing"));
     };
     // 凭据信封必须由保险库解密为明文后再交给连接任务（core 层不持有主密钥）。
     let Some(vault) = app.vault.clone() else {

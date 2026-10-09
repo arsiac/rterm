@@ -265,6 +265,7 @@ app:
   session_saved: Session saved
   session_duplicated: 'Session duplicated as "%{name}"'
   no_password: Session is missing login password; please fill it in the editor and retry
+  session_missing: Session no longer exists
   tab_closed: "Tab closed, discarding connection result: %{id}"
   conn_established: "Connection established for new tab: %{id}"
   reconnected: "Reconnected: %{id}"

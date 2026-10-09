@@ -286,6 +286,7 @@ app:
   decrypt_failed: 凭据解密失败（主密码可能已变更）
   vault_locked: 凭据库未解锁
   no_password: 会话缺少登录密码，请在编辑中填写后重试
+  session_missing: 会话已不存在
   terminal_ready: 终端已就绪
   terminal_create_failed: "创建终端组件失败: %{err}"
   terminal_reattach_failed: "重新连接终端失败: %{err}"
