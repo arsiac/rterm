@@ -16,7 +16,7 @@ use iced::alignment::Horizontal;
 use iced::widget::tooltip::Position;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
 use iced::{Border, Color, Element, Length, Padding};
-use rterm_core::ConnectionStatus;
+use rterm_core::{ConnectionStatus, DisconnectReason};
 
 /// 标签最大宽度（px）：标题文本、状态点、关闭按钮与间距的总和上限。
 pub(crate) const TAB_MAX_WIDTH: f32 = 160.0;
@@ -117,8 +117,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .map(|tab| {
             let active = app.tabs.active() == Some(tab.id);
             let label = tab_label(app.tabs.list(), tab);
-            // 标签自己的连接状态，驱动行首状态圆点；同会话其它标签的状态不影响本标签。
-            let status = tab.status;
             // 响铃视觉提示：本标签正在闪烁（见 `app::tabs`），标签样式短暂切为强调实底。
             let flash = tab.bell_flash.is_some();
             // 悬停态由模块跟踪（mouse_area 无内建视觉状态）：拖拽重排后错序到达的
@@ -155,7 +153,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             mouse_area(
                 container(
                     row![
-                        status_dot(status),
+                        // 圆点取本标签自己的连接状态；同会话其它标签的状态不影响本标签。
+                        status_dot(tab),
                         text(truncate_label(&label, TAB_TEXT_MAX_WIDTH))
                             .size(12)
                             .style(tab_text_style),
@@ -211,9 +210,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .map(|tab| {
                     let active = app.tabs.active() == Some(tab.id);
                     let label = tab_label(app.tabs.list(), tab);
-                    let status = tab.status;
                     button(
-                        row![status_dot(status), text(label).size(13)]
+                        row![status_dot(tab), text(label).size(13)]
                             .spacing(6)
                             .align_y(iced::alignment::Vertical::Center),
                     )
@@ -374,26 +372,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
 /// 只在终端已存在（连上过）且收到断开归因时渲染；首次连接失败没有终端可承载横幅，
 /// 走全屏 Error 覆盖层，两者因 `terminal` 是否为 `None` 而互斥。
 ///
-/// 文案按标签状态分级：重连在途（`Connecting`）显示「正在重新连接」、隐藏按钮（触发会
-/// 被防重复挡下）；重连失败（`tab.error`）显示具体原因、可再按 Enter；按下非回车时
-/// 让位于「按 Enter」提示（`banner_flash`），使「按键被拦下」有可见回执。
+/// 文案按标签状态分级（见 [`banner_label`]）；重连在途隐藏按钮（触发会被防重复挡下）。
 fn disconnected_banner(tab: &TerminalTab) -> Element<'_, Message> {
     let flashing = tab.banner_flash.is_some();
     let reconnecting = tab.status == ConnectionStatus::Connecting;
-    let label: String = if reconnecting {
-        t!("terminal.reconnecting").to_string()
-    } else if let Some(err) = &tab.error {
-        // 重连失败：显示具体原因；按键闪烁时让位于「按 Enter」提示。
-        if flashing {
-            t!("terminal.press_enter_reconnect").to_string()
-        } else {
-            err.clone()
-        }
-    } else if flashing {
-        t!("terminal.press_enter_reconnect").to_string()
-    } else {
-        t!("terminal.disconnected_banner").to_string()
-    };
+    let label = banner_label(
+        reconnecting,
+        tab.error.as_deref(),
+        flashing,
+        tab.disconnect_reason,
+    );
     let mut items: Vec<Element<'_, Message>> = vec![
         text(label)
             .size(12)
@@ -425,6 +413,34 @@ fn disconnected_banner(tab: &TerminalTab) -> Element<'_, Message> {
     .width(Length::Fill)
     .style(move |theme: &iced::Theme| banner_style(theme, flashing))
     .into()
+}
+
+/// 断开横幅的文案（纯决策）：重连在途 → 重连提示；重连失败 → 具体原因（按键闪烁时
+/// 让位于按键提示）；常态按退出原因分流（远端会话已结束 / 连接已断开）。
+fn banner_label(
+    reconnecting: bool,
+    error: Option<&str>,
+    flashing: bool,
+    reason: Option<DisconnectReason>,
+) -> String {
+    if reconnecting {
+        return t!("terminal.reconnecting").to_string();
+    }
+    if let Some(err) = error {
+        return if flashing {
+            t!("terminal.press_enter_reconnect").to_string()
+        } else {
+            err.to_string()
+        };
+    }
+    if flashing {
+        return t!("terminal.press_enter_reconnect").to_string();
+    }
+    if matches!(reason, Some(DisconnectReason::ChannelEof)) {
+        t!("terminal.session_ended_banner").to_string()
+    } else {
+        t!("terminal.disconnected_banner").to_string()
+    }
 }
 
 /// 断开横幅的背景样式：常态沿用右键菜单基调（strong 底 + 细边框）；
@@ -475,24 +491,16 @@ fn tab_row_style(
     crate::theme::tab_style(theme, status, active, focused, flash)
 }
 
-/// 标签连接状态圆点：8px 圆，颜色编码 已连接 / 连接中 / 失败 / 未连接，
-/// 附中文 tooltip 照顾色弱用户。
-///
-/// 状态色是**固定的**状态语义色、不跟随程序主题（连接中 / 未连接两态就地写 RGB 字面量，
-/// 已连接 / 失败复用 `crate::ui::SUCCESS` / `ERROR`）——语义色若随主题漂移会丢失「红=出错」的直觉。
-fn status_dot(status: ConnectionStatus) -> Element<'static, Message> {
-    let (color, label) = match status {
-        ConnectionStatus::Connected => (crate::ui::SUCCESS, t!("terminal.connected")),
-        ConnectionStatus::Connecting => (
-            Color::from_rgb(0.85, 0.65, 0.2),
-            t!("terminal.connecting_status"),
-        ),
-        ConnectionStatus::Error => (crate::ui::ERROR, t!("terminal.error_status")),
-        ConnectionStatus::Disconnected => (
-            Color::from_rgb(0.55, 0.55, 0.55),
-            t!("terminal.disconnected"),
-        ),
-    };
+/// 标签连接状态圆点：8px 圆 + tooltip（配色与文案见 [`status_dot_visual`]）。
+fn status_dot(tab: &TerminalTab) -> Element<'static, Message> {
+    let connecting = tab.status == ConnectionStatus::Connecting;
+    let errored = tab.status == ConnectionStatus::Error;
+    let (color, label) = status_dot_visual(
+        tab.status,
+        connecting && tab.terminal.is_some(),
+        errored && tab.terminal.is_some() && tab.error.is_none(),
+        tab.disconnect_reason,
+    );
     let dot = container("")
         .width(Length::Fixed(8.0))
         .height(Length::Fixed(8.0))
@@ -512,6 +520,46 @@ fn status_dot(status: ConnectionStatus) -> Element<'static, Message> {
         .into()
 }
 
+/// 状态圆点的（颜色, tooltip 文案）（纯决策）。
+///
+/// 状态色固定不随程序主题（连接中 / 未连接就地写 RGB 字面量，已连接 / 失败复用
+/// `crate::ui::SUCCESS` / `ERROR`）——语义色随主题漂移会丢失「红=出错」的直觉。
+/// tooltip 按情境细分：重连在途（`reconnecting`）区别于首次连接；断开掉线
+/// （`disconnected`）按退出原因分流，与连接失败区分。
+fn status_dot_visual(
+    status: ConnectionStatus,
+    reconnecting: bool,
+    disconnected: bool,
+    reason: Option<DisconnectReason>,
+) -> (Color, String) {
+    match status {
+        ConnectionStatus::Connected => (crate::ui::SUCCESS, t!("terminal.connected")),
+        ConnectionStatus::Connecting => (
+            Color::from_rgb(0.85, 0.65, 0.2),
+            if reconnecting {
+                t!("terminal.reconnecting")
+            } else {
+                t!("terminal.connecting_status")
+            },
+        ),
+        ConnectionStatus::Error => (
+            crate::ui::ERROR,
+            if disconnected {
+                match reason {
+                    Some(DisconnectReason::ChannelEof) => t!("terminal.session_ended"),
+                    _ => t!("terminal.connection_lost"),
+                }
+            } else {
+                t!("terminal.error_status")
+            },
+        ),
+        ConnectionStatus::Disconnected => (
+            Color::from_rgb(0.55, 0.55, 0.55),
+            t!("terminal.disconnected"),
+        ),
+    }
+}
+
 /// 失败面板中“重试”按钮的样式：红色底以提示可重新发起连接。
 fn error_btn_style() -> iced::widget::button::Style {
     iced::widget::button::Style {
@@ -522,5 +570,86 @@ fn error_btn_style() -> iced::widget::button::Style {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 横幅文案分流：重连在途 / 重连失败 / 按键闪烁 / 退出原因（远端结束 vs 连接断开）。
+    #[test]
+    fn banner_label_splits_reasons_and_failures() {
+        let died = DisconnectReason::TransportDied;
+        let eof = DisconnectReason::ChannelEof;
+        // 重连在途与失败原因优先于退出原因分流。
+        assert_eq!(
+            banner_label(true, None, false, Some(died)),
+            t!("terminal.reconnecting")
+        );
+        assert_eq!(banner_label(false, Some("boom"), false, Some(died)), "boom");
+        // 按键闪烁让位于「按 Enter」提示（失败原因同样让位）。
+        assert_eq!(
+            banner_label(false, None, true, Some(died)),
+            t!("terminal.press_enter_reconnect")
+        );
+        assert_eq!(
+            banner_label(false, Some("boom"), true, Some(died)),
+            t!("terminal.press_enter_reconnect")
+        );
+        // 常态按退出原因分流；无归因兜底为「连接已断开」。
+        assert_eq!(
+            banner_label(false, None, false, Some(eof)),
+            t!("terminal.session_ended_banner")
+        );
+        assert_eq!(
+            banner_label(false, None, false, Some(died)),
+            t!("terminal.disconnected_banner")
+        );
+        assert_eq!(
+            banner_label(false, None, false, None),
+            t!("terminal.disconnected_banner")
+        );
+    }
+
+    /// 圆点分流：重连在途区别于首连；断开掉线按退出原因，连接失败另发文案。
+    #[test]
+    fn status_dot_visual_splits_reconnect_and_disconnect_reasons() {
+        use ConnectionStatus::{Connected, Connecting, Disconnected, Error};
+        // 首次连接（无终端）与重连在途（有终端）同色不同文案。
+        assert_eq!(
+            status_dot_visual(Connecting, false, false, None).1,
+            t!("terminal.connecting_status")
+        );
+        assert_eq!(
+            status_dot_visual(Connecting, true, false, None),
+            (
+                Color::from_rgb(0.85, 0.65, 0.2),
+                t!("terminal.reconnecting")
+            )
+        );
+        // 断开掉线：红点，文案按退出原因分流。
+        assert_eq!(
+            status_dot_visual(Error, true, true, Some(DisconnectReason::ChannelEof)),
+            (crate::ui::ERROR, t!("terminal.session_ended"))
+        );
+        assert_eq!(
+            status_dot_visual(Error, true, true, Some(DisconnectReason::TransportDied)).1,
+            t!("terminal.connection_lost")
+        );
+        // 连接失败（首连 / 重连 attempt）：不按退出原因分流。
+        assert_eq!(
+            status_dot_visual(Error, true, false, Some(DisconnectReason::ChannelEof)).1,
+            t!("terminal.error_status")
+        );
+        // 已连接 / 未连接两态不受分流影响。
+        assert_eq!(
+            status_dot_visual(Connected, true, false, None),
+            (crate::ui::SUCCESS, t!("terminal.connected"))
+        );
+        assert_eq!(
+            status_dot_visual(Disconnected, false, false, None).1,
+            t!("terminal.disconnected")
+        );
     }
 }

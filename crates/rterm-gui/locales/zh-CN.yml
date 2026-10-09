@@ -241,6 +241,9 @@ terminal:
   error_status: 连接失败
   disconnected: 未连接
   disconnected_banner: 连接已断开 · 按 Enter 重新连接
+  connection_lost: 连接已断开
+  session_ended: 远端会话已结束
+  session_ended_banner: 远端会话已结束 · 按 Enter 重新连接
   press_enter_reconnect: 按 Enter 重新连接
   reconnect_button: 重新连接
   reconnecting: 正在重新连接…
@@ -265,6 +268,7 @@ app:
   conn_established: "已为新标签建立连接: %{id}"
   reconnected: "已重新连接: %{id}"
   disconnected: "连接已断开: %{id}"
+  session_ended: "远端会话已结束: %{id}"
   sftp_open_failed: "打开 SFTP 失败: %{err}"
   list_failed: "列举目录失败: %{err}"
   transfer_partial: 部分传输失败

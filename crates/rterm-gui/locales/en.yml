@@ -241,6 +241,9 @@ terminal:
   error_status: Connection failed
   disconnected: Disconnected
   disconnected_banner: Disconnected · Press Enter to reconnect
+  connection_lost: Connection lost
+  session_ended: Session ended
+  session_ended_banner: Session ended · Press Enter to reconnect
   press_enter_reconnect: Press Enter to reconnect
   reconnect_button: Reconnect
   reconnecting: Reconnecting…
@@ -266,6 +269,7 @@ app:
   conn_established: "Connection established for new tab: %{id}"
   reconnected: "Reconnected: %{id}"
   disconnected: "Disconnected: %{id}"
+  session_ended: "Session ended: %{id}"
   sftp_open_failed: "Failed to open SFTP: %{err}"
   list_failed: "Failed to list directory: %{err}"
   transfer_partial: Some transfers failed

@@ -469,13 +469,17 @@ impl State {
         }
     }
 
-    /// 处理终端桥接结束：记录退出原因（「远端会话已结束」与「连接已断开」文案据此分流），
-    /// 把该标签状态翻为 `Error` 并提示，已打开的终端组件保留仅更新状态指示。
+    /// 处理终端桥接结束：记录退出原因，把该标签状态翻为 `Error` 并在状态栏按原因分流
+    /// 提示（远端会话已结束 / 连接已断开）；已打开的终端组件保留仅更新状态指示。
     fn terminal_disconnected(&mut self, tab_id: u64, reason: DisconnectReason) -> Task<Event> {
         let status_msg = if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.status = ConnectionStatus::Error;
             tab.disconnect_reason = Some(reason);
-            t!("app.disconnected", id => tab.session_id.clone())
+            let id = tab.session_id.clone();
+            match reason {
+                DisconnectReason::ChannelEof => t!("app.session_ended", id => id),
+                _ => t!("app.disconnected", id => id),
+            }
         } else {
             return Task::none();
         };
