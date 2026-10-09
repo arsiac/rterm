@@ -21,7 +21,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// 终端当前目录（cwd）共享容器：核心层桥接 pump 扫描 OSC 7 序列后写入，
 /// GUI 侧在「进入终端目录」按钮点击时读取。按标签独立持有（见 `TerminalTab::cwd`）。
@@ -73,6 +73,9 @@ impl DisconnectReason {
 pub struct BridgeState {
     /// 停止请求：置位后 pump 尽快退出。
     stop_requested: AtomicBool,
+    /// 停止请求的唤醒端：pump 靠它挂起等待（轮询标志会空转烧 CPU）。
+    /// 仅负责唤醒——是否停止一律以 `stop_requested` 为准（`send` 可能先于等待者订阅）。
+    stop_tx: watch::Sender<bool>,
     /// 结束标志：pump 已退出且退出原因已写入（观察者见 `true` 即保证原因已就绪）。
     finished: AtomicBool,
     /// 退出原因（编码见 [`DisconnectReason`]）。
@@ -84,6 +87,7 @@ impl BridgeState {
     pub fn new() -> Self {
         Self {
             stop_requested: AtomicBool::new(false),
+            stop_tx: watch::channel(false).0,
             finished: AtomicBool::new(false),
             reason: AtomicU8::new(DisconnectReason::Unknown as u8),
         }
@@ -93,6 +97,8 @@ impl BridgeState {
     /// ——结束与否看 [`Self::is_finished`]。
     pub fn request_stop(&self) {
         self.stop_requested.store(true, Ordering::SeqCst);
+        // 唤醒挂起的 pump；无等待者时发送失败无妨，是否停止以标志为准。
+        let _ = self.stop_tx.send(true);
     }
 
     /// 是否已请求停止（pump 侧与「关闭中」判定读它）。
@@ -274,6 +280,8 @@ async fn pump<W, R>(
     // 退出原因：每个 break 出口在跳出前把原因算好，收尾时统一写入
     // （把归因集中在出口处，避免 `request_stop` 与远端事件谁先到不同的分支里各写一遍）。
     let reason;
+    // 停止信号的等待端：`request_stop` 发送唤醒，避免轮询标志空转（见 `wait_stop`）。
+    let mut stop_rx = state.stop_tx.subscribe();
 
     loop {
         // 在两次 I/O 等待之间，将积压的窗口尺寸变更下发到远端。
@@ -285,7 +293,7 @@ async fn pump<W, R>(
 
         tokio::select! {
             // 收到断开信号：立即退出，释放服务端管道句柄。
-            _ = wait_stop(state.clone()) => {
+            _ = wait_stop(&state, &mut stop_rx) => {
                 log::debug!("pump: received stop signal, exiting");
                 reason = DisconnectReason::LocalStop;
                 break;
@@ -352,10 +360,16 @@ async fn pump<W, R>(
     );
 }
 
-/// 在停止请求置位前让出，供 `tokio::select!` 监听泵接退出信号。
-async fn wait_stop(state: Arc<BridgeState>) {
+/// 在停止请求置位前挂起，供 `tokio::select!` 监听泵接退出信号。
+///
+/// 先查标志再等唤醒（`request_stop` 的 `send` 可能先于订阅、收不到，标志才是唯一
+/// 事实来源）；不用 `yield_now` 轮询——那会让任务常驻「立即重排」状态、持续烧 CPU。
+async fn wait_stop(state: &BridgeState, rx: &mut watch::Receiver<bool>) {
     while !state.is_stop_requested() {
-        tokio::task::yield_now().await;
+        // 发送端随 `state` 存活，Err 实际不可达；兜底直接退出，避免挂死。
+        if rx.changed().await.is_err() {
+            break;
+        }
     }
 }
 
@@ -618,5 +632,40 @@ mod tests {
 
         // 越界 / 未定义编码（如未来版本新增原因后旧 GUI 读到新字节）按 Unknown 处理。
         assert_eq!(DisconnectReason::decode(200), DisconnectReason::Unknown);
+    }
+
+    /// 停止请求必须唤醒挂起的等待者（`wait_stop` 经 watch 通道等待，而非轮询）。
+    #[tokio::test]
+    async fn a_stop_request_wakes_the_pump_waiter() {
+        let state = Arc::new(BridgeState::new());
+        let waiter = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let mut rx = state.stop_tx.subscribe();
+                wait_stop(&state, &mut rx).await;
+            })
+        };
+        // 先让等待者挂起，再置位停止请求。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        state.request_stop();
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("停止请求应在超时前唤醒等待者")
+            .expect("等待任务不应 panic");
+    }
+
+    /// 停止请求先于等待者订阅（`send` 无接收者而失败）也必须立即退出：
+    /// 停止与否一律以标志为准，通道只负责唤醒。
+    #[tokio::test]
+    async fn a_stop_request_before_subscription_still_exits() {
+        let state = BridgeState::new();
+        state.request_stop();
+        let mut rx = state.stop_tx.subscribe();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_stop(&state, &mut rx),
+        )
+        .await
+        .expect("已置位的停止请求不应让等待者挂死");
     }
 }
