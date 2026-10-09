@@ -8,19 +8,18 @@ use crate::terminal_pane;
 use crate::widget::term::Event as TerminalEvent;
 use iced::Task;
 use iced::widget::Id;
-use rterm_core::{ConnectionStatus, SshConnection};
+use rterm_core::{BridgeState, ConnectionStatus, DisconnectReason, SshConnection};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// 终端桥接就绪后回传的结果：conout 读端、conin 写端、断开标志与尺寸发送端。
+/// 终端桥接就绪后回传的结果：conout 读端、conin 写端、桥接结束状态与尺寸发送端。
 /// 抽成别名以免 `TerminalOpened` 变体与 `terminal_opened` 参数触发 `type_complexity`。
 type BridgeResult = Result<
     (
         Arc<std::fs::File>,
         Arc<std::fs::File>,
-        Arc<AtomicBool>,
+        Arc<BridgeState>,
         ResizeSender,
     ),
     String,
@@ -86,8 +85,8 @@ pub enum Message {
     TabDragEnd,
     /// 终端桥接就绪：挂载终端组件（父层执行）。
     TerminalOpened(u64, BridgeResult),
-    /// 终端桥接断开：置标签为 Error。
-    TerminalDisconnected(u64),
+    /// 终端桥接结束：按退出原因置标签状态（远端会话结束 / 连接断开）。
+    TerminalDisconnected(u64, DisconnectReason),
     /// 终端挂载完成：强制刷新首屏。
     TerminalReady(u64),
     /// 终端部件事件（键盘 / 鼠标 / 后端回调），转发父层处理。
@@ -124,7 +123,7 @@ pub enum Event {
         u64,
         Arc<std::fs::File>,
         Arc<std::fs::File>,
-        Arc<AtomicBool>,
+        Arc<BridgeState>,
         ResizeSender,
     ),
     /// 关闭标签时清理其挂起的主机密钥确认。
@@ -226,7 +225,8 @@ impl State {
             conn: None,
             terminal: None,
             resize_tx: None,
-            disconnect: None,
+            bridge: None,
+            disconnect_reason: None,
             cwd: std::sync::Arc::new(Mutex::new(None)),
             title,
             bell_flash: None,
@@ -281,7 +281,9 @@ impl State {
                 Task::none()
             }
             Message::TerminalOpened(tab_id, result) => self.terminal_opened(tab_id, result, ctx),
-            Message::TerminalDisconnected(tab_id) => self.terminal_disconnected(tab_id),
+            Message::TerminalDisconnected(tab_id, reason) => {
+                self.terminal_disconnected(tab_id, reason)
+            }
             Message::TerminalReady(tab_id) => Task::done(Event::TerminalReady(tab_id)),
             Message::Terminal(event) => Task::done(Event::TerminalEvent(event)),
             Message::SessionConnected(tab_id, id, result) => {
@@ -355,12 +357,12 @@ impl State {
             closed_session.as_deref().unwrap_or("<none>")
         );
         let mut events = vec![Event::RemoveHostKeyForTab(tab_id)];
-        // 置位该标签的桥接断开标志，让核心层 pump 任务尽快退出（释放服务端管道句柄，
+        // 请求该标签的桥接停止，让核心层 pump 尽快退出（释放服务端管道句柄，
         // 进而使 win_io 后台读/写线程退出），避免关标签后进程残留。
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
-            && let Some(d) = &tab.disconnect
+            && let Some(bridge) = &tab.bridge
         {
-            d.store(true, Ordering::SeqCst);
+            bridge.request_stop();
         }
         // 本标签若有暂停在主机密钥弹窗上的握手，一并按拒绝处理，
         // 否则弹窗仍会挂在队列里等待一个已被关闭的连接（由父层执行清理）。
@@ -386,14 +388,14 @@ impl State {
         Task::batch(events.into_iter().map(Task::done).collect::<Vec<_>>())
     }
 
-    /// 应用窗口关闭：置位全部标签的桥接断开标志，使核心层 pump 与 win_io 后台线程尽快退出。
+    /// 应用窗口关闭：请求全部标签的桥接停止，使核心层 pump 与 win_io 后台线程尽快退出。
     ///
     /// 窗口关闭时 `App` 会整体 drop，标签未必逐个走 `CloseTab`；此处显式通知所有 pump，
     /// 避免后台任务与进程残留。返回空任务（窗口本身由 iced 默认行为关闭）。
     fn window_closing(&mut self) -> Task<Event> {
         for tab in self.tabs.iter_mut() {
-            if let Some(d) = &tab.disconnect {
-                d.store(true, Ordering::SeqCst);
+            if let Some(bridge) = &tab.bridge {
+                bridge.request_stop();
             }
         }
         Task::none()
@@ -431,10 +433,12 @@ impl State {
         }
     }
 
-    /// 处理终端桥接断开：把该标签状态翻为 `Error` 并提示原因，已打开的终端组件保留仅更新状态指示。
-    fn terminal_disconnected(&mut self, tab_id: u64) -> Task<Event> {
+    /// 处理终端桥接结束：记录退出原因（「远端会话已结束」与「连接已断开」文案据此分流），
+    /// 把该标签状态翻为 `Error` 并提示，已打开的终端组件保留仅更新状态指示。
+    fn terminal_disconnected(&mut self, tab_id: u64, reason: DisconnectReason) -> Task<Event> {
         let status_msg = if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.status = ConnectionStatus::Error;
+            tab.disconnect_reason = Some(reason);
             t!("app.disconnected", id => tab.session_id.clone())
         } else {
             return Task::none();

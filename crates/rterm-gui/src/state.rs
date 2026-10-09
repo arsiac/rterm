@@ -5,11 +5,11 @@
 use crate::message::ResizeSender;
 use crate::widget::term::Terminal;
 use rterm_core::{
-    ConnectionStatus, FileEntry, HostKeyPrompt, HostKeyReply, SftpClient, SshConnection,
+    BridgeState, ConnectionStatus, DisconnectReason, FileEntry, HostKeyPrompt, HostKeyReply,
+    SftpClient, SshConnection,
 };
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 /// 中心面板可显示的内容类型（由最左侧活动栏切换）。
@@ -47,9 +47,14 @@ pub struct TerminalTab {
     pub terminal: Option<Terminal>,
     /// 窗口尺寸变更发送端（桥接任务据此下发 window-change）。
     pub resize_tx: Option<ResizeSender>,
-    /// 桥接断开标志：关标签 / 关窗口时置位，通知核心层 pump 任务尽快退出，
-    /// 释放服务端管道句柄（否则后台线程与进程残留）。
-    pub disconnect: Option<Arc<AtomicBool>>,
+    /// 桥接结束状态：关标签 / 关窗口时请求停止，桥接结束时读取退出原因
+    /// （「远端会话已结束」与「连接已断开」文案据此分流）。
+    pub bridge: Option<Arc<BridgeState>>,
+    /// 最近一次桥接退出的原因；桥接进行中或尚未归因时为 `None`。
+    ///
+    /// 由 `tabs::terminal_disconnected` 在收到 `TerminalDisconnected` 时写入，
+    /// 供文案分流与后续重连逻辑读取。
+    pub disconnect_reason: Option<DisconnectReason>,
     /// 终端当前工作目录（cwd）：由核心层桥接 pump 扫描 OSC 7 序列实时写入，
     /// 文件管理「进入终端目录」按钮读取它跳转到对应远端目录。多标签各自独立，
     /// 故按标签持有（同一会话开多标签时各标签 cwd 互不串）。

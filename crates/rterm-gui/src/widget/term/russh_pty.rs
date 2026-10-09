@@ -15,10 +15,10 @@
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
 use polling::{Event as PollEvent, PollMode, Poller};
+use rterm_core::BridgeState;
 use std::fs::File;
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 /// alacritty event loop 用来识别「pty 可读写」的 poll key。
@@ -44,8 +44,8 @@ pub struct RusshPty {
     /// GUI 侧持有的管道同步端的可写端（仅 Windows）。
     #[cfg(windows)]
     conin: win_io::UnblockedWriter<File>,
-    /// 远端断开标志；pump 结束时由桥接层置位，使 alacritty 认为子进程退出并清理终端。
-    disconnect: Arc<AtomicBool>,
+    /// 桥接结束状态：pump 结束时置位结束标志，使 alacritty 认为子进程退出并清理终端。
+    bridge: Arc<BridgeState>,
     /// 尺寸变更发送端，向主进程 pump 的 resize 通道下发 SSH window-change 请求。
     resize_tx: mpsc::Sender<(u32, u32)>,
 }
@@ -60,7 +60,7 @@ impl RusshPty {
     pub fn new(
         conout: File,
         conin: File,
-        disconnect: Arc<AtomicBool>,
+        bridge: Arc<BridgeState>,
         resize_tx: mpsc::Sender<(u32, u32)>,
     ) -> io::Result<Self> {
         #[cfg(not(windows))]
@@ -70,7 +70,7 @@ impl RusshPty {
             let _ = conin;
             Ok(Self {
                 file: conout,
-                disconnect,
+                bridge,
                 resize_tx,
             })
         }
@@ -84,7 +84,7 @@ impl RusshPty {
             Ok(Self {
                 conout,
                 conin,
-                disconnect,
+                bridge,
                 resize_tx,
             })
         }
@@ -191,9 +191,12 @@ fn with_key(mut event: PollEvent, key: usize) -> PollEvent {
 }
 
 impl EventedPty for RusshPty {
-    /// 返回子进程退出事件：远端断开（pump 结束）时返回 `Exited`，否则返回 `None`。
+    /// 返回子进程退出事件：桥接结束，或关标签 / 关窗口已请求停止时返回 `Exited`。
+    ///
+    /// 请求停止也纳入条件，是为了保留原语义（关标签立刻让 alacritty 收尾，不等
+    /// pump 退出完成）；正常断开走 [`BridgeState::is_finished`]。
     fn next_child_event(&mut self) -> Option<ChildEvent> {
-        if self.disconnect.load(Ordering::SeqCst) {
+        if self.bridge.is_finished() || self.bridge.is_stop_requested() {
             Some(ChildEvent::Exited(None))
         } else {
             None

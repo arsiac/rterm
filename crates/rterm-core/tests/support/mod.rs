@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use anyhow::Error as AnyhowError;
 use rterm_core::SftpClient;
+use russh::Pty;
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session};
 use russh::{Channel, ChannelId};
@@ -247,11 +248,165 @@ impl TestConnection {
     }
 }
 
+/// 面向 [`rterm_core::SshConnection`]（生产建连路径）的测试服务端。
+///
+/// SFTP 侧用 [`TestSftp`]，终端桥接侧用本结构：两者共用同一份 [`SshSession`] handler
+/// 与一次性主机密钥。建连时自动答复主机密钥确认（测试不关心 TOFU 流程），
+/// 返回的 [`TestSshConnection`] 可直接喂给 `spawn_terminal_bridge`。
+///
+/// `allow(dead_code)`：本模块被多个集成测试共享，只有终端桥接测试用到这两个结构。
+#[allow(dead_code)]
+pub(crate) struct TestSsh {
+    addr: SocketAddr,
+    accept: Option<tokio::task::JoinHandle<()>>,
+    /// 最近一条连接的 shell 通道（服务端侧），供用例模拟「远端 shell 退出」。
+    shell_channel: Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>,
+}
+
+#[allow(dead_code)]
+impl TestSsh {
+    /// 在 127.0.0.1 的随机端口上启动一个接受密码认证的 SSH 服务端。
+    pub(crate) async fn start() -> Self {
+        let config = Arc::new(russh::server::Config {
+            keys: vec![
+                PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+                    .expect("generate a throwaway host key"),
+            ],
+            auth_rejection_time: Duration::from_secs(0),
+            ..Default::default()
+        });
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("listener address");
+        let shell_channel = Arc::new(tokio::sync::Mutex::new(None));
+        let accept = {
+            let config = Arc::clone(&config);
+            let root = std::env::temp_dir().join(format!("rterm-ssh-{}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("create the ssh jail");
+            let shell_channel = Arc::clone(&shell_channel);
+            tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let config = Arc::clone(&config);
+                    let session = SshSession::with_shell_slot(
+                        Arc::new(Faults::default()),
+                        root.clone(),
+                        Arc::clone(&shell_channel),
+                    );
+                    tokio::spawn(async move {
+                        if let Err(e) = russh::server::run_stream(config, stream, session).await {
+                            log::debug!("test ssh session ended: {e}");
+                        }
+                    });
+                }
+            })
+        };
+        Self {
+            addr,
+            accept: Some(accept),
+            shell_channel,
+        }
+    }
+
+    /// 模拟远端 shell 退出：从**服务端侧**关闭 shell 通道（等价于远端进程结束、
+    /// 服务端发 CHANNEL_CLOSE），但保留整条 SSH 连接。
+    ///
+    /// 这是「连接活着而通道 EOF」的唯一正确造法：客户端自己 `Channel::close()`
+    /// 不会让客户端自己的读端看到 Close（russh 只在**收到** CHANNEL_CLOSE 时把
+    /// Close 转发给通道），故那条路径观察不到任何变化。
+    ///
+    /// 等待服务端收到 shell 请求（通道入槽）后再关闭：客户端 `request_shell` 的
+    /// 应答与服务端 handler 落槽之间没有先后保证，直接关会扑空。
+    pub(crate) async fn close_shell(&self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let taken = self.shell_channel.lock().await.take();
+            if let Some(channel) = taken {
+                channel.close().await.expect("close the shell channel");
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the test server never saw a shell request"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 经生产入口 [`rterm_core::SshConnection::connect`] 建一条已认证的连接。
+    ///
+    /// 主机密钥确认由后台任务自动答复「信任」：测试不覆盖 TOFU 弹窗流程，
+    /// 只想拿到一具可桥接的活连接。
+    pub(crate) async fn connect(&self) -> TestSshConnection {
+        let config = rterm_config::SessionConfig {
+            id: "test".to_string(),
+            name: "test".to_string(),
+            host: Ipv4Addr::LOCALHOST.to_string(),
+            port: self.addr.port(),
+            username: USER.to_string(),
+            auth: rterm_config::AuthMethod::Password { password: None },
+            group: None,
+        };
+        let secrets = rterm_core::SessionSecrets {
+            password: Some(zeroize::Zeroizing::new(PASSWORD.to_string())),
+            key_passphrase: None,
+        };
+        let (prompt_tx, mut prompt_rx) =
+            tokio::sync::mpsc::channel::<(rterm_core::HostKeyPrompt, rterm_core::HostKeyReply)>(1);
+        tokio::spawn(async move {
+            while let Some((_prompt, reply)) = prompt_rx.recv().await {
+                reply.reply(true);
+            }
+        });
+        let conn = rterm_core::SshConnection::connect(&config, &secrets, None, 0, prompt_tx)
+            .await
+            .expect("connect to the test ssh server");
+        assert!(!conn.is_closed().await, "新建连接必然是活的");
+        TestSshConnection {
+            conn: Some(Arc::new(conn)),
+        }
+    }
+}
+
+impl Drop for TestSsh {
+    fn drop(&mut self) {
+        if let Some(accept) = self.accept.take() {
+            accept.abort();
+        }
+    }
+}
+
+/// 一条经生产路径建立的测试连接：可直接喂给终端桥接。
+#[allow(dead_code)] // 同 `TestSsh`：仅终端桥接测试使用
+pub(crate) struct TestSshConnection {
+    /// 待桥接的 SSH 连接；[`TestSshConnection::release`] 取走后为 `None`。
+    pub(crate) conn: Option<Arc<rterm_core::SshConnection>>,
+}
+
+#[allow(dead_code)]
+impl TestSshConnection {
+    /// 此刻持有的连接（取引用，不改变持有状态）。
+    pub(crate) fn conn(&self) -> &Arc<rterm_core::SshConnection> {
+        self.conn.as_ref().expect("connection already released")
+    }
+
+    /// 撕掉整条传输（模拟拔网线 / sshd 重启）：向服务端发送断开报文，
+    /// russh 会话任务随之收尾、`is_closed()` 转真。
+    pub(crate) async fn kill_transport(&self) {
+        self.conn().disconnect("test").await;
+    }
+}
+
 /// SSH 服务端 handler：只认密码认证，把 `sftp` 子系统接到 [`SftpBackend`]。
 struct SshSession {
     faults: Arc<Faults>,
     root: PathBuf,
     channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+    /// 服务端侧最近一条 shell 通道的存放位（仅供 [`TestSsh::close_shell`] 使用）。
+    shell_slot: Option<Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>>,
 }
 
 impl SshSession {
@@ -260,6 +415,22 @@ impl SshSession {
             faults,
             root,
             channels: Arc::default(),
+            shell_slot: None,
+        }
+    }
+
+    /// 同 [`SshSession::new`]，但把 shell 请求收到的通道存进共享槽位。
+    #[allow(dead_code)] // 仅终端桥接测试走这条构造
+    fn with_shell_slot(
+        faults: Arc<Faults>,
+        root: PathBuf,
+        shell_slot: Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>,
+    ) -> Self {
+        Self {
+            faults,
+            root,
+            channels: Arc::default(),
+            shell_slot: Some(shell_slot),
         }
     }
 }
@@ -286,6 +457,57 @@ impl russh::server::Handler for SshSession {
     ) -> Result<(), Self::Error> {
         self.channels.lock().await.insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    /// 接受任何 PTY 请求：测试不关心终端参数，只要客户端侧 `request_pty` 成功。
+    async fn pty_request(
+        &mut self,
+        channel_id: ChannelId,
+        _term: &str,
+        _col_width: u32,
+        _row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel_id)?;
+        Ok(())
+    }
+
+    /// 接受 shell 请求但**不启动任何进程**：通道收到客户端数据后原样丢弃，
+    /// 远端不产生输出——终端桥接测试只需一条「打开即静默」的 shell 通道。
+    /// 若配置了共享槽位，通道本体移交给 [`TestSsh::close_shell`] 备用。
+    async fn shell_request(
+        &mut self,
+        channel_id: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel_id)?;
+        if let Some(slot) = &self.shell_slot {
+            let channel = self
+                .channels
+                .lock()
+                .await
+                .remove(&channel_id)
+                .expect("a shell request must follow its session channel");
+            *slot.lock().await = Some(channel);
+        }
+        Ok(())
+    }
+
+    /// 接受窗口尺寸变更（桥接 pump 会在 I/O 间隙下发）。
+    async fn window_change_request(
+        &mut self,
+        channel_id: ChannelId,
+        _col_width: u32,
+        _row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel_id)?;
         Ok(())
     }
 

@@ -323,6 +323,33 @@ impl SshConnection {
         })
     }
 
+    /// 会话任务是否已收尾（传输层已死）。
+    ///
+    /// 桥接 pump 在 shell 通道读到 EOF 时凭此区分两种形态完全一致的死法：远端
+    /// shell 正常退出会 drop 通道发送端，传输层死亡同样会，单看 EOF 无法分辨
+    /// （见 russh `ChannelRx::poll_read`）。本方法转发 russh `Handle::is_closed()`
+    /// ——即会话任务（负责收发整条连接）是否已退出，退出即说明传输层已死而非
+    /// 只是某个通道关闭。
+    pub async fn is_closed(&self) -> bool {
+        let handle = self.handle.lock().await;
+        handle.is_closed()
+    }
+
+    /// 主动断开这条连接（向服务端发送断开原因后关闭传输）。
+    ///
+    /// 用于「确定不再复用」的收尾：与单纯丢弃本对象不同（那只会离开本地会话任务，
+    /// 不发任何报文），本方法会走完 russh 的断开流程，使会话任务收尾、
+    /// [`Self::is_closed`] 转真，服务端也能立刻看到链路结束。
+    pub async fn disconnect(&self, reason: &str) {
+        let handle = self.handle.lock().await;
+        if let Err(e) = handle
+            .disconnect(russh::Disconnect::ByApplication, reason, "en")
+            .await
+        {
+            debug!("断开连接时出错（链路可能已断）: {e}");
+        }
+    }
+
     /// 打开一个带 PTY 的交互式 shell 通道（供终端标签页桥接）。
     ///
     /// 返回的通道由核心层桥接到进程内管道，再交给 GUI 的终端渲染层呈现。

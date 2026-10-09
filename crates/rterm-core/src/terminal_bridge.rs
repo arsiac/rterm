@@ -18,7 +18,7 @@ use crate::connection::SshConnection;
 use russh::client::Msg;
 use std::fs::File;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -29,6 +29,93 @@ use tokio::sync::mpsc;
 /// 用 `Option` 包裹以便「不追踪 cwd」的场景（如本地 PTY 或调用方未提供）直接传 `None`，
 /// 此时 pump 跳过 OSC 7 扫描且不向 shell 注入任何内容。
 pub type CwdTracker = Option<Arc<Mutex<Option<String>>>>;
+
+/// 桥接 pump 的退出原因：回答「为什么这条终端通道结束了」，供 GUI 区分
+/// 「远端会话已结束」与「连接已断开」——两者的后续动作不同（前者是用户 `exit`
+/// 了，后者是网络问题），文案也不同。
+///
+/// 编码进 [`BridgeState`] 的 `AtomicU8`（见 [`DisconnectReason::decode`]）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DisconnectReason {
+    /// 尚未判定（桥接仍在运行，或退出路径无法归因）。
+    #[default]
+    Unknown = 0,
+    /// 传输层已死（拔网线、NAT 掉表、sshd 重启、保活超时）：pump 读到通道
+    /// EOF / 错误的同时会话任务已收尾。
+    TransportDied = 1,
+    /// 连接仍活、shell 通道结束（`exit` / `logout`）：会话任务仍在，
+    /// 只是这条通道的发送端被远端丢弃。
+    ChannelEof = 2,
+    /// 本地主动停：关标签 / 关窗口时置位断开标志使 pump 退出。
+    /// 不是故障，仅用于把「正常退出」从另外两类里摘出来。
+    LocalStop = 3,
+}
+
+impl DisconnectReason {
+    /// 解码 `AtomicU8` 取值；未知编码按 [`DisconnectReason::Unknown`] 处理。
+    fn decode(value: u8) -> Self {
+        match value {
+            1 => Self::TransportDied,
+            2 => Self::ChannelEof,
+            3 => Self::LocalStop,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// 桥接的共享结束状态。
+///
+/// 拆成两个标志是刻意的：`stop_requested` 是**输入**（GUI 关标签 / 关窗口时置位，
+/// 请求 pump 退出），`finished` 是**输出**（pump 退出、原因已写下）。合并成一个
+/// 标志会让「已请求停止但 pump 尚未归因」的窗口里，观察者读到 [`DisconnectReason::Unknown`]
+/// ——对「关闭标签」是良性，对「重连后横幅要显示断开原因」则是错误答案。
+pub struct BridgeState {
+    /// 停止请求：置位后 pump 尽快退出。
+    stop_requested: AtomicBool,
+    /// 结束标志：pump 已退出且退出原因已写入（观察者见 `true` 即保证原因已就绪）。
+    finished: AtomicBool,
+    /// 退出原因（编码见 [`DisconnectReason`]）。
+    reason: AtomicU8,
+}
+
+impl BridgeState {
+    /// 新建未结束、未归因的桥接状态。
+    fn new() -> Self {
+        Self {
+            stop_requested: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            reason: AtomicU8::new(DisconnectReason::Unknown as u8),
+        }
+    }
+
+    /// 请求 pump 退出（关标签 / 关窗口）。只是请求，不代表桥接已经结束
+    /// ——结束与否看 [`Self::is_finished`]。
+    pub fn request_stop(&self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// 是否已请求停止（pump 侧与「关闭中」判定读它）。
+    pub fn is_stop_requested(&self) -> bool {
+        self.stop_requested.load(Ordering::SeqCst)
+    }
+
+    /// 桥接是否已结束、退出原因是否已就绪。
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
+    }
+
+    /// 当前退出原因；pump 尚未归因时为 [`DisconnectReason::Unknown`]。
+    pub fn reason(&self) -> DisconnectReason {
+        DisconnectReason::decode(self.reason.load(Ordering::SeqCst))
+    }
+
+    /// pump 收尾：先写原因、再翻结束标志，保证观察者见 `finished` 时原因必已就绪。
+    fn finish(&self, reason: DisconnectReason) {
+        self.reason.store(reason as u8, Ordering::SeqCst);
+        self.finished.store(true, Ordering::SeqCst);
+    }
+}
 
 /// 连接建立后向远端 shell 注入的 prompt 钩子：让 shell 在每个提示符输出 OSC 7
 /// 序列（`ESC ]7;file://<pwd> ESC \`），从而把当前工作目录上报给本桥接。
@@ -64,28 +151,31 @@ const CWD_BOOTSTRAP: &[u8] = b"\
 /// 3. 后台启动桥接任务（含窗口尺寸转发）。
 ///
 /// # 参数
-/// - `conn`：已建立的 SSH 连接（内部句柄可被并发共享）。
+/// - `conn`：已建立的 SSH 连接（内部句柄可被并发共享）。pump 在通道结束时用它探测
+///   传输层是否还活着（见 [`SshConnection::is_closed`]），故按 `Arc` 接收以随桥接任务
+///   一同存活。
 /// - `cols` / `rows`：初始终端列数与行数，用于首帧 PTY 尺寸。
 ///
 /// # 返回
 /// - `local`：同步端 `File`，GUI 应交给 `RusshPty` 包装后接入终端渲染层。
-/// - `disconnect`：共享的断开标志；桥接结束时本模块置位，供 GUI 感知远端关闭。
+/// - `state`：共享的桥接结束状态；桥接结束时置位断开标志并写下退出原因
+///   （[`BridgeState::reason`]，供 GUI 感知远端关闭并区分「会话结束」与「连接断开」）。
 /// - `resize_tx`：本地终端尺寸变更（`(列数, 行数)`）的发送端，GUI 在收到终端
 ///   resize 事件时调用。**丢弃它只停止尺寸转发，并不会结束桥接**——桥接要等远端
 ///   shell 通道 EOF（或本模块的 pump 退出）才结束，并置位 `disconnect`。
 pub async fn spawn_terminal_bridge(
-    conn: &SshConnection,
+    conn: Arc<SshConnection>,
     cols: u32,
     rows: u32,
     cwd: CwdTracker,
     cwd_bootstrap: bool,
     suppress_bootstrap_echo: bool,
-) -> Result<(File, File, Arc<AtomicBool>, mpsc::Sender<(u32, u32)>), CoreError> {
+) -> Result<(File, File, Arc<BridgeState>, mpsc::Sender<(u32, u32)>), CoreError> {
     // 进程内管道：拆成 OUT（远端→本地输出）与 IN（本地→远端输入）两条独立管道。
     // 同步端（conout 读端 / conin 写端）交 GUI，异步端（out_stream / in_stream）在此泵接 russh 通道。
     let (conout_file, conin_file, out_stream, in_stream) = create_bridge()?;
 
-    let disconnect = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(BridgeState::new());
 
     // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
     let channel = conn
@@ -112,17 +202,18 @@ pub async fn spawn_terminal_bridge(
     // 尺寸变更通道：容量 8，GUI 侧 resize 突发时丢弃最旧也不阻塞渲染。
     let (resize_tx, resize_rx) = mpsc::channel(8);
 
-    let bridge_disconnect = disconnect.clone();
-    // 泵接监听的断开标志需独立克隆：关标签 / 关窗口时由 GUI 置位使其尽快退出。
-    let pump_stop = disconnect.clone();
+    // 泵接监听的停止请求需独立克隆：关标签 / 关窗口时由 GUI 置位使其尽快退出。
+    let pump_state = state.clone();
     tokio::spawn(async move {
-        pump(out_stream, in_stream, channel, resize_rx, pump_stop, cwd).await;
+        // pump 退出即写下退出原因并翻转结束标志（见 `BridgeState::finish`）。
+        pump(
+            out_stream, in_stream, channel, resize_rx, pump_state, cwd, &conn,
+        )
+        .await;
         log::debug!("Terminal bridge task finished");
-        // 桥接结束即视为连接断开（远端关闭或本地流 EOF），通知 GUI 更新状态。
-        bridge_disconnect.store(true, Ordering::SeqCst);
     });
 
-    Ok((conout_file, conin_file, disconnect, resize_tx))
+    Ok((conout_file, conin_file, state, resize_tx))
 }
 
 /// 在异步字节流与远端 shell 通道之间双向转发数据，并在 I/O 等待间隙应用尺寸变更。
@@ -131,16 +222,22 @@ pub async fn spawn_terminal_bridge(
 /// 取本地输入（GUI 的 conin 会写它）。二者是**两条独立管道**，故 conout 读线程与
 /// conin 写线程不会落在同一管道端点上互相串行化阻塞。
 ///
-/// `stop` 为断开标志：关标签 / 关窗口时由 GUI 置位，使泵接尽快退出（否则泵接持有
-/// 服务端管道、win_io 读线程持有客户端管道并被 `ReadFile` 阻塞，二者互相等待对方
-/// 关闭句柄而死锁，导致后台线程与进程残留）。
+/// `state` 为桥接结束状态：其中断开标志在关标签 / 关窗口时由 GUI 置位，使泵接尽快退出
+/// （否则泵接持有服务端管道、win_io 读线程持有客户端管道并被 `ReadFile` 阻塞，二者互相
+/// 等待对方关闭句柄而死锁，导致后台线程与进程残留）；退出原因由本函数按判定写下
+/// （见 [`DisconnectReason`]）。
+///
+/// `conn` 用于在通道 EOF / 读到错误时探测传输层是否还活着：russh 里「远端 shell 退出」
+/// 与「传输死亡」都表现为读返回 `Ok(0)` 或错误，唯一区分依据是会话任务是否已收尾
+/// （[`SshConnection::is_closed`]）。只在退出路径上锁，不影响泵接的热路径。
 async fn pump<W, R>(
     mut out_stream: W,
     mut in_stream: R,
     mut channel: russh::Channel<Msg>,
     mut resize_rx: mpsc::Receiver<(u32, u32)>,
-    stop: Arc<AtomicBool>,
+    state: Arc<BridgeState>,
     cwd: CwdTracker,
+    conn: &SshConnection,
 ) where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
@@ -156,6 +253,9 @@ async fn pump<W, R>(
     let mut total_remote = 0usize;
     let mut total_local = 0usize;
     log::debug!("Terminal bridge pump started");
+    // 退出原因：每个 break 出口在跳出前把原因算好，收尾时统一写入
+    // （把归因集中在出口处，避免 `request_stop` 与远端事件谁先到不同的分支里各写一遍）。
+    let reason;
 
     loop {
         // 在两次 I/O 等待之间，将积压的窗口尺寸变更下发到远端。
@@ -167,8 +267,9 @@ async fn pump<W, R>(
 
         tokio::select! {
             // 收到断开信号：立即退出，释放服务端管道句柄。
-            _ = wait_stop(stop.clone()) => {
+            _ = wait_stop(state.clone()) => {
                 log::debug!("pump: received stop signal, exiting");
+                reason = DisconnectReason::LocalStop;
                 break;
             }
             // 远端 -> 本地：从通道读取并写入本地 OUT 管道端。
@@ -177,13 +278,30 @@ async fn pump<W, R>(
                 reader.read(&mut channel_buf).await
             } => {
                 match n {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        // 通道 EOF 与传输死亡在 russh 里形态一致（都表现为读返回
+                        // `Ok(0)`），唯一的区分依据是会话任务是否已收尾：仍是活的
+                        // 说明只是这条 shell 通道结束了（远端 shell 退出）。
+                        //
+                        // 停止请求优先（同 `local_side_reason`）：关标签会先置位请求、
+                        // 随后连接对象才被丢弃，若不先判这个，一次正常关标签会被记成
+                        // 「传输死亡」。
+                        reason = if state.is_stop_requested() {
+                            DisconnectReason::LocalStop
+                        } else if conn.is_closed().await {
+                            DisconnectReason::TransportDied
+                        } else {
+                            DisconnectReason::ChannelEof
+                        };
+                        break;
+                    }
                     Ok(n) => {
                         // 在写往本地前先扫描 OSC 7 序列，提取终端 cwd。
                         if let Some(cwd) = &cwd {
                             scan_osc7_cwd(&mut osc_carry, &channel_buf[..n], cwd);
                         }
                         if out_stream.write_all(&channel_buf[..n]).await.is_err() {
+                            reason = DisconnectReason::Unknown;
                             break;
                         }
                         total_remote += n;
@@ -193,28 +311,47 @@ async fn pump<W, R>(
             // 本地 -> 远端：从本地 IN 管道端读取并写入通道。
             n = in_stream.read(&mut socket_buf) => {
                 match n {
-                    Ok(0) => break,
+                    // 本地管道关端（GUI 侧丢弃 / 关标签）：停止请求优先，其余按传输状态归因。
+                    Ok(0) | Err(_) => {
+                        reason = local_side_reason(&state, conn).await;
+                        break;
+                    }
                     Ok(n) => {
                         let mut writer = channel.make_writer();
                         if writer.write_all(&socket_buf[..n]).await.is_err() {
+                            reason = local_side_reason(&state, conn).await;
                             break;
                         }
                         total_local += n;
                     }
-                    Err(_) => break,
                 }
             }
         }
     }
+    state.finish(reason);
     log::debug!(
-        "Terminal bridge pump exiting (remote→local {total_remote} bytes, local→remote {total_local} bytes)"
+        "Terminal bridge pump exiting (remote→local {total_remote} bytes, local→remote {total_local} bytes, reason {reason:?})"
     );
 }
 
-/// 在断开标志置位前让出，供 `tokio::select!` 监听泵接退出信号。
-async fn wait_stop(stop: Arc<AtomicBool>) {
-    while !stop.load(Ordering::SeqCst) {
+/// 在停止请求置位前让出，供 `tokio::select!` 监听泵接退出信号。
+async fn wait_stop(state: Arc<BridgeState>) {
+    while !state.is_stop_requested() {
         tokio::task::yield_now().await;
+    }
+}
+
+/// 本地一侧的退出归因（本地管道关端 / 写通道失败）：停止请求优先——
+/// 关标签会先置位请求、随后连接对象才被丢弃，若不先判这个，一次正常关标签
+/// 会被记成「传输死亡」；其余情况按传输层状态判定（本地端先没、传输已死
+/// 属于同一场故障）。无法归因时返回 [`DisconnectReason::Unknown`]。
+async fn local_side_reason(state: &BridgeState, conn: &SshConnection) -> DisconnectReason {
+    if state.is_stop_requested() {
+        DisconnectReason::LocalStop
+    } else if conn.is_closed().await {
+        DisconnectReason::TransportDied
+    } else {
+        DisconnectReason::Unknown
     }
 }
 
@@ -412,4 +549,56 @@ fn make_pipe(suffix: &str) -> io::Result<(tokio::net::windows::named_pipe::Named
     }
     .map_err(|e| io::Error::other(format!("创建异步命名管道失败: {e}")))?;
     Ok((server_async, client_file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 停止请求与「已结束」是两个独立信号：请求停止不会提前把桥接标成已结束，
+    /// 更不会动原因——原因只能由 pump 收尾时写下。
+    #[test]
+    fn a_stop_request_is_not_a_finish() {
+        let state = BridgeState::new();
+        assert!(!state.is_stop_requested());
+        assert!(!state.is_finished());
+        assert_eq!(state.reason(), DisconnectReason::Unknown);
+
+        state.request_stop();
+        assert!(state.is_stop_requested());
+        assert!(!state.is_finished(), "停止只是请求，pump 尚未退出并归因");
+        assert_eq!(state.reason(), DisconnectReason::Unknown);
+
+        state.finish(DisconnectReason::LocalStop);
+        assert!(state.is_finished());
+        assert_eq!(state.reason(), DisconnectReason::LocalStop);
+    }
+
+    /// 三种原因的编码必须可原样解码回来，且每个枚举值都对应不同的 `u8`
+    /// （否则 GUI 会读到错误的类别，或两类断开共用同一个数）。
+    #[test]
+    fn every_reason_round_trips_through_its_code() {
+        for reason in [
+            DisconnectReason::Unknown,
+            DisconnectReason::TransportDied,
+            DisconnectReason::ChannelEof,
+            DisconnectReason::LocalStop,
+        ] {
+            assert_eq!(DisconnectReason::decode(reason as u8), reason);
+        }
+
+        let mut codes = [
+            DisconnectReason::Unknown as u8,
+            DisconnectReason::TransportDied as u8,
+            DisconnectReason::ChannelEof as u8,
+            DisconnectReason::LocalStop as u8,
+        ]
+        .to_vec();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), 4, "四种原因不得共用编码");
+
+        // 越界 / 未定义编码（如未来版本新增原因后旧 GUI 读到新字节）按 Unknown 处理。
+        assert_eq!(DisconnectReason::decode(200), DisconnectReason::Unknown);
+    }
 }

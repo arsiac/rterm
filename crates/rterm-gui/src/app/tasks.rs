@@ -106,16 +106,17 @@ pub(crate) fn connect_deadline(timeout: u64) -> Pin<Box<dyn Future<Output = ()> 
 }
 
 /// 创建终端桥接（进程内 OUT/IN 双管道 + 打开 shell 通道），返回 conout 读端、conin 写端、
-/// 断开标志与尺寸发送端。
+/// 桥接结束状态与尺寸发送端。
 ///
-/// 桥接任务结束时核心层会置位 `disconnect` 标志；此处另起一个轻量 watcher 轮询该标志，
-/// 一旦翻转即经 `disconnect_tx` 按标签通知 GUI（`Message::TerminalDisconnected`），
-/// 最终由 `tabs::State::terminal_disconnected` 把该标签状态置为 `Error`。
+/// 桥接结束时核心层置位 `state.finished` 并写下退出原因；此处另起一个轻量 watcher
+/// 轮询该状态，一旦结束即经 `disconnect_tx` 按标签通知 GUI
+/// （`Message::TerminalDisconnected`），最终由 `tabs::State::terminal_disconnected`
+/// 把该标签状态置为 `Error`。
 pub(crate) async fn open_terminal_task(
     conn: Arc<SshConnection>,
     cols: u32,
     rows: u32,
-    disconnect_tx: mpsc::Sender<()>,
+    disconnect_tx: mpsc::Sender<rterm_core::DisconnectReason>,
     cwd: crate::state::TerminalTabCwd,
     cwd_bootstrap: bool,
     suppress_bootstrap_echo: bool,
@@ -123,13 +124,13 @@ pub(crate) async fn open_terminal_task(
     (
         std::sync::Arc<std::fs::File>,
         std::sync::Arc<std::fs::File>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Arc<rterm_core::BridgeState>,
         ResizeSender,
     ),
     CoreError,
 > {
-    let (conout, conin, disconnect, resize_tx) = rterm_core::spawn_terminal_bridge(
-        &conn,
+    let (conout, conin, state, resize_tx) = rterm_core::spawn_terminal_bridge(
+        conn,
         cols,
         rows,
         cwd,
@@ -138,12 +139,12 @@ pub(crate) async fn open_terminal_task(
     )
     .await?;
 
-    let disc = disconnect.clone();
+    let polled = state.clone();
     let watcher_tx = disconnect_tx;
     tokio::spawn(async move {
         loop {
-            if disc.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = watcher_tx.send(()).await;
+            if polled.is_finished() {
+                let _ = watcher_tx.send(polled.reason()).await;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -153,7 +154,7 @@ pub(crate) async fn open_terminal_task(
     Ok((
         std::sync::Arc::new(conout),
         std::sync::Arc::new(conin),
-        disconnect,
+        state,
         resize_tx,
     ))
 }

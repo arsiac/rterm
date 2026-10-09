@@ -61,9 +61,9 @@ pub(crate) fn open_terminal_bridge(
     if let Some(tab) = app.tabs.tab_mut(tab_id) {
         tab.conn = Some(conn.clone());
     }
-    // 桥接结束（断线）时经 `disconnect_rx` 回发 `TerminalDisconnected(tab_id)`，
-    // 按标签（而非按会话）把状态置为 `Error`。
-    let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
+    // 桥接结束（断线）时经 `disconnect_rx` 回发 `TerminalDisconnected(tab_id, reason)`，
+    // 按标签（而非按会话）把状态置为 `Error` 并携带退出原因（会话结束 / 连接断开）。
+    let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<rterm_core::DisconnectReason>(1);
     // 取出本标签的 cwd 共享容器，随桥接传给核心层（pump 扫描 OSC 7 写入）。
     let cwd = app
         .tabs
@@ -90,9 +90,11 @@ pub(crate) fn open_terminal_bridge(
     );
     let disconnect = Task::perform(
         async move {
-            let _ = disconnect_rx.recv().await;
+            // 桥接结束：`Some(reason)` 携带退出原因；发送端被丢弃（标签已清理）时
+            // `recv()` 立即返回 `None`，以 `Unknown` 占位（该消息随后查无此标签，为无害空转）。
+            disconnect_rx.recv().await.unwrap_or_default()
         },
-        move |_| Message::Tabs(tabs::Message::TerminalDisconnected(tab_id)),
+        move |reason| Message::Tabs(tabs::Message::TerminalDisconnected(tab_id, reason)),
     );
     Task::batch([bridge, disconnect])
 }
@@ -103,7 +105,7 @@ pub(crate) fn spawn_terminal_widget(
     tab_id: u64,
     conout: Arc<std::fs::File>,
     conin: Arc<std::fs::File>,
-    disconnect: Arc<std::sync::atomic::AtomicBool>,
+    bridge: Arc<rterm_core::BridgeState>,
     resize_tx: ResizeSender,
 ) -> Task<Message> {
     // 把本地管道同步端包成 russh 自定义 pty，直接桥接远端 shell 通道。
@@ -121,7 +123,7 @@ pub(crate) fn spawn_terminal_widget(
             return Task::none();
         }
     };
-    let russh_pty = match RusshPty::new(conout, conin, disconnect.clone(), resize_tx.clone()) {
+    let russh_pty = match RusshPty::new(conout, conin, bridge.clone(), resize_tx.clone()) {
         Ok(p) => p,
         Err(e) => {
             app.status = Some(t!("app.pipe_clone_failed", err => e));
@@ -148,8 +150,11 @@ pub(crate) fn spawn_terminal_widget(
             if let Some(tab) = app.tabs.tab_mut(tab_id) {
                 tab.terminal = Some(terminal);
                 tab.resize_tx = Some(resize_tx);
-                // 记录桥接断开标志，关标签 / 关窗口时置位以通知 pump 退出。
-                tab.disconnect = Some(disconnect.clone());
+                // 记录桥接状态，供关标签 / 关窗口时请求停止，断开时读取退出原因。
+                tab.bridge = Some(bridge);
+                // 新桥接已挂载：清掉上一次的断开归因，避免旧原因残留
+                // 让「已重新连上」的标签仍被当成断开态。
+                tab.disconnect_reason = None;
                 // 终端组件就绪即代表连接可用，此时才把本标签标记为已连接，
                 // 使文件管理等依赖 Connected 的逻辑与终端实际可用状态一致。
                 tab.status = ConnectionStatus::Connected;
