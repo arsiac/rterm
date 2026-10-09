@@ -111,7 +111,7 @@ pub enum Message {
     DisconnectedKeyPressed(u64),
     /// 横幅闪烁到期（携带标签 id 与本次提示序号）：序号匹配才清除，旧计时器不得熄灭新闪烁。
     BannerFlashExpired(u64, u64),
-    /// 断开态下按下回车 / 点击横幅「重新连接」按钮：请求重连该标签。
+    /// 断开态下按下回车 / 点击横幅「重新连接」按钮 / 点击覆盖层「重试」：请求重连该标签。
     ReconnectRequested(u64),
 }
 
@@ -148,7 +148,7 @@ pub enum Event {
     TerminalReady(u64),
     /// 切标签后滚动标签栏到目标位置。
     ScrollTo(f32),
-    /// 断开态下的重连请求（回车 / 横幅按钮）：父层据此发起重连连接。
+    /// 断开态下的重连请求（回车 / 横幅按钮 / 覆盖层重试）：父层在本标签上原地重建连接。
     ReconnectTab(u64, String),
     /// 自回路：把模块内部消息派发回自身（SwitchTab 复用 SelectTab）。
     Emit(Box<Message>),
@@ -433,6 +433,15 @@ impl State {
                 tab_id, conout, conin, disconnect, resize_tx,
             )),
             Err(e) => {
+                // 已挂过终端的标签（原地重连失败）：保留标签与终端，原因写在其上由横幅
+                // 展示（终端还在，横幅即展示位），可再按 Enter 重试。
+                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
+                    && tab.terminal.is_some()
+                {
+                    tab.status = ConnectionStatus::Error;
+                    tab.error = Some(e.clone());
+                    return Task::done(Event::SetStatus(e));
+                }
                 let mut events = vec![Event::SetStatus(e)];
                 // 终端打开失败时该标签被丢弃；同会话其它标签各自持有自己的连接，不受影响。
                 let closed_session = self
@@ -490,15 +499,25 @@ impl State {
         }
         match result {
             Ok(conn) => {
+                // 已有终端 ⇒ 原地重连：状态栏文案与首次连接分流。
+                let reconnecting = self
+                    .tabs
+                    .iter()
+                    .any(|t| t.id == tab_id && t.terminal.is_some());
                 // 连接已建立但桥接尚未就绪：保持“连接中”，直到 TerminalOpened
                 // 真正拉起终端后再置 Connected，避免文件管理等依赖 Connected 的逻辑抢跑。
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                     tab.error = None;
                 }
+                let status_msg = if reconnecting {
+                    t!("app.reconnected", id => id.clone())
+                } else {
+                    t!("app.conn_established", id => id.clone())
+                };
                 // 记录最近连接的会话，供切换到文件管理时自动打开其 SFTP。
                 Task::batch([
-                    Task::done(Event::SetActiveSession(Some(id.clone()))),
-                    Task::done(Event::SetStatus(t!("app.conn_established", id => id))),
+                    Task::done(Event::SetActiveSession(Some(id))),
+                    Task::done(Event::SetStatus(status_msg)),
                     Task::done(Event::OpenTerminalBridge(tab_id, conn)),
                 ])
             }
@@ -586,26 +605,21 @@ impl State {
         }
     }
 
-    /// 校验并解析重连请求的目标（回车 / 横幅按钮）：仅断开中的标签接受。
+    /// 校验并受理重连请求（回车 / 横幅按钮 / 覆盖层重试）：仅断开中的标签接受，受理即置
+    /// `Connecting`、清掉上次失败原因，并在本标签上原地重建。
     ///
-    /// 排除 `Connected`（迟到触发不得再开连接）与 `Connecting`（该标签自己的重连已在途）；
-    /// 另排除「该会话已有标签在连接中」——连按回车时首条请求已开出新连接（落在新标签上），
-    /// 在途的重复请求到此时查到在途连接即被丢弃，不会并发起第二条。
-    fn reconnect_target(&self, tab_id: u64) -> Option<Event> {
-        let tab = self.tabs.iter().find(|t| t.id == tab_id)?;
+    /// 逐标签防重复：`Connected` 的迟到触发不再建连，`Connecting` 期间的重复请求被挡下；
+    /// `Connecting` 期间键入闸门继续拦截（终端仍挂在已死的后端上）。
+    fn reconnect_target(&mut self, tab_id: u64) -> Option<Event> {
+        let tab = self.tabs.iter_mut().find(|t| t.id == tab_id)?;
         if !matches!(
             tab.status,
             ConnectionStatus::Error | ConnectionStatus::Disconnected
         ) {
             return None;
         }
-        let pending = self
-            .tabs
-            .iter()
-            .any(|t| t.status == ConnectionStatus::Connecting && t.session_id == tab.session_id);
-        if pending {
-            return None;
-        }
+        tab.status = ConnectionStatus::Connecting;
+        tab.error = None;
         Some(Event::ReconnectTab(tab_id, tab.session_id.clone()))
     }
 }
@@ -716,42 +730,49 @@ mod tests {
         assert!(state.list()[0].banner_flash.is_none());
     }
 
-    /// 重连请求只接受断开中的标签；该会话已有在途连接（连按回车的重复请求）同样拒绝。
+    /// 重连请求只受理断开中的标签且受理即置「连接中」：连按回车时第二条被挡下，
+    /// 同会话其它标签的连接中不阻塞本标签。
     #[test]
-    fn reconnect_target_accepts_only_disconnected_tabs_without_pending_connect() {
+    fn reconnect_request_flips_the_tab_to_connecting_and_dedups_followups() {
         let mut state = State::new();
         let a = state.add("s1".to_string(), "s1".to_string());
         let set_status = |state: &mut State, id: u64, status| {
             state.tabs.iter_mut().find(|t| t.id == id).unwrap().status = status;
         };
 
-        // 断开态（Error / Disconnected）且无在途连接：接受。
+        // 非断开态（已恢复 / 自己的重连已在途）：不受理，也不改状态。
+        for status in [ConnectionStatus::Connected, ConnectionStatus::Connecting] {
+            set_status(&mut state, a, status);
+            assert!(state.reconnect_target(a).is_none());
+            assert_eq!(state.list()[0].status, status);
+        }
+
+        // 断开态（Error / Disconnected）：受理，置连接中并清掉旧失败原因。
+        for status in [ConnectionStatus::Error, ConnectionStatus::Disconnected] {
+            set_status(&mut state, a, status);
+            state.tabs.iter_mut().find(|t| t.id == a).unwrap().error = Some("旧原因".into());
+            assert!(matches!(
+                state.reconnect_target(a),
+                Some(Event::ReconnectTab(id, s)) if id == a && s == "s1"
+            ));
+            assert_eq!(state.list()[0].status, ConnectionStatus::Connecting);
+            assert!(state.list()[0].error.is_none());
+        }
+
+        // 重连在途（上一步已置 Connecting）：重复请求被挡下。
+        assert!(state.reconnect_target(a).is_none());
+
+        // 同会话其它标签在连接中，不阻塞本标签的受理（防重复是逐标签的）。
         set_status(&mut state, a, ConnectionStatus::Error);
-        assert!(matches!(
-            state.reconnect_target(a),
-            Some(Event::ReconnectTab(id, s)) if id == a && s == "s1"
-        ));
-        set_status(&mut state, a, ConnectionStatus::Disconnected);
+        let _b = state.add("s1".to_string(), "s1".to_string());
         assert!(state.reconnect_target(a).is_some());
 
-        // 标签已恢复 / 自己的重连在途：拒绝。
-        set_status(&mut state, a, ConnectionStatus::Connected);
-        assert!(state.reconnect_target(a).is_none());
-        set_status(&mut state, a, ConnectionStatus::Connecting);
-        assert!(state.reconnect_target(a).is_none());
-
-        // 同会话另一标签在连接中（连按回车开出的新连接在途）：重复请求被丢弃。
+        // 结果回流后再次失败：仍可受理。
         set_status(&mut state, a, ConnectionStatus::Error);
-        let b = state.add("s1".to_string(), "s1".to_string());
-        assert!(state.reconnect_target(a).is_none());
-
-        // 在途连接结束后重新接受。
-        set_status(&mut state, b, ConnectionStatus::Connected);
         assert!(state.reconnect_target(a).is_some());
 
-        // 其它会话的在途连接不影响本会话的重连。
-        let _c = state.add("s2".to_string(), "s2".to_string());
-        assert!(state.reconnect_target(a).is_some());
+        // 不存在的标签（已关闭）。
+        assert!(state.reconnect_target(404).is_none());
     }
 
     mod drag_tests {

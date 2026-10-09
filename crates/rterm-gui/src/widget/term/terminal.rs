@@ -106,13 +106,21 @@ impl Terminal {
         })
     }
 
-    /// 原地换接新桥接的 PTY（断线重连）：网格、滚动历史与后端事件订阅全部保留，
-    /// 仅把后端 event loop 换到新通道上，随后强制重绘。
+    /// 原地换接新桥接的 PTY（断线重连）：复用同一网格、滚动历史与后端事件订阅，仅把
+    /// 后端 event loop 换到新通道上，随后强制重绘并把视口拉回底部（旧内容由重连注入的
+    /// 清屏字节稍后作废；先回底使清屏前的窗口也贴着实时输出）。
     pub fn reattach(&mut self, pty: RusshPty) -> Result<()> {
         self.backend.reattach(pty)?;
+        self.backend.scroll_to_bottom();
         self.backend.sync();
         self.redraw();
         Ok(())
+    }
+
+    /// 当前网格的行列数（列, 行；像素布局折算后的实际值），供重连按现尺寸重开 PTY。
+    pub fn grid_size(&self) -> (u32, u32) {
+        let (cols, rows) = self.backend.grid_size();
+        (u32::from(cols), u32::from(rows))
     }
 
     /// 返回 iced 部件 id。

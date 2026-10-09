@@ -43,6 +43,26 @@ impl State {
         self.ensure(tab_id).client = Some(client);
     }
 
+    /// 作废某标签的 SFTP 通道（原地重连成功后调用）。
+    ///
+    /// 旧客户端绑在已死的连接上、任何调用秒失败：清空后视图回到未打开态，由用户重新
+    /// 打开（不自动重建通道 / 续跑队列）；内联输入与对话框一并收起（指向旧目录快照）。
+    pub fn invalidate(&mut self, tab_id: u64) {
+        if let Some(view) = self.per_tab.get_mut(&tab_id) {
+            view.session = None;
+            view.client = None;
+            view.busy = false;
+            view.path = ".".to_string();
+            view.path_input = ".".to_string();
+            view.entries.clear();
+            view.selected = None;
+            view.hovered = None;
+            view.creating_dir = None;
+            view.renaming = None;
+            view.dialog = None;
+        }
+    }
+
     /// 查询某标签是否已建立 SFTP 会话（用于「切到文件管理自动打开」判定）。
     pub fn tab_session(&self, tab_id: u64) -> Option<String> {
         self.per_tab.get(&tab_id).and_then(|s| s.session.clone())
@@ -702,5 +722,54 @@ mod tests {
             state.tab(7).and_then(|tab| tab.dialog.as_ref()),
             Some(SftpDialog::Delete { is_dir: false, .. })
         ));
+    }
+
+    /// 作废通道：会话标记 / 目录 / 列表 / 选中 / 内联输入与对话框全部清空，视图回到
+    /// 未打开态（`client` 无法在单测中构造，与 `session` 同处清空）。
+    #[test]
+    fn invalidate_resets_the_tab_view() {
+        let mut state = State::default();
+        {
+            let view = state.ensure(7);
+            view.session = Some("s1".to_string());
+            view.path = "/var/log".to_string();
+            view.path_input = "/var/log".to_string();
+            view.entries.push(rterm_core::FileEntry {
+                name: "syslog".to_string(),
+                is_dir: false,
+                size: 42,
+                modified: None,
+                permissions: None,
+                user: None,
+                group: None,
+            });
+            view.selected = Some("syslog".to_string());
+            view.hovered = Some("syslog".to_string());
+            view.creating_dir = Some("New Folder".to_string());
+            view.renaming = Some(("a".to_string(), "b".to_string()));
+            view.dialog = Some(SftpDialog::Delete {
+                name: "syslog".to_string(),
+                is_dir: false,
+            });
+            view.busy = true;
+        }
+
+        state.invalidate(7);
+
+        let view = state.tab(7).expect("视图仍在，只是被复位");
+        assert!(view.session.is_none());
+        assert!(view.client.is_none());
+        assert!(!view.busy);
+        assert_eq!(view.path, ".");
+        assert_eq!(view.path_input, ".");
+        assert!(view.entries.is_empty());
+        assert!(view.selected.is_none());
+        assert!(view.hovered.is_none());
+        assert!(view.creating_dir.is_none());
+        assert!(view.renaming.is_none());
+        assert!(view.dialog.is_none());
+
+        // 作废不存在的标签只是无操作。
+        state.invalidate(404);
     }
 }

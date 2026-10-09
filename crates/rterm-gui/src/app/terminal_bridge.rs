@@ -3,10 +3,11 @@
 use crate::app::App;
 use crate::app::contexts;
 use crate::app::tabs;
-use crate::app::tasks::open_terminal_task;
+use crate::app::tasks::{BridgeOptions, open_terminal_task};
 use crate::font;
 use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
+use crate::state::TerminalTab;
 use crate::t;
 use crate::terminal_theme;
 use crate::widget::term::actions::Action;
@@ -53,6 +54,9 @@ pub(crate) fn apply_terminal_theme(tabs: &mut tabs::State, theme: &str) {
 }
 
 /// 为已存在的（连接中）标签挂载连接并发起桥接任务。
+///
+/// 尚无终端（首次连接）用默认行列数、不注入字节；已有终端（原地重连）按当前网格尺寸
+/// 开局并注入复位 + 清屏 + 提示行——重连不会再触发 resize，尺寸只能在建桥时给定。
 pub(crate) fn open_terminal_bridge(
     app: &mut App,
     tab_id: u64,
@@ -71,11 +75,34 @@ pub(crate) fn open_terminal_bridge(
         .iter()
         .find(|t| t.id == tab_id)
         .map(|t| t.cwd.clone());
+    let opts = match app
+        .tabs
+        .list()
+        .iter()
+        .find(|t| t.id == tab_id)
+        .and_then(|t| t.terminal.as_ref().map(|term| (term, t)))
+    {
+        Some((term, tab)) => {
+            // 已有终端 ⇒ 原地重连：按当前网格尺寸开局（不会再触发 resize），注入提示行。
+            let (cols, rows) = term.grid_size();
+            let old_cwd = tab.cwd.lock().ok().and_then(|g| g.clone());
+            BridgeOptions {
+                cols,
+                rows,
+                inject_out: Some(reconnect_inject_bytes(old_cwd.as_deref())),
+            }
+        }
+        // 尚无终端 ⇒ 首次连接：沿用默认尺寸（终端就绪后由布局 resize 校正），不注入。
+        None => BridgeOptions {
+            cols: super::DEFAULT_COLS,
+            rows: super::DEFAULT_ROWS,
+            inject_out: None,
+        },
+    };
     let bridge = Task::perform(
         open_terminal_task(
             conn,
-            super::DEFAULT_COLS,
-            super::DEFAULT_ROWS,
+            opts,
             disconnect_tx,
             cwd,
             app.config.terminal.cwd_bootstrap,
@@ -97,6 +124,34 @@ pub(crate) fn open_terminal_bridge(
         move |reason| Message::Tabs(tabs::Message::TerminalDisconnected(tab_id, reason)),
     );
     Task::batch([bridge, disconnect])
+}
+
+/// 重连时注入的整段字节：复位序列 + 清屏 + 一行「会话已重新开始」提示（带旧 cwd）。
+///
+/// 复位序列为手写的 xterm soft reset（alacritty 未实现 DECSTR）；不退备用屏则清屏与
+/// 提示行落进备用屏、随全屏程序退出一起消失，旧模式位（鼠标上报、括号粘贴）也会污染
+/// 新 shell 的首行键入。
+/// 清屏取 xterm 系 `clear` 语义（`\x1b[H\x1b[2J\x1b[3J`：归位 + 清视口 + 清 scrollback），
+/// 避免旧残帧（半截 MOTD、旧提示符）与新输出按格混排。
+/// 提示行带旧 cwd，只读、不执行任何命令。
+fn reconnect_inject_bytes(old_cwd: Option<&str>) -> Vec<u8> {
+    /// 渲染层复位：退备用屏 → 清 SGR → 滚动区 → 光标 / 自动换行 / 方向键 →
+    /// 鼠标上报与括号粘贴 / 焦点上报全关。
+    const RESET: &[u8] = b"\x1b[?1049l\x1b[0m\x1b[r\x1b[?25h\x1b[?7h\x1b[?1l\
+        \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l";
+    /// 清屏：光标归位 → 清视口（ED 2）→ 清 scrollback（ED 3）。
+    const CLEAR: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+    let body = match old_cwd {
+        Some(dir) => t!("terminal.reconnected_notice_cwd", cwd => dir.to_string()),
+        None => t!("terminal.reconnected_notice"),
+    };
+    let mut bytes = Vec::with_capacity(RESET.len() + CLEAR.len() + body.len() + 16);
+    bytes.extend_from_slice(RESET);
+    bytes.extend_from_slice(CLEAR);
+    bytes.extend_from_slice(b"[rterm] ");
+    bytes.extend_from_slice(body.as_bytes());
+    bytes.extend_from_slice(b"\r\n");
+    bytes
 }
 
 /// 桥接就绪后用返回的本地 OUT/IN 双管道端创建终端组件，并自动聚焦。
@@ -130,6 +185,17 @@ pub(crate) fn spawn_terminal_widget(
             return Task::none();
         }
     };
+    // 已有终端 ⇒ 原地重连：换接新 pty，不重建 widget（网格、选中态、字体 / 主题与
+    // 事件订阅均复用）。
+    let reattaching = app
+        .tabs
+        .list()
+        .iter()
+        .find(|t| t.id == tab_id)
+        .is_some_and(|t| t.terminal.is_some());
+    if reattaching {
+        return reattach_terminal_widget(app, tab_id, russh_pty, bridge, resize_tx);
+    }
     let settings = TermSettings {
         backend: BackendSettings {
             scrollback: app.config.terminal.scrollback,
@@ -150,15 +216,7 @@ pub(crate) fn spawn_terminal_widget(
             if let Some(tab) = app.tabs.tab_mut(tab_id) {
                 tab.terminal = Some(terminal);
                 tab.resize_tx = Some(resize_tx);
-                // 记录桥接状态，供关标签 / 关窗口时请求停止，断开时读取退出原因。
-                tab.bridge = Some(bridge);
-                // 新桥接已挂载：清掉上一次的断开归因，避免旧原因残留
-                // 让「已重新连上」的标签仍被当成断开态。
-                tab.disconnect_reason = None;
-                // 终端组件就绪即代表连接可用，此时才把本标签标记为已连接，
-                // 使文件管理等依赖 Connected 的逻辑与终端实际可用状态一致。
-                tab.status = ConnectionStatus::Connected;
-                tab.error = None;
+                apply_bridge_mounted_state(tab, &bridge);
             }
             app.status = Some(t!("app.terminal_ready"));
             // 焦点由 app 级 `terminal_focused` 驱动并传入 widget，此处置 true
@@ -176,6 +234,64 @@ pub(crate) fn spawn_terminal_widget(
             Task::none()
         }
     }
+}
+
+/// 桥接挂载到标签后的连接态收尾（新建与原地重连共用）。
+///
+/// 按桥接实况置状态：仍在运行 → 已连接并清旧归因；已结束 → 失败态 + 归因。必须查实况
+/// 而非无条件置已连接——远端 shell 秒退时 `TerminalDisconnected` 可能先于
+/// `TerminalOpened` 到达，照常置位会留下看似正常、实际已死的终端。
+fn apply_bridge_mounted_state(tab: &mut TerminalTab, bridge: &Arc<rterm_core::BridgeState>) {
+    // 记录桥接状态：关标签 / 关窗口时请求停止、下次断开时读取归因都指向它。
+    tab.bridge = Some(bridge.clone());
+    tab.error = None;
+    if bridge.is_finished() {
+        tab.status = ConnectionStatus::Error;
+        tab.disconnect_reason = Some(bridge.reason());
+    } else {
+        tab.status = ConnectionStatus::Connected;
+        tab.disconnect_reason = None;
+    }
+}
+
+/// 原地重连落地：把新桥接的 pty 换接到既有终端上（[`Terminal::reattach`]），
+/// 恢复该标签的连接态字段，并作废绑在旧连接上的 SFTP 通道。
+///
+/// 换接失败（极罕见）时标签保持断开态、原因写入 `tab.error` 由横幅展示，可再按 Enter
+/// 重试（旧桥接状态仍挂在标签上）。
+fn reattach_terminal_widget(
+    app: &mut App,
+    tab_id: u64,
+    russh_pty: RusshPty,
+    bridge: Arc<rterm_core::BridgeState>,
+    resize_tx: ResizeSender,
+) -> Task<Message> {
+    let Some(tab) = app.tabs.tab_mut(tab_id) else {
+        return Task::none();
+    };
+    let Some(terminal) = tab.terminal.as_mut() else {
+        // 调用前已判定终端存在；走到这里说明状态在异步间隙被外部改动，按无操作处理。
+        return Task::none();
+    };
+    if let Err(e) = terminal.reattach(russh_pty) {
+        tab.status = ConnectionStatus::Error;
+        tab.error = Some(t!("app.terminal_reattach_failed", err => e));
+        return Task::none();
+    }
+    tab.resize_tx = Some(resize_tx);
+    apply_bridge_mounted_state(tab, &bridge);
+    tab.banner_flash = None;
+    // 旧 SFTP 客户端绑在已死的连接上（任何调用秒失败），直接作废：视图回到未打开态，
+    // 由用户重新打开（不自动重建通道 / 续跑队列）。
+    app.sftp.invalidate(tab_id);
+    app.status = Some(t!("app.terminal_ready"));
+    // 焦点与新建挂载一致：重连成功即视为终端持有键盘焦点。
+    app.terminal_focused = true;
+    // 延时强制重绘一次（同新建挂载的说明）：TerminalReady 经 refresh_terminal 复核尺寸——
+    // `Backend::reattach` 已重置尺寸记忆，同尺寸也会重新下发 window-change。
+    Task::batch([Task::perform(sleep(Duration::from_millis(80)), move |_| {
+        Message::Tabs(tabs::Message::TerminalReady(tab_id))
+    })])
 }
 
 /// 处理终端部件后端回调（键盘 / 鼠标 / resize 等）。
@@ -261,9 +377,10 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
 
 /// 断开态下键入的处置决定：返回 `Some` 时该次写入被拦下并转成标签消息。
 ///
-/// 仅 `Error` / `Disconnected`（桥接已死）拦截；`Connected` / `Connecting` 的写入原样放行。
-/// 其中整批字节均为 `\r` / `\n`（即 Enter，含小键盘）判为回车，转成重连请求；
-/// 其余按键（含带换行的多行粘贴、空写入）只让横幅闪烁提示，不触发重连。
+/// 拦截 `Error` / `Disconnected`（桥接已死）与 `Connecting`（重连在途）——后者依据：
+/// 此刻还能收到键入，说明终端仍挂在已死的后端上（新建标签该状态下没有终端组件）。
+/// 整批字节均为 `\r` / `\n`（Enter，含小键盘）转成重连请求（在途时被防重复挡下）；
+/// 其余按键（含带换行的多行粘贴、空写入）只闪横幅，不触发重连。
 fn disconnected_write_action(
     status: ConnectionStatus,
     tab_id: u64,
@@ -271,7 +388,7 @@ fn disconnected_write_action(
 ) -> Option<tabs::Message> {
     if !matches!(
         status,
-        ConnectionStatus::Error | ConnectionStatus::Disconnected
+        ConnectionStatus::Error | ConnectionStatus::Disconnected | ConnectionStatus::Connecting
     ) {
         return None;
     }
@@ -287,17 +404,21 @@ fn disconnected_write_action(
 mod tests {
     use super::*;
 
-    /// 连接态的写入原样放行（含回车，绝不误触发重连）。
+    /// 连接正常（`Connected`）的写入一律原样放行（含回车，绝不误触发重连）。
     #[test]
     fn writes_pass_through_while_connected() {
         assert!(disconnected_write_action(ConnectionStatus::Connected, 1, b"\r").is_none());
-        assert!(disconnected_write_action(ConnectionStatus::Connecting, 1, b"a").is_none());
+        assert!(disconnected_write_action(ConnectionStatus::Connected, 1, b"ls").is_none());
     }
 
-    /// 断开态下纯回车（`\r` / `\n` 的组合）转成重连请求。
+    /// 拦截的三种状态下纯回车（`\r` / `\n` 的组合）都转成重连请求。
     #[test]
-    fn enter_only_writes_request_reconnect_while_disconnected() {
-        for status in [ConnectionStatus::Error, ConnectionStatus::Disconnected] {
+    fn enter_writes_request_reconnect_while_gated() {
+        for status in [
+            ConnectionStatus::Error,
+            ConnectionStatus::Disconnected,
+            ConnectionStatus::Connecting,
+        ] {
             assert!(matches!(
                 disconnected_write_action(status, 7, b"\r"),
                 Some(tabs::Message::ReconnectRequested(7))
@@ -309,15 +430,47 @@ mod tests {
         }
     }
 
-    /// 断开态下其余按键只触发横幅闪烁，不触发重连。
+    /// 拦截期间其余按键只触发横幅闪烁，不触发重连。
     #[test]
-    fn other_writes_only_flash_the_banner_while_disconnected() {
+    fn other_writes_only_flash_the_banner_while_gated() {
         let samples: [&[u8]; 5] = [b"a", b"ls\r", b"\x1b[A", b"line1\nline2", b""];
-        for bytes in samples {
-            assert!(matches!(
-                disconnected_write_action(ConnectionStatus::Error, 7, bytes),
-                Some(tabs::Message::DisconnectedKeyPressed(7))
-            ));
+        for status in [
+            ConnectionStatus::Error,
+            ConnectionStatus::Disconnected,
+            ConnectionStatus::Connecting,
+        ] {
+            for bytes in samples {
+                assert!(matches!(
+                    disconnected_write_action(status, 7, bytes),
+                    Some(tabs::Message::DisconnectedKeyPressed(7))
+                ));
+            }
         }
+    }
+
+    /// 重连注入字节的组装：复位前缀在最前、清屏紧随其后、旧 cwd 只在提供时出现、
+    /// 以换行收尾（正文文案随 locale，故只钉结构、不断言文案本身）。
+    #[test]
+    fn reconnect_inject_bytes_assembles_the_reset_and_clear_prefix_and_optional_cwd() {
+        let bytes = reconnect_inject_bytes(Some("/var/log"));
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            bytes.starts_with(b"\x1b[?1049l"),
+            "退备用屏在最前，清屏与提示行必须落在主屏上"
+        );
+        assert!(
+            text.contains("\x1b[H\x1b[2J\x1b[3J"),
+            "清屏（归位 + 清视口 + 清 scrollback）应紧随复位序列"
+        );
+        let clear_at = text.find("\x1b[2J").expect("清屏序列应存在");
+        let notice_at = text.find("[rterm] ").expect("提示行应存在");
+        assert!(clear_at < notice_at, "提示行应在清屏之后写入");
+        assert!(text.contains("/var/log"), "旧 cwd 应出现在提示行里");
+        assert!(bytes.ends_with(b"\r\n"));
+
+        let plain = reconnect_inject_bytes(None);
+        assert!(String::from_utf8_lossy(&plain).contains("\x1b[3J"));
+        assert!(String::from_utf8_lossy(&plain).contains("[rterm] "));
+        assert!(!String::from_utf8_lossy(&plain).contains("/var/log"));
     }
 }

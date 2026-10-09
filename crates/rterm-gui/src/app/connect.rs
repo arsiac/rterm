@@ -8,7 +8,7 @@ use crate::state::CenterView;
 use crate::t;
 use iced::Task;
 use rterm_config::{AuthMethod, SessionConfig};
-use rterm_core::SessionSecrets;
+use rterm_core::{ConnectionStatus, SessionSecrets};
 use rterm_crypto::Vault;
 
 /// 由会话配置 + 保险库解密出连接所需的明文凭据。
@@ -121,22 +121,32 @@ pub(crate) fn close_session_tabs(app: &mut App, id: &str) -> Vec<u64> {
     closed
 }
 
+/// 连接前置条件不满足（保险库未解锁 / 凭据解密失败）时，把已受理的标签退回失败态。
+///
+/// 受理方已把标签置为「连接中」，不退回会永久停在连接中且重连入口被防重复挡下；
+/// 退回后原因显示在该标签上（覆盖层 / 横幅），可修正后重试。
+fn fail_tab(app: &mut App, tab_id: u64, msg: String) -> Task<Message> {
+    if let Some(tab) = app.tabs.tab_mut(tab_id) {
+        tab.status = ConnectionStatus::Error;
+        tab.error = Some(msg.clone());
+    }
+    app.status = Some(msg);
+    Task::none()
+}
+
 /// 为指定标签发起 SSH 连接任务：解密凭据 → 生成连接配置 → 拉起异步握手。
 pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Message> {
     let Some(cfg) = app.session.sessions.iter().find(|s| s.id == id).cloned() else {
+        // 会话记录已不存在（该会话的标签会被一并关闭，此处仅为防御）。
         return Task::none();
     };
     // 凭据信封必须由保险库解密为明文后再交给连接任务（core 层不持有主密钥）。
     let Some(vault) = app.vault.clone() else {
-        app.status = Some(t!("app.vault_locked"));
-        return Task::none();
+        return fail_tab(app, tab_id, t!("app.vault_locked").to_string());
     };
     let secrets = match build_secrets(&cfg, &vault) {
         Ok(s) => s,
-        Err(e) => {
-            app.status = Some(e);
-            return Task::none();
-        }
+        Err(e) => return fail_tab(app, tab_id, e),
     };
     let id = id.to_string();
     // 开始建立连接：记录会话与标签，便于追踪连接生命周期与失败排查。

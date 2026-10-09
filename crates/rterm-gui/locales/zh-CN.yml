@@ -243,6 +243,9 @@ terminal:
   disconnected_banner: 连接已断开 · 按 Enter 重新连接
   press_enter_reconnect: 按 Enter 重新连接
   reconnect_button: 重新连接
+  reconnecting: 正在重新连接…
+  reconnected_notice: 会话已重新开始，之前的进程未恢复
+  reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}，可用 cd 返回
   ready: 终端已就绪
 activity:
   settings: 设置
@@ -260,6 +263,7 @@ app:
   session_duplicated: 已复制会话「%{name}」
   tab_closed: "标签已关闭，丢弃连接结果: %{id}"
   conn_established: "已为新标签建立连接: %{id}"
+  reconnected: "已重新连接: %{id}"
   disconnected: "连接已断开: %{id}"
   sftp_open_failed: "打开 SFTP 失败: %{err}"
   list_failed: "列举目录失败: %{err}"
@@ -280,6 +284,7 @@ app:
   no_password: 会话缺少登录密码，请在编辑中填写后重试
   terminal_ready: 终端已就绪
   terminal_create_failed: "创建终端组件失败: %{err}"
+  terminal_reattach_failed: "重新连接终端失败: %{err}"
   pipe_clone_failed: "克隆管道句柄失败: %{err}"
   config_save_failed: "配置保存失败: %{err}"
   open_terminal_first: 请先打开该会话的终端

@@ -162,6 +162,8 @@ const CWD_BOOTSTRAP: &[u8] = b"\
 ///   传输层是否还活着（见 [`SshConnection::is_closed`]），故按 `Arc` 接收以随桥接任务
 ///   一同存活。
 /// - `cols` / `rows`：初始终端列数与行数，用于首帧 PTY 尺寸。
+/// - `inject_out`：pump 启动前原样写入 OUT 管道（远端→本地方向）的字节，因而必定先于
+///   任何远端输出到达 GUI 读端（重连提示行等）；`None` 表示不注入。
 ///
 /// # 返回
 /// - `local`：同步端 `File`，GUI 应交给 `RusshPty` 包装后接入终端渲染层。
@@ -177,10 +179,11 @@ pub async fn spawn_terminal_bridge(
     cwd: CwdTracker,
     cwd_bootstrap: bool,
     suppress_bootstrap_echo: bool,
+    inject_out: Option<&[u8]>,
 ) -> Result<(File, File, Arc<BridgeState>, mpsc::Sender<(u32, u32)>), CoreError> {
     // 进程内管道：拆成 OUT（远端→本地输出）与 IN（本地→远端输入）两条独立管道。
     // 同步端（conout 读端 / conin 写端）交 GUI，异步端（out_stream / in_stream）在此泵接 russh 通道。
-    let (conout_file, conin_file, out_stream, in_stream) = create_bridge()?;
+    let (conout_file, conin_file, mut out_stream, in_stream) = create_bridge()?;
 
     let state = Arc::new(BridgeState::new());
 
@@ -204,6 +207,14 @@ pub async fn spawn_terminal_bridge(
         if let Err(e) = writer.write_all(&cmd).await {
             log::debug!("Failed to inject cwd bootstrap: {e}");
         }
+    }
+
+    // 注入字节直接写 OUT 管道异步端：pump 尚未启动，故先于任何远端输出到达本地读端；
+    // GUI 未挂载读端也不丢（字节驻留在管道缓冲区，读端挂载后按序读出）。
+    if let Some(bytes) = inject_out
+        && let Err(e) = out_stream.write_all(bytes).await
+    {
+        log::debug!("Failed to inject bytes into the terminal OUT pipe: {e}");
     }
 
     // 尺寸变更通道：容量 8，GUI 侧 resize 突发时丢弃最旧也不阻塞渲染。

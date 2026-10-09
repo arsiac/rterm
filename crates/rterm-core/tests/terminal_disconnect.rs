@@ -37,7 +37,7 @@ fn init_test_root() {
 async fn bridge_up(ssh: &TestSsh) -> (TestSshConnection, Arc<BridgeState>) {
     let conn = ssh.connect().await;
     let (out, r#in, state, _resize_tx) =
-        spawn_terminal_bridge(Arc::clone(conn.conn()), 80, 24, None, false, false)
+        spawn_terminal_bridge(Arc::clone(conn.conn()), 80, 24, None, false, false, None)
             .await
             .expect("bridge setup must succeed against the test server");
     let _ = (out.into_raw_fd(), r#in.into_raw_fd());

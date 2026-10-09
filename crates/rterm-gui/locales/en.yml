@@ -243,6 +243,9 @@ terminal:
   disconnected_banner: Disconnected · Press Enter to reconnect
   press_enter_reconnect: Press Enter to reconnect
   reconnect_button: Reconnect
+  reconnecting: Reconnecting…
+  reconnected_notice: Session restarted; previous processes were not resumed
+  reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}; use cd to return"
   ready: Terminal ready
 activity:
   settings: Settings
@@ -261,6 +264,7 @@ app:
   no_password: Session is missing login password; please fill it in the editor and retry
   tab_closed: "Tab closed, discarding connection result: %{id}"
   conn_established: "Connection established for new tab: %{id}"
+  reconnected: "Reconnected: %{id}"
   disconnected: "Disconnected: %{id}"
   sftp_open_failed: "Failed to open SFTP: %{err}"
   list_failed: "Failed to list directory: %{err}"
@@ -280,6 +284,7 @@ app:
   vault_locked: Credential vault is locked
   terminal_ready: Terminal ready
   terminal_create_failed: "Failed to create terminal widget: %{err}"
+  terminal_reattach_failed: "Failed to reattach the terminal: %{err}"
   pipe_clone_failed: "Failed to clone pipe handle: %{err}"
   config_save_failed: "Failed to save config: %{err}"
   open_terminal_first: Open this session's terminal first

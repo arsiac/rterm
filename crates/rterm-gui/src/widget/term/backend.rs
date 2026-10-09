@@ -690,6 +690,21 @@ impl Backend {
         self.internal_sync(&mut term);
     }
 
+    /// 当前网格的行列数（列, 行），供重连给新 PTY 定开局尺寸——重连不会再触发 resize，
+    /// 尺寸只能在建桥时给定。
+    pub fn grid_size(&self) -> (u16, u16) {
+        (self.size.num_cols, self.size.num_lines)
+    }
+
+    /// 把视口拉回底部（贴住实时输出）。
+    ///
+    /// 直接滚网格而不用 [`Command::Scroll`]：后者在备用屏（含滚动模式）会改发方向键
+    /// 字节到 pty，对新 shell 是误输入。
+    pub fn scroll_to_bottom(&mut self) {
+        let term = self.term.clone();
+        term.lock().scroll_display(Scroll::Bottom);
+    }
+
     /// 内部同步：刷新视口单元格、选区、光标与终端模式快照。
     fn internal_sync(&mut self, terminal: &mut Term<EventProxy>) {
         Self::capture_viewport(&mut self.last_content, terminal, self.size);
@@ -1166,5 +1181,62 @@ mod tests {
         assert_eq!(wait_resize(&mut resizes).await, (80, 30));
 
         bridge.request_stop();
+    }
+
+    /// `grid_size` 反映最后一次布局折算出的行列数——重连按它给定新 PTY 的开局尺寸。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grid_size_reflects_the_last_layout() {
+        let mut fx = Fixture::new(10);
+        // 尚未收到布局：取默认尺寸（80 列 × 50 行）。
+        assert_eq!(fx.backend.grid_size(), (80, 50));
+
+        // 布局 800×600 像素、单元格 10×20 像素 ⇒ 80 列 × 30 行。
+        fx.backend.handle(Command::Resize(
+            Some(Size::new(800.0, 600.0)),
+            Some(Size::new(10.0, 20.0)),
+        ));
+        assert_eq!(fx.backend.grid_size(), (80, 30));
+
+        // 收尾：让事件循环走子进程事件退出（同其它用例）。
+        fx.bridge.request_stop();
+    }
+
+    /// 「视口回到底部」：翻回历史后回到底部、贴住实时输出。
+    ///
+    /// 用普通 `#[test]` 而非 `#[tokio::test]`：`Term::scroll_display` 经 `EventProxy`
+    /// 阻塞发事件，`blocking_send` 不允许在 tokio 运行时线程上调用。
+    #[cfg(unix)]
+    #[test]
+    fn scroll_to_bottom_resets_a_scrolled_viewport() {
+        let mut fx = Fixture::new(100);
+        let mut output = String::new();
+        for i in 0..80 {
+            output.push_str(&format!("line-{i:02}\r\n"));
+        }
+        feed_remote(&mut fx.remote, output.as_bytes());
+        wait_grid_contains(&fx.backend.term, "line-79");
+
+        fx.backend
+            .term
+            .lock()
+            .grid_mut()
+            .scroll_display(Scroll::Delta(10));
+        fx.backend.sync();
+        assert_eq!(
+            fx.backend.renderable_content().display_offset,
+            10,
+            "前提：视口已翻回历史"
+        );
+
+        fx.backend.scroll_to_bottom();
+        fx.backend.sync();
+        assert_eq!(
+            fx.backend.renderable_content().display_offset,
+            0,
+            "视口应回到底部、贴住实时输出"
+        );
+
+        fx.bridge.request_stop();
     }
 }

@@ -105,6 +105,21 @@ pub(crate) fn connect_deadline(timeout: u64) -> Pin<Box<dyn Future<Output = ()> 
     }
 }
 
+/// 终端桥接建立参数：初始终端尺寸与注入 OUT 管道的字节。
+///
+/// 重连必须用**当前网格**的实际行列数（重连不会再触发 resize，默认值会让新 shell 按
+/// 错尺寸运行）；首次连接用默认值即可，就绪后由布局 resize 校正。
+///
+/// `inject_out` 在 pump 启动前写入 OUT 管道、先于远端任何输出到达读端；首次连接为 `None`。
+pub(crate) struct BridgeOptions {
+    /// 初始终端列数。
+    pub cols: u32,
+    /// 初始终端行数。
+    pub rows: u32,
+    /// 注入 OUT 管道的字节；`None` 表示不注入。
+    pub inject_out: Option<Vec<u8>>,
+}
+
 /// 创建终端桥接（进程内 OUT/IN 双管道 + 打开 shell 通道），返回 conout 读端、conin 写端、
 /// 桥接结束状态与尺寸发送端。
 ///
@@ -114,8 +129,7 @@ pub(crate) fn connect_deadline(timeout: u64) -> Pin<Box<dyn Future<Output = ()> 
 /// 把该标签状态置为 `Error`。
 pub(crate) async fn open_terminal_task(
     conn: Arc<SshConnection>,
-    cols: u32,
-    rows: u32,
+    opts: BridgeOptions,
     disconnect_tx: mpsc::Sender<rterm_core::DisconnectReason>,
     cwd: crate::state::TerminalTabCwd,
     cwd_bootstrap: bool,
@@ -131,11 +145,12 @@ pub(crate) async fn open_terminal_task(
 > {
     let (conout, conin, state, resize_tx) = rterm_core::spawn_terminal_bridge(
         conn,
-        cols,
-        rows,
+        opts.cols,
+        opts.rows,
         cwd,
         cwd_bootstrap,
         suppress_bootstrap_echo,
+        opts.inject_out.as_deref(),
     )
     .await?;
 

@@ -7,7 +7,6 @@
 use crate::t;
 
 use crate::App;
-use crate::app::session::Message as SessionMessage;
 use crate::app::tabs;
 use crate::icons::Icon;
 use crate::message::Message;
@@ -296,10 +295,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
                             .error
                             .clone()
                             .unwrap_or_else(|| t!("terminal.connect_failed"));
+                        // 重试在**本标签原地**发起，与横幅「重新连接」同一条消息、同一套防重复。
                         let retry = button(text(t!("common.retry")).size(13).color(Color::WHITE))
-                            .on_press(Message::Session(SessionMessage::ConnectSession(
-                                tab.session_id.clone(),
-                            )))
+                            .on_press(Message::Tabs(tabs::Message::ReconnectRequested(tab.id)))
                             .padding([6, 16])
                             .style(|_theme, _st| error_btn_style());
                         let close = button(text(t!("common.close")).size(13))
@@ -375,35 +373,53 @@ pub fn view(app: &App) -> Element<'_, Message> {
 ///
 /// 只在终端已存在（连上过）且收到断开归因时渲染；首次连接失败没有终端可承载横幅，
 /// 走全屏 Error 覆盖层，两者因 `terminal` 是否为 `None` 而互斥。
-/// 断开态下按了非回车键（`banner_flash` 置位）时切换文案并强调配色，让「按键被拦下」
-/// 有可见回执，避免用户以为程序卡死。
+///
+/// 文案按标签状态分级：重连在途（`Connecting`）显示「正在重新连接」、隐藏按钮（触发会
+/// 被防重复挡下）；重连失败（`tab.error`）显示具体原因、可再按 Enter；按下非回车时
+/// 让位于「按 Enter」提示（`banner_flash`），使「按键被拦下」有可见回执。
 fn disconnected_banner(tab: &TerminalTab) -> Element<'_, Message> {
     let flashing = tab.banner_flash.is_some();
-    let label = if flashing {
-        t!("terminal.press_enter_reconnect")
+    let reconnecting = tab.status == ConnectionStatus::Connecting;
+    let label: String = if reconnecting {
+        t!("terminal.reconnecting").to_string()
+    } else if let Some(err) = &tab.error {
+        // 重连失败：显示具体原因；按键闪烁时让位于「按 Enter」提示。
+        if flashing {
+            t!("terminal.press_enter_reconnect").to_string()
+        } else {
+            err.clone()
+        }
+    } else if flashing {
+        t!("terminal.press_enter_reconnect").to_string()
     } else {
-        t!("terminal.disconnected_banner")
+        t!("terminal.disconnected_banner").to_string()
     };
-    let reconnect = button(
-        text(t!("terminal.reconnect_button"))
+    let mut items: Vec<Element<'_, Message>> = vec![
+        text(label)
             .size(12)
-            .color(Color::WHITE),
-    )
-    .on_press(Message::Tabs(tabs::Message::ReconnectRequested(tab.id)))
-    .padding([2, 10])
-    .style(|_theme, _st| error_btn_style());
+            .style(move |theme: &iced::Theme| iced::widget::text::Style {
+                color: Some(banner_text_color(theme, flashing)),
+            })
+            .width(Length::Fill)
+            .into(),
+    ];
+    if !reconnecting {
+        items.push(
+            button(
+                text(t!("terminal.reconnect_button"))
+                    .size(12)
+                    .color(Color::WHITE),
+            )
+            .on_press(Message::Tabs(tabs::Message::ReconnectRequested(tab.id)))
+            .padding([2, 10])
+            .style(|_theme, _st| error_btn_style())
+            .into(),
+        );
+    }
     container(
-        row![
-            text(label)
-                .size(12)
-                .style(move |theme: &iced::Theme| iced::widget::text::Style {
-                    color: Some(banner_text_color(theme, flashing)),
-                })
-                .width(Length::Fill),
-            reconnect
-        ]
-        .spacing(8)
-        .align_y(iced::alignment::Vertical::Center),
+        row(items)
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),
     )
     .padding([4, 8])
     .width(Length::Fill)
