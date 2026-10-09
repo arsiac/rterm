@@ -81,7 +81,7 @@ pub struct BridgeState {
 
 impl BridgeState {
     /// 新建未结束、未归因的桥接状态。
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             stop_requested: AtomicBool::new(false),
             finished: AtomicBool::new(false),
@@ -114,6 +114,13 @@ impl BridgeState {
     fn finish(&self, reason: DisconnectReason) {
         self.reason.store(reason as u8, Ordering::SeqCst);
         self.finished.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Default for BridgeState {
+    /// 同 [`BridgeState::new`]（未结束、未归因）。
+    fn default() -> Self {
+        Self::new()
     }
 }
 

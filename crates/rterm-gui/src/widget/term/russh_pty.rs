@@ -11,14 +11,29 @@
 //! - Windows：`polling` 在该平台仅支持 `AsSocket`（命名管道句柄不是 socket），无法直接轮询。
 //!   故仿照 alacritty 的 Windows PTY，用后台线程在管道上做阻塞读写，并通过 IOCP 的
 //!   `CompletionPacket` 把可读/可写事件投递给 `polling`，同步 `Read/Write` 端再从内存管道取放数据。
+//!
+//! 子进程事件的等价物：alacritty 事件循环只在收到 `PTY_CHILD_EVENT_TOKEN` 事件时才查询
+//! [`EventedPty::next_child_event`]，并据此走「子进程退出」分支（`Term::exit()` → `Event::Exit`
+//! → 循环收尾）。本 pty 没有真实子进程，桥接收场（结束 / 关标签请求停止）就是它的「子进程退出」；
+//! 若不为该 token 注册事件源，事件循环便无从知晓，断开后旧循环会一直对着已 EOF 的管道空转。
+//! 故本模块自行制造事件源——Unix 用一对控制 socketpair（读端按该 token 注册，结束观察线程在
+//! 桥接收场后丢弃写端使其 EOF 可读）；Windows 直接由观察线程向事件循环的 poller 投递带该
+//! token 的 completion packet——让旧循环在断开后自行收尾退出。
 
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
+#[cfg(windows)]
+use polling::os::iocp::{CompletionPacket, PollerIocpExt};
 use polling::{Event as PollEvent, PollMode, Poller};
 use rterm_core::BridgeState;
 use std::fs::File;
 use std::io;
+#[cfg(not(windows))]
+use std::os::fd::OwnedFd;
+#[cfg(not(windows))]
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// alacritty event loop 用来识别「pty 可读写」的 poll key。
@@ -33,17 +48,37 @@ const PTY_READ_WRITE_TOKEN: usize = alacritty_terminal::tty::PTY_READ_WRITE_TOKE
 #[cfg(not(windows))]
 const PTY_READ_WRITE_TOKEN: usize = 0;
 
+/// alacritty 用来识别「子进程有事件」（该询问 [`EventedPty::next_child_event`]）的 poll key。
+#[cfg(windows)]
+const PTY_CHILD_EVENT_TOKEN: usize = alacritty_terminal::tty::PTY_CHILD_EVENT_TOKEN;
+/// Unix 平台下子进程事件 token 的取值（固定为 1，上游为 `pub(crate)` 取不到）。
+#[cfg(not(windows))]
+const PTY_CHILD_EVENT_TOKEN: usize = 1;
+
+/// 结束观察线程的轮询间隔：与 GUI 侧断开检测（`app/tasks.rs` 的 watcher）同节奏；
+/// 该线程只把「桥接收场」翻译成一个事件循环可观测的事件，再密并无实益。
+const FINISH_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
 /// 桥接 russh shell 通道的 PTY 适配结构：持有管道在 GUI 侧的同步端，实现 alacritty 的 `EventedPty`。
 pub struct RusshPty {
     /// GUI 侧持有的管道同步端 `File`：Unix 下为非阻塞 socket fd，Windows 下为双向命名管道句柄。
     #[cfg(not(windows))]
     file: File,
+    /// 子进程事件源的观测端（仅 Unix）：控制 socketpair 的读端，注册时按
+    /// [`PTY_CHILD_EVENT_TOKEN`] 进 poller；写端由结束观察线程持有，桥接收场即丢弃，
+    /// 使本端变可读（EOF 即「可读」），事件循环随之走子进程事件分支收尾。
+    #[cfg(not(windows))]
+    child_event: File,
     /// GUI 侧持有的管道同步端（Windows 下为后台线程驱动的可读端 `conout` 与可写端 `conin`）。
     #[cfg(windows)]
     conout: win_io::UnblockedReader<File>,
     /// GUI 侧持有的管道同步端的可写端（仅 Windows）。
     #[cfg(windows)]
     conin: win_io::UnblockedWriter<File>,
+    /// 子进程事件源的投递位（仅 Windows）：事件循环注册时记下 poller，结束观察线程
+    /// 借它直接投递带 [`PTY_CHILD_EVENT_TOKEN`] 的 completion packet（IOCP 无需可轮询 fd）。
+    #[cfg(windows)]
+    child_wake: Arc<std::sync::Mutex<Option<Arc<Poller>>>>,
     /// 桥接结束状态：pump 结束时置位结束标志，使 alacritty 认为子进程退出并清理终端。
     bridge: Arc<BridgeState>,
     /// 尺寸变更发送端，向主进程 pump 的 resize 通道下发 SSH window-change 请求。
@@ -56,7 +91,7 @@ impl RusshPty {
     /// - `conin`：供 `conin` 后台写线程写入本地输入（Windows 下为另一条独立命名管道的客户端句柄）。
     ///
     /// 两者已在创建时被置为非阻塞（Unix）或本就支持异步轮询（Windows），可直接交给
-    /// alacritty polling 使用。
+    /// alacritty polling 使用。同时建好子进程事件源并拉起结束观察线程（见模块文档）。
     pub fn new(
         conout: File,
         conin: File,
@@ -68,8 +103,13 @@ impl RusshPty {
             // Unix 下 conout 与 conin 克隆自同一 socketpair fd，共用一个 file 即可；
             // 丢弃 conin 克隆不会关闭底层 fd（仍由 conout 持有）。
             let _ = conin;
+            // 子进程事件源：读端留下注册，写端交给观察线程，桥接收场时随线程丢弃。
+            let (child_event, child_wake) = UnixStream::pair()?;
+            child_event.set_nonblocking(true)?;
+            spawn_finish_watcher(bridge.clone(), move || drop(child_wake))?;
             Ok(Self {
                 file: conout,
+                child_event: File::from(OwnedFd::from(child_event)),
                 bridge,
                 resize_tx,
             })
@@ -81,9 +121,14 @@ impl RusshPty {
             // OUT/IN 两条独立管道：conout 读 out 管客户端，conin 写 in 管客户端，互不串行化。
             let conout = win_io::UnblockedReader::new(conout, PIPE_CAPACITY)?;
             let conin = win_io::UnblockedWriter::new(conin, PIPE_CAPACITY)?;
+            // 子进程事件源：poller 在事件循环注册时写入该槽位，观察线程借槽位投递事件。
+            let child_wake = Arc::new(std::sync::Mutex::new(None));
+            let slot = child_wake.clone();
+            spawn_finish_watcher(bridge.clone(), move || post_child_event(&slot))?;
             Ok(Self {
                 conout,
                 conin,
+                child_wake,
                 bridge,
                 resize_tx,
             })
@@ -98,7 +143,8 @@ impl EventedReadWrite for RusshPty {
     /// 写端类型：GUI 侧同步管道的文件句柄。
     type Writer = File;
 
-    /// 把管道文件注册到 alacritty 的 `Poller`，并将 poll key 设为 `PTY_READ_WRITE_TOKEN`。
+    /// 把管道文件与子进程事件源注册到 alacritty 的 `Poller`，并将 poll key 分别设为
+    /// `PTY_READ_WRITE_TOKEN` 与 `PTY_CHILD_EVENT_TOKEN`。
     unsafe fn register(
         &mut self,
         poll: &Arc<Poller>,
@@ -106,10 +152,22 @@ impl EventedReadWrite for RusshPty {
         poll_opts: PollMode,
     ) -> io::Result<()> {
         interest.key = PTY_READ_WRITE_TOKEN;
-        unsafe { poll.add_with_mode(&self.file, interest, poll_opts) }
+        unsafe { poll.add_with_mode(&self.file, interest, poll_opts) }?;
+        // 子进程事件源：注册失败不致命——丢失的只是「断开后自动收尾」，读写通道照常，
+        // 故记录日志后继续（若以 `?` 上抛，事件循环会因注册错误直接退出，终端反而全死）。
+        let mut child_interest = interest;
+        child_interest.key = PTY_CHILD_EVENT_TOKEN;
+        child_interest.writable = false;
+        if let Err(e) = unsafe { poll.add_with_mode(&self.child_event, child_interest, poll_opts) }
+        {
+            log::warn!("Failed to register the pty child-event source: {e}");
+        }
+        Ok(())
     }
 
     /// 重新设置管道文件在 `Poller` 上的监听兴趣，poll key 同样设为 `PTY_READ_WRITE_TOKEN`。
+    ///
+    /// 子进程事件源不参与重设：它的兴趣恒为「可读」，注册后无需再动。
     fn reregister(
         &mut self,
         poll: &Arc<Poller>,
@@ -120,8 +178,10 @@ impl EventedReadWrite for RusshPty {
         poll.modify_with_mode(&self.file, interest, poll_opts)
     }
 
-    /// 从 `Poller` 中移除管道文件，结束对其可读写事件的轮询。
+    /// 从 `Poller` 中移除管道文件与子进程事件源，结束对其可读写事件的轮询。
     fn deregister(&mut self, poll: &Arc<Poller>) -> io::Result<()> {
+        // 子进程事件源可能未成功注册，其删除失败无关紧要；主通道的删除结果照常返回。
+        let _ = poll.delete(&self.child_event);
         poll.delete(&self.file)
     }
 
@@ -152,6 +212,13 @@ impl EventedReadWrite for RusshPty {
             .register(poll, with_key(interest, PTY_READ_WRITE_TOKEN), poll_opts);
         self.conout
             .register(poll, with_key(interest, PTY_READ_WRITE_TOKEN), poll_opts);
+        // 记录 poller 供子进程事件投递（IOCP 无需可轮询 fd，直接 post 即可）。
+        // 若桥接在 pty 创建后立即收场（观察线程投递时 poller 尚未就位），这里补投一次，
+        // 避免错过这次唯一的唤醒。
+        *self.child_wake.lock().unwrap_or_else(|e| e.into_inner()) = Some(poll.clone());
+        if bridge_over(&self.bridge) {
+            post_child_event(&self.child_wake);
+        }
         Ok(())
     }
 
@@ -190,13 +257,54 @@ fn with_key(mut event: PollEvent, key: usize) -> PollEvent {
     event
 }
 
+/// 桥接是否已收场（已结束或已请求停止）：pty 的「子进程已退出」判定与结束观察线程的
+/// 唤醒条件都取自这里。两者必须完全一致——若唤醒线程先动而 `next_child_event` 答 `None`，
+/// 事件源保持可读会导致事件循环空转；反之则无人促成收尾。
+fn bridge_over(bridge: &BridgeState) -> bool {
+    bridge.is_finished() || bridge.is_stop_requested()
+}
+
+/// 起一个一次性线程：桥接收场后执行一次 `poke` 并退出。
+///
+/// `poke` 负责把「收场」翻译成 alacritty 事件循环能观测到的事件（见模块文档）。
+/// 若桥接拖到整个进程结束都不收场，本线程也只是保持 200ms 一次的休眠轮询，无其他负担。
+fn spawn_finish_watcher(
+    bridge: Arc<BridgeState>,
+    poke: impl FnOnce() + Send + 'static,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("rterm-pty-exit".into())
+        .spawn(move || {
+            while !bridge_over(&bridge) {
+                std::thread::sleep(FINISH_POLL_INTERVAL);
+            }
+            poke();
+        })
+        .map(drop)
+}
+
+/// 向事件循环的 poller 投递一条子进程事件（仅 Windows；IOCP 下无需 fd）。
+/// poller 未就位时静默丢弃，由 [`RusshPty::register`] 的补投兜底。
+#[cfg(windows)]
+fn post_child_event(slot: &Arc<std::sync::Mutex<Option<Arc<Poller>>>>) {
+    let poller = slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(poller) = poller {
+        poller
+            .post(CompletionPacket::new(PollEvent::readable(
+                PTY_CHILD_EVENT_TOKEN,
+            )))
+            .ok();
+    }
+}
+
 impl EventedPty for RusshPty {
-    /// 返回子进程退出事件：桥接结束，或关标签 / 关窗口已请求停止时返回 `Exited`。
+    /// 返回子进程退出事件：桥接收场（结束或已请求停止）时返回 `Exited`，否则返回 `None`。
     ///
-    /// 请求停止也纳入条件，是为了保留原语义（关标签立刻让 alacritty 收尾，不等
-    /// pump 退出完成）；正常断开走 [`BridgeState::is_finished`]。
+    /// 只在子进程事件源（见模块文档）送来事件后才会被询问；判定条件与结束观察线程
+    /// 共用 `bridge_over`。请求停止也纳入条件，是为了保留原语义（关标签立刻让
+    /// alacritty 收尾，不等 pump 退出完成）；正常断开走 [`BridgeState::is_finished`]。
     fn next_child_event(&mut self) -> Option<ChildEvent> {
-        if self.bridge.is_finished() || self.bridge.is_stop_requested() {
+        if bridge_over(&self.bridge) {
             Some(ChildEvent::Exited(None))
         } else {
             None

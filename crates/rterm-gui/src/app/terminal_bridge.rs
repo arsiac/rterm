@@ -221,13 +221,21 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             } else {
                 Action::default()
             };
-            // 响铃视觉提示。
-            if matches!(action, Action::Bell) && app.config.terminal.bell {
-                let ctx = contexts::tabs_ctx(app);
-                return app
-                    .tabs
-                    .update(tabs::Message::Bell(id), &ctx, &app.sftp)
-                    .map(Message::TabsEvent);
+            // 宿主动作分流：响铃走视觉提示；`Shutdown` 与 `ChangeTitle` 暂无消费方。
+            //
+            // `Action::Shutdown` 由 alacritty 在「PTY 已结束」时产出。它表示终端自身收尾，
+            // **不代表**用户要关标签：断开归因由 `TerminalDisconnected` 负责、
+            // 关标签只走显式关闭动作，故必须显式忽略。
+            match action {
+                Action::Bell if app.config.terminal.bell => {
+                    // 响铃视觉提示。
+                    let ctx = contexts::tabs_ctx(app);
+                    return app
+                        .tabs
+                        .update(tabs::Message::Bell(id), &ctx, &app.sftp)
+                        .map(Message::TabsEvent);
+                }
+                _ => {}
             }
             Task::none()
         }

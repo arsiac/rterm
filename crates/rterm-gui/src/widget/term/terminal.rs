@@ -106,6 +106,15 @@ impl Terminal {
         })
     }
 
+    /// 原地换接新桥接的 PTY（断线重连）：网格、滚动历史与后端事件订阅全部保留，
+    /// 仅把后端 event loop 换到新通道上，随后强制重绘。
+    pub fn reattach(&mut self, pty: RusshPty) -> Result<()> {
+        self.backend.reattach(pty)?;
+        self.backend.sync();
+        self.redraw();
+        Ok(())
+    }
+
     /// 返回 iced 部件 id。
     ///
     /// 当前仅作标识预留：焦点判定走 `App::terminal_focused`、标签栏滚动走
