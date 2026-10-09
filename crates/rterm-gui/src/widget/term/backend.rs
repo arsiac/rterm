@@ -9,7 +9,10 @@ use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{
-    self, Term, TermMode, cell::Cell, test::TermSize, viewport_to_point,
+    self, Term, TermMode,
+    cell::{Cell, Flags},
+    test::TermSize,
+    viewport_to_point,
 };
 use alacritty_terminal::tty;
 use alacritty_terminal::tty::EventedPty;
@@ -643,36 +646,61 @@ impl Backend {
         }
     }
 
-    /// 返回当前选中范围内的纯文本（去除网格控制字符）。
+    /// 返回当前选中范围内的纯文本（宽字符占位格不产出字符）。
     /// 若 `trim_trailing_whitespace` 开启，各行的尾部空格与制表符将被去除。
-    ///
-    /// 选区可能跨越视口之外的历史行，故直接遍历网格而非视口快照。
     pub fn selectable_content(&self) -> String {
         let term = self.term.clone();
         let term = term.lock();
+        Self::selection_text(&term, self.trim_trailing_whitespace)
+    }
+
+    /// 由选区逐格提取文本（纯函数，供 [`Self::selectable_content`] 与测试使用）。
+    ///
+    /// 逐格取自网格本身而非视口快照：选区可能跨越视口之外的历史行。
+    fn selection_text(term: &Term<EventProxy>, trim_trailing_whitespace: bool) -> String {
         let grid = term.grid();
-        let range = match &term.selection {
-            Some(s) => s.to_range(&term),
-            None => None,
+        let Some(mut range) = term.selection.as_ref().and_then(|s| s.to_range(term)) else {
+            return String::new();
         };
+        // 选区起点落在宽字符右半的占位格上时左移一格，把整字纳入（对齐上游 `line_to_string`）。
+        if range.start.column > Column(0)
+            && grid[range.start].flags.contains(Flags::WIDE_CHAR_SPACER)
+        {
+            range.start.column -= 1;
+        }
 
         let mut result = String::new();
-        if let Some(range) = range {
-            let mut last_line: i32 = i32::MIN;
-            for indexed in grid.display_iter() {
-                if range.contains(indexed.point) {
-                    // 换行时插入 \n
-                    if indexed.point.line.0 != last_line {
-                        if !result.is_empty() {
-                            result.push('\n');
-                        }
-                        last_line = indexed.point.line.0;
+        let mut last_line: i32 = i32::MIN;
+        for line in range.start.line.0..=range.end.line.0 {
+            for column in 0..grid.columns() {
+                let point = Point::new(Line(line), Column(column));
+                if !range.contains(point) {
+                    continue;
+                }
+                let cell = &grid[point];
+                // 宽字符占位格不产出字符，否则「会话」会被复制成「会 话」。
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                // 换行时插入 \n。
+                if line != last_line {
+                    if !result.is_empty() {
+                        result.push('\n');
                     }
-                    result.push(indexed.c);
+                    last_line = line;
+                }
+                result.push(cell.c);
+                // 组合字符（如 emoji ZWJ 序列）随主字符一并复制。
+                if let Some(zerowidth) = cell.zerowidth() {
+                    result.extend(zerowidth);
                 }
             }
         }
-        if self.trim_trailing_whitespace {
+
+        if trim_trailing_whitespace {
             result
                 .lines()
                 .map(|line| line.trim_end())
@@ -1238,5 +1266,83 @@ mod tests {
         );
 
         fx.bridge.request_stop();
+    }
+
+    // ===============================================================
+    // 复制选区（`selectable_content`）用例
+    // ===============================================================
+
+    /// 建一个简单拖拽选区：起点 → 终点（含两端所在格）。
+    fn select_simple(term: &mut Term<EventProxy>, start: Point, end: Point) {
+        term.selection = Some(Selection::new(SelectionType::Simple, start, Side::Left));
+        term.selection
+            .as_mut()
+            .expect("selection just set")
+            .update(end, Side::Right);
+    }
+
+    /// 复制含 CJK 的行：宽字符占位格不得产出空格（「会话」不能被复制成「会 话」）。
+    #[test]
+    fn selection_text_skips_wide_char_spacers() {
+        let mut term = test_term();
+        feed(&mut term, "会话 abc".as_bytes());
+        select_simple(
+            &mut term,
+            Point::new(Line(0), Column(0)),
+            Point::new(Line(0), Column(7)),
+        );
+
+        assert_eq!(Backend::selection_text(&term, false), "会话 abc");
+    }
+
+    /// 选区起点落在宽字符右半的占位格上时，整字一并纳入（对齐上游起始列修正）。
+    #[test]
+    fn selection_text_backs_up_when_starting_on_a_spacer() {
+        let mut term = test_term();
+        feed(&mut term, "会话 abc".as_bytes());
+        // Column(1) 是「会」的占位格。
+        select_simple(
+            &mut term,
+            Point::new(Line(0), Column(1)),
+            Point::new(Line(0), Column(7)),
+        );
+
+        assert_eq!(Backend::selection_text(&term, false), "会话 abc");
+    }
+
+    /// 组合字符（zerowidth）随主字符一并复制，不丢附加码点。
+    #[test]
+    fn selection_text_keeps_zerowidth_characters() {
+        let mut term = test_term();
+        feed(&mut term, "e\u{301}x".as_bytes());
+        select_simple(
+            &mut term,
+            Point::new(Line(0), Column(0)),
+            Point::new(Line(0), Column(1)),
+        );
+
+        assert_eq!(Backend::selection_text(&term, false), "e\u{301}x");
+    }
+
+    /// 选区落在视口之外的历史行同样完整复制（逐格取自网格，不受滚动位置影响）。
+    #[test]
+    fn selection_text_covers_history_outside_the_viewport() {
+        let mut term = test_term();
+        // 视口 50 行：写 51 行后上滚 2 行，L0/L1 进入历史缓冲。
+        let input: String = (0..51).map(|i| format!("L{i}\r\n")).collect();
+        feed(&mut term, input.as_bytes());
+        assert_eq!(
+            term.grid().topmost_line(),
+            Line(-2),
+            "前提：L0/L1 已被顶入历史缓冲，当前视口自 L2 起"
+        );
+
+        select_simple(
+            &mut term,
+            Point::new(Line(-2), Column(0)),
+            Point::new(Line(-1), Column(1)),
+        );
+
+        assert_eq!(Backend::selection_text(&term, true), "L0\nL1");
     }
 }
