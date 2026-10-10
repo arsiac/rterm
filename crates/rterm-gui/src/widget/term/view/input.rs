@@ -566,7 +566,7 @@ impl<'a> TerminalView<'a> {
 
 /// 按 bracketed-paste 模式包裹粘贴内容：远端应用发过 `\e[?2004h` 时用
 /// `\e[200~ … \e[201~` 包裹，使其识别为「粘贴」而非逐字符输入（避免 vim 等自动缩进叠加）。
-pub(super) fn paste_bytes(data: &str, bracketed: bool) -> Vec<u8> {
+pub(crate) fn paste_bytes(data: &str, bracketed: bool) -> Vec<u8> {
     if !bracketed {
         return data.as_bytes().to_vec();
     }

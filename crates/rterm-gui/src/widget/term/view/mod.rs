@@ -7,6 +7,8 @@ mod render;
 mod scrollbar;
 mod widget;
 
+pub(crate) use input::paste_bytes;
+
 use crate::widget::term::terminal::Terminal;
 use alacritty_terminal::index::Point as TerminalGridPoint;
 use iced::Size;

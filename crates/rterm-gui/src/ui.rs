@@ -326,6 +326,22 @@ pub fn menu_entry<'a, M: Clone + 'a>(label: impl Into<String>, msg: M) -> Elemen
         .into()
 }
 
+/// 右键菜单中的单条**禁用**项：无点击响应，文字取次要色以示不可用。
+///
+/// 与 [`menu_entry`] 同形（同内边距、同铺满行宽），便于与可用项混排时保持对齐。
+pub fn menu_entry_disabled<'a, M: Clone + 'a>(label: impl Into<String>) -> Element<'a, M> {
+    button(text(label.into()).width(Length::Fill))
+        .style(|theme, _st| button::Style {
+            background: None,
+            border: Border::default().width(0),
+            text_color: theme::custom_palette(theme).text_secondary,
+            ..Default::default()
+        })
+        .width(Length::Fill)
+        .padding([4, 8])
+        .into()
+}
+
 /// 右键菜单容器：固定宽度、内边距与抬升边框，承载 [`menu_entry`] 列表，各面板共用此一份样式。
 pub fn menu_container<'a, M: Clone + 'a>(content: Element<'a, M>) -> Element<'a, M> {
     container(content)

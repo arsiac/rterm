@@ -6,6 +6,8 @@ use crate::widget::term::bindings::{Binding, BindingAction, BindingsLayout, Inpu
 use crate::widget::term::font::TermFont;
 use crate::widget::term::settings::{FontSettings, Settings, ThemeSettings};
 use crate::widget::term::theme::{ColorPalette, Theme};
+use crate::widget::term::view::paste_bytes;
+use alacritty_terminal::term::TermMode;
 use iced::Subscription;
 use iced::futures::stream::BoxStream;
 use iced::futures::{SinkExt, StreamExt};
@@ -121,6 +123,39 @@ impl Terminal {
     pub fn grid_size(&self) -> (u32, u32) {
         let (cols, rows) = self.backend.grid_size();
         (u32::from(cols), u32::from(rows))
+    }
+
+    /// 远端程序是否已开启鼠标上报：开启时鼠标动作归远端应用，宿主菜单让位。
+    pub(crate) fn mouse_reporting(&self) -> bool {
+        self.backend
+            .renderable_content()
+            .terminal_mode
+            .intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// 当前是否存在可复制的选区。
+    ///
+    /// 空选区（含未拖动的单击）已在 `Selection::to_range` 内滤成 `None`，故只需判 `Some`；
+    /// 不能改判起止点是否相同——拖过单格时二者相同却仍是有效的一字符选区。
+    pub(crate) fn has_selection(&self) -> bool {
+        self.backend.renderable_content().selectable_range.is_some()
+    }
+
+    /// 当前选区文本（无选区为空串）。
+    pub(crate) fn selection_text(&self) -> String {
+        self.backend.selectable_content()
+    }
+
+    /// 以当前括号粘贴模式把剪贴板文本写入 PTY。
+    pub(crate) fn paste(&mut self, data: &str) -> Action {
+        let bracketed = self
+            .backend
+            .renderable_content()
+            .terminal_mode
+            .contains(TermMode::BRACKETED_PASTE);
+        self.handle(Command::ProxyToBackend(backend::Command::Write(
+            paste_bytes(data, bracketed),
+        )))
     }
 
     /// 返回 iced 部件 id。

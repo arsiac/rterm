@@ -259,6 +259,8 @@ terminal:
   reconnected_notice: Session restarted; previous processes were not resumed
   reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}; use cd to return"
   ready: Terminal ready
+  menu_copy: Copy
+  menu_paste: Paste
 activity:
   settings: Settings
   sessions: Sessions

@@ -88,6 +88,14 @@ pub enum Message {
     /// 主密码模块上行事件，由父层收到后修改父状态（vault / sessions / config / toast）。
     MasterPwEvent(masterpw::Event),
 
+    // ===== 终端右键菜单 =====
+    /// 菜单「复制」：把活动终端的选区文本写入系统剪贴板。
+    TerminalCopy,
+    /// 菜单「粘贴」：异步读取系统剪贴板，结果经 [`Message::TerminalPasteLoaded`] 回流。
+    TerminalPaste,
+    /// 系统剪贴板读取结果：`Some` 时按括号粘贴模式写入活动终端，`None`（读取失败 / 空）忽略。
+    TerminalPasteLoaded(Option<String>),
+
     // ===== 杂项 =====
     /// 无操作占位消息（用于禁用态按钮点击）。
     Noop,

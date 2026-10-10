@@ -515,3 +515,38 @@ fn selection_text_covers_history_outside_the_viewport() {
 
     assert_eq!(Backend::selection_text(&term, true), "L0\nL1");
 }
+
+/// 未拖动的单击不构成选区：起止锚点（含命中侧）相同，`to_range` 返回 `None`。
+#[test]
+fn an_unmoved_click_yields_no_selectable_range() {
+    let mut term = test_term();
+    feed(&mut term, b"abc");
+    term.selection = Some(Selection::new(
+        SelectionType::Simple,
+        Point::new(Line(0), Column(1)),
+        Side::Left,
+    ));
+
+    let mut content = RenderableContent::default();
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+    assert!(content.selectable_range.is_none());
+}
+
+/// 拖过单格仍是有效选区：起止点相同也须产出范围并可复制，故不能据 `start == end` 判空。
+#[test]
+fn a_single_cell_selection_is_still_selectable() {
+    let mut term = test_term();
+    feed(&mut term, b"abc");
+    let point = Point::new(Line(0), Column(1));
+    term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+    term.selection
+        .as_mut()
+        .expect("selection just set")
+        .update(point, Side::Right);
+
+    let mut content = RenderableContent::default();
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+    let range = content.selectable_range.expect("单格选区应产出范围");
+    assert_eq!(range.start, range.end);
+    assert_eq!(Backend::selection_text(&term, false), "b");
+}

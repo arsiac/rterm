@@ -16,6 +16,7 @@ use iced::alignment::Horizontal;
 use iced::widget::tooltip::Position;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
 use iced::{Border, Color, Element, Length, Padding};
+use iced_aw::widget::context_menu::ContextMenu;
 use rterm_core::{ConnectionStatus, DisconnectReason};
 
 /// 标签最大宽度（px）：标题文本、状态点、关闭按钮与间距的总和上限。
@@ -270,8 +271,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
                         .padding(4.0)
                         .scrollbar(app.config.terminal.show_scrollbar)
                         .into();
-                let terminal_elem =
+                let terminal_elem: Element<'_, Message> =
                     terminal_elem.map(|e| Message::Tabs(tabs::Message::Terminal(e)));
+                // 远端程序开启了鼠标上报（tmux / vim 等）时由它接管鼠标，右键菜单让位
+                // （与中键粘贴让位于鼠标模式同理，见 `handle_middle_button_pressed`）。
+                let terminal_elem = if term.mouse_reporting() {
+                    terminal_elem
+                } else {
+                    terminal_context_menu(terminal_elem, term.has_selection())
+                };
                 container(terminal_elem)
                     .style(|_theme| container::Style {
                         background: Some(
@@ -366,6 +374,29 @@ pub fn view(app: &App) -> Element<'_, Message> {
             bottom: 2.0,
         }))
         .into()
+}
+
+/// 终端右键菜单：包住终端画布，提供「复制 / 粘贴」。`copy_enabled` 为否时复制项以禁用态呈现。
+fn terminal_context_menu(
+    terminal: Element<'_, Message>,
+    copy_enabled: bool,
+) -> Element<'_, Message> {
+    let overlay = move || {
+        let copy: Element<'_, Message> = if copy_enabled {
+            crate::ui::menu_entry(t!("terminal.menu_copy"), Message::TerminalCopy)
+        } else {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_copy"))
+        };
+        crate::ui::menu_container(
+            column![
+                copy,
+                crate::ui::menu_entry(t!("terminal.menu_paste"), Message::TerminalPaste),
+            ]
+            .spacing(2)
+            .into(),
+        )
+    };
+    ContextMenu::new(terminal, overlay).into()
 }
 
 /// 断开态横幅：终端顶部窄条，告知连接已断并提供两条重连入口（Enter / 按钮）。

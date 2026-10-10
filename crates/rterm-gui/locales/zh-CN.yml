@@ -259,6 +259,8 @@ terminal:
   reconnected_notice: 会话已重新开始，之前的进程未恢复
   reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}，可用 cd 返回
   ready: 终端已就绪
+  menu_copy: 复制
+  menu_paste: 粘贴
 activity:
   settings: 设置
   sessions: 会话

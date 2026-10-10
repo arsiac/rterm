@@ -99,6 +99,10 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Escape => handle_escape(app),
         // 右键按下：两个列表各自按自己的悬浮态决定选中谁，详见 `handle_right_press`。
         Message::RightPress => handle_right_press(app),
+        // 终端右键菜单：复制同步取选区写剪贴板；粘贴需异步读剪贴板，结果另行回流。
+        Message::TerminalCopy => handle_terminal_copy(app),
+        Message::TerminalPaste => iced::clipboard::read().map(Message::TerminalPasteLoaded),
+        Message::TerminalPasteLoaded(contents) => handle_terminal_paste(app, contents),
         // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
         Message::Settings(m) => {
             let ctx = contexts::settings_ctx(app);
@@ -165,6 +169,37 @@ pub(crate) fn handle_right_press(app: &mut App) -> iced::Task<Message> {
         .update(session::Message::SessionSelectHovered, &ctx)
         .map(Message::SessionEvent);
     Task::batch([sftp, session])
+}
+
+/// 终端右键菜单「复制」：把活动终端的选区文本写入系统剪贴板。
+///
+/// 空选区不写入，以免清空用户剪贴板（菜单已在无选区时禁用该项，此处仅作兜底）。
+fn handle_terminal_copy(app: &mut App) -> iced::Task<Message> {
+    let text = app
+        .tabs
+        .active()
+        .and_then(|id| app.tabs.list().iter().find(|t| t.id == id))
+        .and_then(|tab| tab.terminal.as_ref())
+        .map(|term| term.selection_text())
+        .unwrap_or_default();
+    if text.is_empty() {
+        return iced::Task::none();
+    }
+    iced::clipboard::write(text)
+}
+
+/// 终端右键菜单「粘贴」：把读回的剪贴板文本按括号粘贴模式写入活动终端。
+fn handle_terminal_paste(app: &mut App, contents: Option<String>) -> iced::Task<Message> {
+    let Some(text) = contents.filter(|s| !s.is_empty()) else {
+        return iced::Task::none();
+    };
+    let Some(id) = app.tabs.active() else {
+        return iced::Task::none();
+    };
+    if let Some(term) = app.tabs.tab_mut(id).and_then(|tab| tab.terminal.as_mut()) {
+        let _ = term.paste(&text);
+    }
+    iced::Task::none()
 }
 
 /// 切换中央视图；切到文件管理时若活动标签尚未打开 SFTP 则自动打开。
