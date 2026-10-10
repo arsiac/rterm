@@ -116,6 +116,13 @@ session:
   host_empty: Host cannot be empty
   port_invalid: Port must be a number
   port_zero: Port cannot be 0
+  section_jumps: Jump hosts
+  jumps_empty: No jump host. Connect directly to the target.
+  jump_label: "Jump host %{index}"
+  jump_add: Add jump host
+  jump_remove: Remove this jump host
+  jump_host_empty: "Jump host %{index}: host cannot be empty"
+  jump_port_invalid: "Jump host %{index}: port must be a non-zero number"
 masterpw:
   set_title: Set master passphrase
   set_body: Set a master passphrase to encrypt session credentials. It derives the key; the passphrase itself is never stored. If forgotten, saved credentials cannot be recovered.
@@ -301,6 +308,7 @@ app:
 errors:
   io: "I/O error: %{detail}"
   ssh_connect: "Connection failed: %{detail}"
+  ssh_jump_connect: "Jump host %{index} (%{host}) failed: %{detail}"
   ssh_missing_password: Missing decrypted password
   ssh_auth_password_request: "Password authentication request failed: %{detail}"
   ssh_auth_password_rejected: Password authentication was rejected by the server

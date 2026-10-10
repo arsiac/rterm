@@ -8,12 +8,14 @@ use crate::state::CenterView;
 use crate::t;
 use iced::Task;
 use rterm_config::{AuthMethod, SessionConfig};
-use rterm_core::{ConnectionStatus, SessionSecrets};
+use rterm_core::{ConnectionStatus, HopSpec, SessionSecrets};
 use rterm_crypto::Vault;
 
-/// 由会话配置 + 保险库解密出连接所需的明文凭据。
-fn build_secrets(cfg: &SessionConfig, vault: &Vault) -> Result<SessionSecrets, String> {
-    match &cfg.auth {
+/// 由某一认证方式 + 保险库解密出连接所需的明文凭据。
+///
+/// 目标主机与每一跳跳板机共用：跳板机的 `auth` 与目标同形，故凭据解密逻辑只写一份。
+fn build_secrets(auth: &AuthMethod, vault: &Vault) -> Result<SessionSecrets, String> {
+    match auth {
         AuthMethod::Password { password } => {
             let pw = match password {
                 Some(env) => Some(vault.decrypt(env).map_err(|_| t!("app.decrypt_failed"))?),
@@ -41,6 +43,19 @@ fn build_secrets(cfg: &SessionConfig, vault: &Vault) -> Result<SessionSecrets, S
             key_passphrase: None,
         }),
     }
+}
+
+/// 组装跳板链的建连输入（顺序与 `cfg.jumps` 一致，由外到内；每一跳各解密自己的凭据）。
+fn build_jumps(cfg: &SessionConfig, vault: &Vault) -> Result<Vec<HopSpec>, String> {
+    cfg.jumps
+        .iter()
+        .map(|hop| {
+            Ok(HopSpec {
+                config: hop.clone(),
+                secrets: build_secrets(&hop.auth, vault)?,
+            })
+        })
+        .collect()
 }
 
 /// 打开某会话的文件管理：定位目标标签、切换导航态，视图重置与建通道 / 列举交 sftp 模块。
@@ -145,8 +160,13 @@ pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Mess
     let Some(vault) = app.vault.clone() else {
         return fail_tab(app, tab_id, t!("app.vault_locked").to_string());
     };
-    let secrets = match build_secrets(&cfg, &vault) {
+    let secrets = match build_secrets(&cfg.auth, &vault) {
         Ok(s) => s,
+        Err(e) => return fail_tab(app, tab_id, e),
+    };
+    // 跳板链的每跳凭据各自解密；任一跳缺凭据都会在建立隧道前拦下。
+    let jumps = match build_jumps(&cfg, &vault) {
+        Ok(j) => j,
         Err(e) => return fail_tab(app, tab_id, e),
     };
     let id = id.to_string();
@@ -160,7 +180,7 @@ pub(crate) fn connect_session(app: &mut App, tab_id: u64, id: &str) -> Task<Mess
     Task::stream(iced::stream::channel(
         8,
         move |mut output: futures::channel::mpsc::Sender<Message>| async move {
-            connect_stream_task(tab_id, id, cfg, secrets, opts, &mut output).await;
+            connect_stream_task(tab_id, id, cfg, secrets, jumps, opts, &mut output).await;
         },
     ))
 }

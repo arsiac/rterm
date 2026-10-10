@@ -8,7 +8,7 @@
 use crate::t;
 
 use crate::App;
-use crate::app::session::{EditorDraft, Message, SessionField};
+use crate::app::session::{EditorDraft, JumpDraft, Message, SessionField};
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
 use crate::ui::menu_entry;
 use iced::widget::text::Wrapping;
@@ -359,24 +359,7 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
         ),
         "publickey" => column![
             // 私钥路径：输入框 + 文件系统选择按钮（document 图标）。
-            column![
-                crate::ui::field_label(t!("session.key_path")),
-                row![
-                    text_input("", &draft.key_path)
-                        .on_input(move |v| Message::EditorField(SessionField::KeyPath, v))
-                        .style(crate::ui::text_input_style),
-                    icon_button(
-                        Icon::Document,
-                        ACTION_ICON_SIZE,
-                        t!("session.pick_key"),
-                        Message::PickKeyFile,
-                        Position::Bottom
-                    ),
-                ]
-                .spacing(6)
-                .align_y(iced::alignment::Vertical::Center),
-            ]
-            .spacing(4),
+            key_path_field(&draft.key_path, SessionField::KeyPath, Message::PickKeyFile),
             labeled_input(
                 crate::ui::field_label(t!("session.passphrase")),
                 &draft.passphrase,
@@ -486,6 +469,7 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
             ]
             .spacing(10),
         ),
+        crate::ui::form_section(t!("session.section_jumps"), jump_section(draft)),
     ]
     .spacing(18)
     .padding([16, 20]);
@@ -514,6 +498,150 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
         footer,
     ]
     .into()
+}
+
+/// 跳板链编辑分节：逐个跳板机子面板（由外到内排序，与连接顺序一致）+ 追加按钮。
+fn jump_section(draft: &EditorDraft) -> Element<'_, Message> {
+    let mut items: Vec<Element<'_, Message>> = Vec::new();
+    if draft.jumps.is_empty() {
+        items.push(crate::ui::hint_text(t!("session.jumps_empty")));
+    }
+    for (index, hop) in draft.jumps.iter().enumerate() {
+        items.push(jump_card(index, hop));
+    }
+    items.push(
+        button(
+            container(
+                row![
+                    Icon::Add.svg(ACTION_ICON_SIZE),
+                    text(t!("session.jump_add")).size(13),
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center),
+            )
+            .center_x(Length::Fill),
+        )
+        .padding([6, 10])
+        .width(Length::Fill)
+        .on_press(Message::AddJump)
+        .style(crate::theme::card_button_style)
+        .into(),
+    );
+    column(items).spacing(10).into()
+}
+
+/// 单跳跳板机子面板：标题（跳序 + 移除）+ 主机 / 端口 + 用户名 / 认证 + 凭据。
+fn jump_card(index: usize, hop: &JumpDraft) -> Element<'_, Message> {
+    let auth_choice = match hop.auth.as_str() {
+        "publickey" => AuthChoice::PublicKey,
+        "agent" => AuthChoice::Agent,
+        _ => AuthChoice::Password,
+    };
+    // 凭据字段随认证方式变化；密文信封留空表示「保持不变」，与目标主机同规。
+    let cred_field: Element<'_, Message> = match hop.auth.as_str() {
+        "password" => labeled_input(
+            crate::ui::field_label(t!("session.password")),
+            &hop.password,
+            t!("session.keep_unchanged"),
+            SessionField::JumpPassword(index),
+            true,
+            Length::Fill,
+        ),
+        "publickey" => column![
+            key_path_field(
+                &hop.key_path,
+                SessionField::JumpKeyPath(index),
+                Message::PickJumpKeyFile(index),
+            ),
+            labeled_input(
+                crate::ui::field_label(t!("session.passphrase")),
+                &hop.passphrase,
+                t!("session.keep_unchanged"),
+                SessionField::JumpPassphrase(index),
+                true,
+                Length::Fill,
+            ),
+        ]
+        .spacing(12)
+        .into(),
+        _ => agent_hint(t!("session.agent_hint")),
+    };
+
+    let head = row![
+        text(t!("session.jump_label", index => index + 1))
+            .size(13)
+            .width(Length::Fill),
+        icon_button(
+            Icon::Delete,
+            ACTION_ICON_SIZE,
+            t!("session.jump_remove"),
+            Message::RemoveJump(index),
+            Position::Bottom,
+        ),
+    ]
+    .align_y(iced::alignment::Vertical::Center);
+
+    let body = column![
+        row![
+            labeled_input(
+                crate::ui::required_label(t!("session.host")),
+                &hop.host,
+                "",
+                SessionField::JumpHost(index),
+                false,
+                Length::Fill,
+            ),
+            labeled_input(
+                crate::ui::field_label(t!("session.port")),
+                &hop.port,
+                "",
+                SessionField::JumpPort(index),
+                false,
+                Length::Fixed(PORT_FIELD_W),
+            ),
+        ]
+        .spacing(10),
+        row![
+            labeled_input(
+                crate::ui::field_label(t!("session.username")),
+                &hop.username,
+                "",
+                SessionField::JumpUsername(index),
+                false,
+                Length::Fill,
+            ),
+            column![
+                crate::ui::field_label(t!("session.auth")),
+                pick_list(&AuthChoice::ALL[..], Some(auth_choice), move |c| {
+                    Message::EditorField(SessionField::JumpAuth(index), c.value().to_string())
+                },)
+                .width(Length::Fill)
+                .style(crate::theme::pick_list_style),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        ]
+        .spacing(10),
+        cred_field,
+    ]
+    .spacing(12);
+
+    container(column![head, body].spacing(10))
+        .width(Length::Fill)
+        .padding(12)
+        .style(|theme: &Theme| {
+            let p = crate::theme::custom_palette(theme);
+            iced::widget::container::Style {
+                background: Some(Background::Color(p.surface)),
+                border: Border {
+                    color: p.border,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
 }
 
 /// SSH agent 提示：以「内嵌说明块」呈现（弱文字 + 表面底色 + 细边框），
@@ -560,5 +688,32 @@ fn labeled_input<'a>(
     ]
     .spacing(4)
     .width(width)
+    .into()
+}
+
+/// 私钥路径输入：文本框 + 文件选择按钮（选择结果经 `pick` 消息回填 `field`）。
+fn key_path_field<'a>(
+    key_path: &'a str,
+    field: SessionField,
+    pick: Message,
+) -> Element<'a, Message> {
+    column![
+        crate::ui::field_label(t!("session.key_path")),
+        row![
+            text_input("", key_path)
+                .on_input(move |v| Message::EditorField(field, v))
+                .style(crate::ui::text_input_style),
+            icon_button(
+                Icon::Document,
+                ACTION_ICON_SIZE,
+                t!("session.pick_key"),
+                pick,
+                Position::Bottom,
+            ),
+        ]
+        .spacing(6)
+        .align_y(iced::alignment::Vertical::Center),
+    ]
+    .spacing(4)
     .into()
 }

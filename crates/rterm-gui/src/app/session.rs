@@ -5,7 +5,9 @@ use crate::t;
 
 use iced::Task;
 use log::error;
-use rterm_config::{SessionConfig, SessionStore, export_sessions, import_sessions, new_id};
+use rterm_config::{
+    AuthMethod, JumpHost, SessionConfig, SessionStore, export_sessions, import_sessions, new_id,
+};
 use rterm_crypto::Vault;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -35,6 +37,72 @@ pub enum SessionField {
     Passphrase,
     /// 分组名。
     Group,
+    /// 第 n 跳跳板机的主机地址。
+    JumpHost(usize),
+    /// 第 n 跳跳板机的端口（字符串，保存时解析）。
+    JumpPort(usize),
+    /// 第 n 跳跳板机的登录用户名。
+    JumpUsername(usize),
+    /// 第 n 跳跳板机的认证方式。
+    JumpAuth(usize),
+    /// 第 n 跳跳板机的密码。
+    JumpPassword(usize),
+    /// 第 n 跳跳板机的私钥文件路径。
+    JumpKeyPath(usize),
+    /// 第 n 跳跳板机的私钥口令。
+    JumpPassphrase(usize),
+}
+
+/// 编辑器中的一跳跳板机草稿：字段以字符串保存，与 [`EditorDraft`] 同规。
+#[derive(Clone)]
+pub struct JumpDraft {
+    /// 主机地址。
+    pub host: String,
+    /// 端口（字符串形式）。
+    pub port: String,
+    /// 登录用户名。
+    pub username: String,
+    /// 认证方式（`password` / `publickey` / `agent`）。
+    pub auth: String,
+    /// 密码。
+    pub password: String,
+    /// 私钥文件路径。
+    pub key_path: String,
+    /// 私钥口令。
+    pub passphrase: String,
+    /// 编辑已有跳板时保留的原始认证（含密文信封）；新增跳板为 `None`。
+    pub(crate) orig_auth: Option<AuthMethod>,
+}
+
+impl JumpDraft {
+    /// 空白跳板草稿（端口取 SSH 默认值，认证默认密码）。
+    fn new() -> Self {
+        Self {
+            host: String::new(),
+            port: rterm_config::DEFAULT_SSH_PORT.to_string(),
+            username: String::new(),
+            auth: "password".to_string(),
+            password: String::new(),
+            key_path: String::new(),
+            passphrase: String::new(),
+            orig_auth: None,
+        }
+    }
+
+    /// 由已有跳板机构造草稿（凭据留空、原始信封暂存，用于编辑）。
+    fn from_config(hop: &JumpHost) -> Self {
+        let (auth, key_path) = auth_draft_fields(&hop.auth);
+        Self {
+            host: hop.host.clone(),
+            port: hop.port.to_string(),
+            username: hop.username.clone(),
+            auth,
+            password: String::new(),
+            key_path,
+            passphrase: String::new(),
+            orig_auth: Some(hop.auth.clone()),
+        }
+    }
 }
 
 /// 会话编辑器草稿：所有字段以字符串保存，避免 `text_input` 借用在渲染后失效。
@@ -62,6 +130,8 @@ pub struct EditorDraft {
     pub passphrase: String,
     /// 分组名。
     pub group: String,
+    /// 跳板链草稿（由外到内，与保存后的 [`SessionConfig::jumps`] 同序）。
+    pub jumps: Vec<JumpDraft>,
     /// 分组字段的自动补全状态（候选池 + 当前文本），由打开编辑器时按现有会话分组填充。
     ///
     /// 用 [`Rc`] 包裹以规避 `iced_autocomplete::State` 的 `Clone` 不确定性与生命周期：
@@ -88,6 +158,7 @@ impl EditorDraft {
             key_path: String::new(),
             passphrase: String::new(),
             group: String::new(),
+            jumps: Vec::new(),
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: None,
@@ -107,13 +178,7 @@ impl EditorDraft {
     /// 凭据字段在编辑器内留空（占位「保持不变」），原始信封暂存于 `Self::orig_auth`；
     /// 仅当用户键入新凭据时才重新加密。
     pub fn from_config(cfg: &SessionConfig) -> Self {
-        let (auth, key_path) = match &cfg.auth {
-            rterm_config::AuthMethod::Password { .. } => ("password".into(), String::new()),
-            rterm_config::AuthMethod::PublicKey { key_path, .. } => {
-                ("publickey".into(), key_path.to_string_lossy().to_string())
-            }
-            rterm_config::AuthMethod::Agent => ("agent".into(), String::new()),
-        };
+        let (auth, key_path) = auth_draft_fields(&cfg.auth);
         Self {
             id: cfg.id.clone(),
             name: cfg.name.clone(),
@@ -125,6 +190,7 @@ impl EditorDraft {
             key_path,
             passphrase: String::new(),
             group: cfg.group.clone().unwrap_or_default(),
+            jumps: cfg.jumps.iter().map(JumpDraft::from_config).collect(),
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: Some(cfg.auth.clone()),
@@ -152,37 +218,15 @@ impl EditorDraft {
         } else {
             self.name.clone()
         };
-        let auth = match self.auth.as_str() {
-            "publickey" => {
-                let passphrase = if !self.passphrase.is_empty() {
-                    Some(vault.encrypt(&self.passphrase))
-                } else if let Some(rterm_config::AuthMethod::PublicKey { passphrase, .. }) =
-                    &self.orig_auth
-                {
-                    passphrase.clone()
-                } else {
-                    None
-                };
-                rterm_config::AuthMethod::PublicKey {
-                    key_path: self.key_path.clone().into(),
-                    passphrase,
-                }
-            }
-            "agent" => rterm_config::AuthMethod::Agent,
-            _ => {
-                let password = if !self.password.is_empty() {
-                    Some(vault.encrypt(&self.password))
-                } else if let Some(rterm_config::AuthMethod::Password { password }) =
-                    &self.orig_auth
-                {
-                    password.clone()
-                } else {
-                    // 凭据留空且无原值：标记为「未设置密码」，连接前需在编辑中补填。
-                    None
-                };
-                rterm_config::AuthMethod::Password { password }
-            }
-        };
+        let auth = build_auth(
+            &self.auth,
+            &self.password,
+            &self.key_path,
+            &self.passphrase,
+            self.orig_auth.as_ref(),
+            vault,
+        );
+        let jumps = self.build_jumps(vault)?;
         Ok(SessionConfig {
             id: self.id.clone(),
             name,
@@ -195,7 +239,98 @@ impl EditorDraft {
             } else {
                 Some(self.group.clone())
             },
+            jumps,
         })
+    }
+
+    /// 由跳板草稿构建跳板链（由外到内）：校验每跳主机必填、端口为合法数值。
+    ///
+    /// 端口留空时取 SSH 默认值，省去常见的 22 手填。
+    fn build_jumps(&self, vault: &Vault) -> Result<Vec<JumpHost>, String> {
+        self.jumps
+            .iter()
+            .enumerate()
+            .map(|(i, hop)| {
+                let index = i + 1;
+                if hop.host.trim().is_empty() {
+                    return Err(t!("session.jump_host_empty", index => index));
+                }
+                let port = if hop.port.trim().is_empty() {
+                    rterm_config::DEFAULT_SSH_PORT
+                } else {
+                    hop.port
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|p| *p != 0)
+                        .ok_or_else(|| t!("session.jump_port_invalid", index => index))?
+                };
+                Ok(JumpHost {
+                    host: hop.host.clone(),
+                    port,
+                    username: hop.username.clone(),
+                    auth: build_auth(
+                        &hop.auth,
+                        &hop.password,
+                        &hop.key_path,
+                        &hop.passphrase,
+                        hop.orig_auth.as_ref(),
+                        vault,
+                    ),
+                })
+            })
+            .collect()
+    }
+}
+
+/// 由认证方式拆出编辑器草稿的两个字段（认证选择值 + 私钥路径）。
+fn auth_draft_fields(auth: &AuthMethod) -> (String, String) {
+    match auth {
+        AuthMethod::Password { .. } => ("password".into(), String::new()),
+        AuthMethod::PublicKey { key_path, .. } => {
+            ("publickey".into(), key_path.to_string_lossy().to_string())
+        }
+        AuthMethod::Agent => ("agent".into(), String::new()),
+    }
+}
+
+/// 由认证选择（`password` / `publickey` / `agent`）+ 凭据明文构建认证方式。
+///
+/// 凭据字段留空时沿用 `orig` 中已有的信封，实现编辑场景的「不改动即保持不变」。
+/// 目标主机与每一跳跳板机共用本函数。
+fn build_auth(
+    choice: &str,
+    password: &str,
+    key_path: &str,
+    passphrase: &str,
+    orig: Option<&AuthMethod>,
+    vault: &Vault,
+) -> AuthMethod {
+    match choice {
+        "publickey" => {
+            let passphrase = if !passphrase.is_empty() {
+                Some(vault.encrypt(passphrase))
+            } else if let Some(AuthMethod::PublicKey { passphrase, .. }) = orig {
+                passphrase.clone()
+            } else {
+                None
+            };
+            AuthMethod::PublicKey {
+                key_path: key_path.into(),
+                passphrase,
+            }
+        }
+        "agent" => AuthMethod::Agent,
+        _ => {
+            let password = if !password.is_empty() {
+                Some(vault.encrypt(password))
+            } else if let Some(AuthMethod::Password { password }) = orig {
+                password.clone()
+            } else {
+                // 凭据留空且无原值：标记为「未设置密码」，连接前需在编辑中补填。
+                None
+            };
+            AuthMethod::Password { password }
+        }
     }
 }
 
@@ -299,10 +434,18 @@ pub enum Message {
     RefreshSessions,
     /// 编辑器字段变更（字段类型 + 新值）。
     EditorField(SessionField, String),
+    /// 在跳板链末尾追加一跳空白跳板机。
+    AddJump,
+    /// 移除第 n 跳跳板机。
+    RemoveJump(usize),
     /// 打开系统文件选择器以选取私钥文件（结果经 `Event::Emit` 自回路回填 KeyPath 字段）。
     PickKeyFile,
     /// 私钥文件选择结果（`None` 表示用户取消对话框）。
     KeyFilePicked(Option<String>),
+    /// 打开文件选择器以选取第 n 跳跳板机的私钥文件（结果经 `Event::Emit` 自回路回填该跳）。
+    PickJumpKeyFile(usize),
+    /// 跳板机私钥文件选择结果（携带跳下标；`None` 表示用户取消对话框）。
+    JumpKeyFilePicked(usize, Option<String>),
     /// 折叠 / 展开某分组（携带分组键：空串表示「未分组」区块）。
     ToggleGroup(String),
     /// 左键按下选中会话（携带会话 id）。
@@ -460,6 +603,22 @@ impl State {
                 }
                 Task::none()
             }
+            Message::AddJump => {
+                if let Some(draft) = self.editor.as_mut() {
+                    draft.jumps.push(JumpDraft::new());
+                    draft.error = None;
+                }
+                Task::none()
+            }
+            Message::RemoveJump(index) => {
+                if let Some(draft) = self.editor.as_mut()
+                    && index < draft.jumps.len()
+                {
+                    draft.jumps.remove(index);
+                    draft.error = None;
+                }
+                Task::none()
+            }
             Message::PickKeyFile => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
@@ -473,6 +632,26 @@ impl State {
                 // 文件选择器回程：仅当确有选中且编辑器仍打开时回填 KeyPath。
                 if let (Some(p), Some(draft)) = (path, self.editor.as_mut()) {
                     draft.key_path = p;
+                    draft.error = None;
+                }
+                Task::none()
+            }
+            Message::PickJumpKeyFile(index) => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .pick_file()
+                        .await
+                        .map(|f| f.path().to_string_lossy().to_string())
+                },
+                move |path| Event::Emit(Box::new(Message::JumpKeyFilePicked(index, path))),
+            ),
+            Message::JumpKeyFilePicked(index, path) => {
+                // 文件选择器回程：跳可能在对话框打开期间被移除，故按当下下标取、越界即忽略。
+                if let Some(draft) = self.editor.as_mut()
+                    && let Some(p) = path
+                    && let Some(hop) = draft.jumps.get_mut(index)
+                {
+                    hop.key_path = p;
                     draft.error = None;
                 }
                 Task::none()
@@ -646,6 +825,42 @@ fn apply_editor_field(draft: &mut EditorDraft, field: SessionField, value: Strin
         SessionField::KeyPath => draft.key_path = value,
         SessionField::Passphrase => draft.passphrase = value,
         SessionField::Group => draft.group = value,
+        // 跳板字段带下标：删除某跳后旧下标可能失效，故一律越界静默忽略。
+        SessionField::JumpHost(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.host = value;
+            }
+        }
+        SessionField::JumpPort(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.port = value;
+            }
+        }
+        SessionField::JumpUsername(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.username = value;
+            }
+        }
+        SessionField::JumpAuth(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.auth = value;
+            }
+        }
+        SessionField::JumpPassword(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.password = value;
+            }
+        }
+        SessionField::JumpKeyPath(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.key_path = value;
+            }
+        }
+        SessionField::JumpPassphrase(i) => {
+            if let Some(j) = draft.jumps.get_mut(i) {
+                j.passphrase = value;
+            }
+        }
     }
 }
 
@@ -664,6 +879,7 @@ mod tests {
             username: "root".into(),
             auth,
             group: Some("prod".into()),
+            jumps: Vec::new(),
         }
     }
 
@@ -719,5 +935,83 @@ mod tests {
 
         assert_eq!(copy.name, "bare 2");
         assert_eq!(copy.auth, AuthMethod::Password { password: None });
+    }
+
+    #[test]
+    fn jump_chain_round_trips_through_the_editor() {
+        let vault = Vault::new("test-master");
+        let src = SessionConfig {
+            jumps: vec![
+                JumpHost {
+                    host: "bastion-outer".into(),
+                    port: 2222,
+                    username: "outer".into(),
+                    auth: AuthMethod::Password {
+                        password: Some(vault.encrypt("outer-pw")),
+                    },
+                },
+                JumpHost {
+                    host: "bastion-inner".into(),
+                    port: rterm_config::DEFAULT_SSH_PORT,
+                    username: "inner".into(),
+                    auth: AuthMethod::PublicKey {
+                        key_path: "/keys/id_ed25519".into(),
+                        passphrase: None,
+                    },
+                },
+            ],
+            ..cfg("web", AuthMethod::Password { password: None })
+        };
+
+        // 打开编辑器再保存（凭据留空 → 沿用原信封），跳板链必须逐字往返。
+        let draft = EditorDraft::from_config(&src);
+        let out = draft.to_config(&vault).expect("round trip must succeed");
+
+        assert_eq!(out.jumps, src.jumps);
+    }
+
+    #[test]
+    fn jump_credentials_are_encrypted_from_typed_plaintext() {
+        let vault = Vault::new("test-master");
+        let mut draft = EditorDraft::from_config(&cfg("web", AuthMethod::Agent));
+        draft.jumps.push(JumpDraft {
+            host: "bastion".into(),
+            port: String::new(),
+            username: "ops".into(),
+            auth: "password".into(),
+            password: "typed-secret".into(),
+            key_path: String::new(),
+            passphrase: String::new(),
+            orig_auth: None,
+        });
+
+        let out = draft.to_config(&vault).expect("save must succeed");
+
+        assert_eq!(out.jumps.len(), 1);
+        let hop = &out.jumps[0];
+        assert_eq!(hop.port, rterm_config::DEFAULT_SSH_PORT, "空端口应取默认值");
+        match &hop.auth {
+            AuthMethod::Password {
+                password: Some(env),
+            } => {
+                assert_eq!(
+                    vault.decrypt(env).expect("decrypt").as_str(),
+                    "typed-secret"
+                );
+            }
+            _ => panic!("键入的密码应被加密成信封"),
+        }
+    }
+
+    #[test]
+    fn a_jump_without_a_host_is_rejected() {
+        let vault = Vault::new("test-master");
+        let mut draft = EditorDraft::from_config(&cfg("web", AuthMethod::Agent));
+        draft.jumps.push(JumpDraft::new());
+
+        assert!(
+            draft.to_config(&vault).is_err(),
+            "空主机的跳板机应被校验拦下"
+        );
     }
 }

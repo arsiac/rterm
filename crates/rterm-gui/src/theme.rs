@@ -340,6 +340,28 @@ pub fn icon_button_style(
     }
 }
 
+/// 卡片式按钮样式：底色与边框均取同区卡片色（`surface` / `border`），悬停 / 按下时底色提亮一档。
+///
+/// 用于表单内嵌的次要动作按钮（如「新增跳板机」）：与周围卡片同底同框而不喧宾夺主，
+/// 悬停时以底色变化提示可点击。
+pub fn card_button_style(theme: &Theme, status: button::Status) -> iced::widget::button::Style {
+    let p = custom_palette(theme);
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => p.hover,
+        _ => p.surface,
+    };
+    iced::widget::button::Style {
+        background: Some(background.into()),
+        border: iced::Border {
+            color: p.border,
+            width: 1.0,
+            radius: ICON_BTN_RADIUS.into(),
+        },
+        text_color: p.text_secondary,
+        ..Default::default()
+    }
+}
+
 /// 下拉框样式：跟随主题底色 + 圆角边框（设置弹窗 / 会话编辑弹窗等表单复用）。
 ///
 /// 三态区分（按 `status` 取值）：展开时以强调色描边并把右侧

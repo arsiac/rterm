@@ -22,6 +22,21 @@ pub fn localize_error(err: &CoreError) -> String {
             let detail = detail_of(source);
             match kind {
                 CoreErrorKind::Connect => t!("errors.ssh_connect", detail => detail),
+                // 跳板机失败：底层来源是那一步的 CoreError，递归本地化后嵌进文案，
+                // 使「认证被拒 / 连不上」这类具体原因跟着跳序与 host 一起显示。
+                CoreErrorKind::JumpConnect { index, host } => {
+                    let inner = source
+                        .as_deref()
+                        .and_then(|s| s.downcast_ref::<CoreError>())
+                        .map(localize_error)
+                        .unwrap_or(detail);
+                    t!(
+                        "errors.ssh_jump_connect",
+                        index => *index + 1,
+                        host => host.as_str(),
+                        detail => inner
+                    )
+                }
                 CoreErrorKind::MissingPassword => t!("errors.ssh_missing_password"),
                 CoreErrorKind::AuthPasswordRequest => {
                     t!("errors.ssh_auth_password_request", detail => detail)
@@ -79,5 +94,32 @@ pub fn localize_error(err: &CoreError) -> String {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 跳板机失败要同时给出跳序（1 起）、host 与内层原因，且内层也要本地化——
+    /// 否则用户只知道「某一跳挂了」，看不到究竟卡在认证还是网络。
+    #[test]
+    fn jump_failure_names_the_hop_and_the_inner_reason() {
+        let inner = CoreError::ssh_msg(CoreErrorKind::AuthPasswordRejected);
+        let err = CoreError::ssh(
+            CoreErrorKind::JumpConnect {
+                index: 1,
+                host: "bastion".into(),
+            },
+            inner,
+        );
+
+        let expected = t!(
+            "errors.ssh_jump_connect",
+            index => 2,
+            host => "bastion",
+            detail => t!("errors.ssh_auth_password_rejected")
+        );
+        assert_eq!(localize_error(&err), expected);
     }
 }

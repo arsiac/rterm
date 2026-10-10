@@ -183,6 +183,7 @@ mod tests {
                 password: Some(env),
             },
             group: None,
+            jumps: Vec::new(),
         }
     }
 

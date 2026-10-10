@@ -7,7 +7,7 @@ use crate::message::{Message, ResizeSender};
 use crate::t;
 use futures::SinkExt;
 use rterm_config::{ConnectOptions, SessionConfig};
-use rterm_core::{CoreError, FileEntry, SessionSecrets, SftpClient, SshConnection};
+use rterm_core::{CoreError, FileEntry, HopSpec, SessionSecrets, SftpClient, SshConnection};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -27,6 +27,7 @@ pub(crate) async fn connect_stream_task(
     id: String,
     config: SessionConfig,
     secrets: SessionSecrets,
+    jumps: Vec<HopSpec>,
     opts: ConnectOptions,
     output: &mut futures::channel::mpsc::Sender<Message>,
 ) {
@@ -37,6 +38,7 @@ pub(crate) async fn connect_stream_task(
         SshConnection::connect(
             &config,
             &secrets,
+            &jumps,
             opts.keepalive_interval,
             opts.keepalive_max,
             prompt_tx,

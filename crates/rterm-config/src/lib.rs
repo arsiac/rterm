@@ -25,5 +25,5 @@ pub use app_config::{
     MAX_RETRY_ATTEMPTS, MIN_CONCURRENT, TransferConfig, log_dir,
 };
 pub use error::ConfigError;
-pub use session::{AuthMethod, SessionConfig, new_id};
+pub use session::{AuthMethod, JumpHost, SessionConfig, new_id};
 pub use store::{SessionStore, export_sessions, import_sessions};

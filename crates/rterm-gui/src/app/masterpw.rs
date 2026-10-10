@@ -588,50 +588,49 @@ fn disable(state: &mut State, ctx: &Ctx) -> Task<Event> {
 /// 用新保险库的主密钥重新加密单个会话的凭据，旧保险库用于先解密。
 ///
 /// 仅 `Some` 信封参与重加密；`None`（未设置凭据，如仅导入连接配置）保持 `None`。
-/// 无凭据的 `Agent` 认证原样返回。
+/// 无凭据的 `Agent` 认证原样返回。目标会话与每一跳跳板机的凭据一并重加密。
 fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> SessionConfig {
-    let auth = match &cfg.auth {
-        AuthMethod::Password { password } => {
-            let new_env = password
-                .as_ref()
-                .and_then(|env| match old_vault.decrypt(env) {
-                    Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
-                    Err(e) => {
-                        warn!(
-                            "Failed to reencrypt password credential (session {}): {e}",
-                            cfg.id
-                        );
-                        None
-                    }
-                });
-            AuthMethod::Password { password: new_env }
+    let jumps = cfg
+        .jumps
+        .iter()
+        .map(|j| rterm_config::JumpHost {
+            auth: rekey_auth(&j.auth, &cfg.id, old_vault, new_vault),
+            ..j.clone()
+        })
+        .collect();
+    SessionConfig {
+        auth: rekey_auth(&cfg.auth, &cfg.id, old_vault, new_vault),
+        jumps,
+        ..cfg.clone()
+    }
+}
+
+/// 用新保险库重新加密单个 [`AuthMethod`] 的凭据信封；解密失败时凭证置空并记日志。
+fn rekey_auth(
+    auth: &AuthMethod,
+    session_id: &str,
+    old_vault: &Vault,
+    new_vault: &Vault,
+) -> AuthMethod {
+    let reencrypt = |env: &rterm_crypto::Envelope| match old_vault.decrypt(env) {
+        Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
+        Err(e) => {
+            warn!("Failed to reencrypt credential (session {session_id}): {e}");
+            None
         }
+    };
+    match auth {
+        AuthMethod::Password { password } => AuthMethod::Password {
+            password: password.as_ref().and_then(reencrypt),
+        },
         AuthMethod::PublicKey {
             key_path,
             passphrase,
-        } => {
-            let new_env = passphrase
-                .as_ref()
-                .and_then(|env| match old_vault.decrypt(env) {
-                    Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
-                    Err(e) => {
-                        warn!(
-                            "Failed to reencrypt public key passphrase (session {}): {e}",
-                            cfg.id
-                        );
-                        None
-                    }
-                });
-            AuthMethod::PublicKey {
-                key_path: key_path.clone(),
-                passphrase: new_env,
-            }
-        }
-        AuthMethod::Agent => cfg.auth.clone(),
-    };
-    SessionConfig {
-        auth,
-        ..cfg.clone()
+        } => AuthMethod::PublicKey {
+            key_path: key_path.clone(),
+            passphrase: passphrase.as_ref().and_then(reencrypt),
+        },
+        AuthMethod::Agent => AuthMethod::Agent,
     }
 }
 
@@ -907,6 +906,7 @@ mod tests {
                 password: Some(env),
             },
             group: None,
+            jumps: Vec::new(),
         };
         app.session.sessions.push(session);
 

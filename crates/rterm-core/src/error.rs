@@ -37,10 +37,20 @@ pub enum CoreError {
 /// 核心错误的稳定语义分类，与界面语言无关。
 ///
 /// GUI 层据此在翻译表中找到对应文案；底层来源错误（英文）作为 `detail` 补充。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreErrorKind {
     /// 建立 TCP / SSH 连接失败。
     Connect,
+    /// 连接跳板机（中间跳）失败。
+    ///
+    /// 携带跳序号与该跳 host 以便多跳排障；底层来源是导致失败的那一步的 [`CoreError`]
+    /// （连接、通道转发或认证），GUI 可递归本地化后拼进文案。
+    JumpConnect {
+        /// 跳板机序号（0 起，由外到内）。
+        index: usize,
+        /// 该跳板机主机名或 IP。
+        host: String,
+    },
     /// 凭据保险库未提供解密后的密码。
     MissingPassword,
     /// 密码认证请求发出失败。
@@ -217,6 +227,7 @@ impl CoreError {
             // 与网络状态无必然关系，无法判定。
             CoreError::Ssh { kind, .. } => match kind {
                 CoreErrorKind::Connect
+                | CoreErrorKind::JumpConnect { .. }
                 | CoreErrorKind::ChannelOpen
                 | CoreErrorKind::SftpChannelOpen
                 | CoreErrorKind::SftpSubsystem

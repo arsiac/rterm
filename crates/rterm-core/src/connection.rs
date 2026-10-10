@@ -6,7 +6,7 @@
 
 use crate::{CoreError, CoreErrorKind, host_key};
 use log::debug;
-use rterm_config::{AuthMethod, SessionConfig};
+use rterm_config::{AuthMethod, JumpHost, SessionConfig};
 use russh::Pty;
 use russh::client::{self, Config, Handle, Handler};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
@@ -46,6 +46,52 @@ pub struct SessionSecrets {
     pub password: Option<Zeroizing<String>>,
     /// 私钥口令；无口令或公钥认证未设置时为 `None`。
     pub key_passphrase: Option<Zeroizing<String>>,
+}
+
+/// 一跳跳板机的建连输入：连接参数 + 已解密凭据。
+///
+/// 由 GUI 在发起连接前组装（顺序与 [`rterm_config::SessionConfig::jumps`] 一致，由外到内）；
+/// 目标主机本身的连接参数与凭据仍走 [`SshConnection::connect`] 的 `config` / `secrets` 形参。
+#[derive(Clone)]
+pub struct HopSpec {
+    /// 跳板机连接参数。
+    pub config: JumpHost,
+    /// 跳板机凭据明文（已由保险库解密，`Zeroizing` 持有）。
+    pub secrets: SessionSecrets,
+}
+
+/// 一次握手与认证所需的端点信息（目标主机或某一跳跳板机）。
+///
+/// 目标用 [`SessionConfig`]、跳板机用 [`JumpHost`]，二者字段同形但类型不同；
+/// 本结构把握手路径真正要用的部分抽出，避免为跳板机伪造一个 [`SessionConfig`]。
+#[derive(Clone, Copy)]
+struct Endpoint<'a> {
+    host: &'a str,
+    port: u16,
+    username: &'a str,
+    auth: &'a AuthMethod,
+}
+
+impl<'a> From<&'a SessionConfig> for Endpoint<'a> {
+    fn from(c: &'a SessionConfig) -> Self {
+        Self {
+            host: &c.host,
+            port: c.port,
+            username: &c.username,
+            auth: &c.auth,
+        }
+    }
+}
+
+impl<'a> From<&'a JumpHost> for Endpoint<'a> {
+    fn from(j: &'a JumpHost) -> Self {
+        Self {
+            host: &j.host,
+            port: j.port,
+            username: &j.username,
+            auth: &j.auth,
+        }
+    }
 }
 
 /// 用户决定的回复句柄；用 `Option` + `take()` 保证 `reply` 只生效一次。
@@ -197,6 +243,11 @@ impl Handler for ClientHandler {
 pub struct SshConnection {
     /// russh 客户端句柄（可克隆引用，受互斥锁保护以支持并发通道操作）。
     handle: Arc<AsyncMutex<Handle<ClientHandler>>>,
+    /// 中间跳的句柄（由外到内）。
+    ///
+    /// 仅用于 [`Self::disconnect`] 显式断开整条链与诊断；russh 会话任务不靠句柄续命，
+    /// 任一跳死亡都会让目标流 EOF、目标会话收尾，[`Self::is_closed`] 随之转真。
+    jumps: Vec<Handle<ClientHandler>>,
 }
 
 /// 组装 russh 客户端配置：保活间隔与判死次数由宿主传入，其余取 russh 默认。
@@ -212,114 +263,193 @@ fn client_config(keepalive: Option<Duration>, keepalive_max: usize) -> Config {
     }
 }
 
+/// 在已建立传输并完成密钥交换的句柄上完成认证（密码 / 公钥 / agent）。
+///
+/// 目标主机与每一跳跳板机都复用本函数；凭据已由调用方解密为明文（见 [`SessionSecrets`]）。
+async fn authenticate(
+    handle: &mut Handle<ClientHandler>,
+    endpoint: Endpoint<'_>,
+    secrets: &SessionSecrets,
+) -> Result<(), CoreError> {
+    match endpoint.auth {
+        AuthMethod::Password { .. } => {
+            debug!("使用密码认证: {}", endpoint.username);
+            let password = secrets
+                .password
+                .as_ref()
+                .ok_or_else(|| CoreError::ssh_msg(CoreErrorKind::MissingPassword))?;
+            let result = handle
+                .authenticate_password(endpoint.username, password.as_str())
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::AuthPasswordRequest, e))?;
+            if !result.success() {
+                return Err(CoreError::ssh_msg(CoreErrorKind::AuthPasswordRejected));
+            }
+        }
+        AuthMethod::PublicKey {
+            key_path,
+            passphrase: _,
+        } => {
+            debug!("使用公钥认证: {}", key_path.display());
+            let pass = secrets.key_passphrase.as_ref().map(|p| p.as_str());
+            let key = russh::keys::PrivateKey::read_openssh_file(key_path)
+                .map_err(|e| CoreError::ssh(CoreErrorKind::ReadKey, e))?;
+            let key = match pass {
+                Some(pass) => key
+                    .decrypt(pass)
+                    .map_err(|e| CoreError::ssh(CoreErrorKind::DecryptKey, e))?,
+                None => key,
+            };
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
+            let result = handle
+                .authenticate_publickey(endpoint.username, key)
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::AuthPublicKeyRequest, e))?;
+            if !result.success() {
+                return Err(CoreError::ssh_msg(CoreErrorKind::AuthPublicKeyRejected));
+            }
+        }
+        AuthMethod::Agent => {
+            debug!("使用 SSH agent 认证");
+            #[cfg(unix)]
+            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::AgentConnect, e))?;
+            #[cfg(windows)]
+            let mut agent = russh::keys::agent::client::AgentClient::connect_pageant()
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::AgentConnectPageant, e))?;
+            let identities = agent
+                .request_identities()
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::AgentIdentities, e))?;
+            let mut authed = false;
+            for id in identities {
+                let pubkey = id.public_key().into_owned();
+                if let Ok(result) = handle
+                    .authenticate_publickey_with(endpoint.username, pubkey, None, &mut agent)
+                    .await
+                    && result.success()
+                {
+                    authed = true;
+                    break;
+                }
+            }
+            if !authed {
+                return Err(CoreError::ssh_msg(CoreErrorKind::AgentAuthFailed));
+            }
+        }
+    }
+    debug!("SSH 认证成功: {}", endpoint.username);
+    Ok(())
+}
+
+/// 建立一跳的连接并完成认证（不含跳板机错误归属包装）。
+///
+/// `prev` 为 `None` 时直连 `endpoint`（TCP）；为 `Some` 时先在上一跳句柄上开一条到
+/// `endpoint` 的 `direct-tcpip` 转发通道，再以该通道的流作为传输层跑 SSH 握手。
+async fn establish_hop(
+    prev: Option<&Handle<ClientHandler>>,
+    endpoint: Endpoint<'_>,
+    secrets: &SessionSecrets,
+    ssh_config: &Arc<Config>,
+    prompt_tx: mpsc::Sender<(HostKeyPrompt, HostKeyReply)>,
+) -> Result<Handle<ClientHandler>, CoreError> {
+    let handler = ClientHandler {
+        host: endpoint.host.to_string(),
+        port: endpoint.port,
+        prompt_tx,
+    };
+    let mut handle = match prev {
+        None => client::connect(
+            Arc::clone(ssh_config),
+            (endpoint.host, endpoint.port),
+            handler,
+        )
+        .await
+        .map_err(|e| CoreError::ssh(CoreErrorKind::Connect, e))?,
+        Some(prev) => {
+            // originator 是信息性字段（服务端一般不校验），统一填回环地址。
+            let channel = prev
+                .channel_open_direct_tcpip(
+                    endpoint.host.to_string(),
+                    endpoint.port as u32,
+                    "127.0.0.1",
+                    0,
+                )
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::ChannelOpen, e))?;
+            client::connect_stream(Arc::clone(ssh_config), channel.into_stream(), handler)
+                .await
+                .map_err(|e| CoreError::ssh(CoreErrorKind::Connect, e))?
+        }
+    };
+    authenticate(&mut handle, endpoint, secrets).await?;
+    Ok(handle)
+}
+
+/// 把某一跳的失败包上跳序号与该跳 host，便于多跳排障与本地化文案。
+fn hop_error(index: usize, host: &str, err: CoreError) -> CoreError {
+    CoreError::ssh(
+        CoreErrorKind::JumpConnect {
+            index,
+            host: host.to_string(),
+        },
+        err,
+    )
+}
+
 impl SshConnection {
-    /// 根据会话配置建立并认证一条 SSH 连接。
+    /// 根据会话配置建立并认证一条 SSH 连接（密码 / 公钥 / agent，主机密钥经 `prompt_tx` 询问）。
     ///
-    /// 认证方式依据 [`AuthMethod`]：密码 / 公钥文件 / SSH agent。
-    /// 主机密钥未经 known_hosts 确认时经 `prompt_tx` 请求 GUI 弹窗，等待用户决定。
-    /// `keepalive` 为保活间隔（`None` = 关闭），`keepalive_max` 为无应答保活包达到多少时判死
-    /// （`0` = 不判死），两者均由宿主从应用配置解析后传入。**只在建连时生效**，
-    /// 改动配置不影响已打开的连接，需重连才生效。
+    /// `jumps` 为跳板链（由外到内，空即直连）：逐跳建隧道到 `config`；`keepalive` /
+    /// `keepalive_max` 为整条链的保活间隔与判死阈值（`None` / `0` 表示关闭），仅建连时生效。
     pub async fn connect(
         config: &SessionConfig,
         secrets: &SessionSecrets,
+        jumps: &[HopSpec],
         keepalive: Option<Duration>,
         keepalive_max: u64,
         prompt_tx: mpsc::Sender<(HostKeyPrompt, HostKeyReply)>,
     ) -> Result<Self, CoreError> {
-        debug!("正在连接 {}:{}", config.host, config.port);
+        debug!(
+            "正在连接 {}:{}（经 {} 跳跳板机）",
+            config.host,
+            config.port,
+            jumps.len()
+        );
         // `keepalive_max` 已由配置层裁剪到上界，此处仅做 russh 所需的窄化。
-        let ssh_config = client_config(keepalive, keepalive_max as usize);
+        let ssh_config = Arc::new(client_config(keepalive, keepalive_max as usize));
 
-        let handler = ClientHandler {
-            host: config.host.clone(),
-            port: config.port,
-            prompt_tx,
-        };
-
-        // 建立 TCP 连接并完成密钥交换（含主机密钥校验，可能在弹窗处暂停）。
-        let mut handle = client::connect(
-            Arc::new(ssh_config),
-            (config.host.as_str(), config.port),
-            handler,
-        )
-        .await
-        .map_err(|e| CoreError::ssh(CoreErrorKind::Connect, e))?;
-
-        // 认证需要可变句柄。凭据已由调用方用保险库解密为明文（见 `SessionSecrets`）。
-        match &config.auth {
-            AuthMethod::Password { .. } => {
-                debug!("使用密码认证: {}", config.username);
-                let password = secrets
-                    .password
-                    .as_ref()
-                    .ok_or_else(|| CoreError::ssh_msg(CoreErrorKind::MissingPassword))?;
-                let result = handle
-                    .authenticate_password(&config.username, password.as_str())
-                    .await
-                    .map_err(|e| CoreError::ssh(CoreErrorKind::AuthPasswordRequest, e))?;
-                if !result.success() {
-                    return Err(CoreError::ssh_msg(CoreErrorKind::AuthPasswordRejected));
-                }
-            }
-            AuthMethod::PublicKey {
-                key_path,
-                passphrase: _,
-            } => {
-                debug!("使用公钥认证: {}", key_path.display());
-                let pass = secrets.key_passphrase.as_ref().map(|p| p.as_str());
-                let key = russh::keys::PrivateKey::read_openssh_file(key_path)
-                    .map_err(|e| CoreError::ssh(CoreErrorKind::ReadKey, e))?;
-                let key = match pass {
-                    Some(pass) => key
-                        .decrypt(pass)
-                        .map_err(|e| CoreError::ssh(CoreErrorKind::DecryptKey, e))?,
-                    None => key,
-                };
-                let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
-                let result = handle
-                    .authenticate_publickey(&config.username, key)
-                    .await
-                    .map_err(|e| CoreError::ssh(CoreErrorKind::AuthPublicKeyRequest, e))?;
-                if !result.success() {
-                    return Err(CoreError::ssh_msg(CoreErrorKind::AuthPublicKeyRejected));
-                }
-            }
-            AuthMethod::Agent => {
-                debug!("使用 SSH agent 认证");
-                #[cfg(unix)]
-                let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                    .await
-                    .map_err(|e| CoreError::ssh(CoreErrorKind::AgentConnect, e))?;
-                #[cfg(windows)]
-                let mut agent = russh::keys::agent::client::AgentClient::connect_pageant()
-                    .await
-                    .map_err(|e| CoreError::ssh(CoreErrorKind::AgentConnectPageant, e))?;
-                let identities = agent
-                    .request_identities()
-                    .await
-                    .map_err(|e| CoreError::ssh(CoreErrorKind::AgentIdentities, e))?;
-                let mut authed = false;
-                for id in identities {
-                    let pubkey = id.public_key().into_owned();
-                    if let Ok(result) = handle
-                        .authenticate_publickey_with(&config.username, pubkey, None, &mut agent)
-                        .await
-                        && result.success()
-                    {
-                        authed = true;
-                        break;
-                    }
-                }
-                if !authed {
-                    return Err(CoreError::ssh_msg(CoreErrorKind::AgentAuthFailed));
-                }
-            }
+        // 逐跳建立隧道：第 0 跳直连，其后各跳都经上一跳的 direct-tcpip 转发。
+        let mut jump_handles: Vec<Handle<ClientHandler>> = Vec::with_capacity(jumps.len());
+        for (index, hop) in jumps.iter().enumerate() {
+            let handle = establish_hop(
+                jump_handles.last(),
+                Endpoint::from(&hop.config),
+                &hop.secrets,
+                &ssh_config,
+                prompt_tx.clone(),
+            )
+            .await
+            .map_err(|e| hop_error(index, &hop.config.host, e))?;
+            jump_handles.push(handle);
         }
+
+        // 目标主机：经最后一跳转发（无跳板机时即直连）。
+        let handle = establish_hop(
+            jump_handles.last(),
+            Endpoint::from(config),
+            secrets,
+            &ssh_config,
+            prompt_tx,
+        )
+        .await?;
 
         debug!("SSH 认证成功: {}", config.username);
         Ok(Self {
             handle: Arc::new(AsyncMutex::new(handle)),
+            jumps: jump_handles,
         })
     }
 
@@ -340,6 +470,9 @@ impl SshConnection {
     /// 用于「确定不再复用」的收尾：与单纯丢弃本对象不同（那只会离开本地会话任务，
     /// 不发任何报文），本方法会走完 russh 的断开流程，使会话任务收尾、
     /// [`Self::is_closed`] 转真，服务端也能立刻看到链路结束。
+    ///
+    /// 有跳板链时先断目标、再**逆序**断各跳（最内层先断，逐层向外），避免先断外层时
+    /// 内层连接还在向其发送通道报文。
     pub async fn disconnect(&self, reason: &str) {
         let handle = self.handle.lock().await;
         if let Err(e) = handle
@@ -347,6 +480,15 @@ impl SshConnection {
             .await
         {
             debug!("断开连接时出错（链路可能已断）: {e}");
+        }
+        drop(handle);
+        for jump in self.jumps.iter().rev() {
+            if let Err(e) = jump
+                .disconnect(russh::Disconnect::ByApplication, reason, "en")
+                .await
+            {
+                debug!("断开跳板机连接时出错（链路可能已断）: {e}");
+            }
         }
     }
 

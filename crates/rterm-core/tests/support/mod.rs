@@ -261,6 +261,10 @@ pub(crate) struct TestSsh {
     accept: Option<tokio::task::JoinHandle<()>>,
     /// 最近一条连接的 shell 通道（服务端侧），供用例模拟「远端 shell 退出」。
     shell_channel: Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>,
+    /// 经本服务端转发的 direct-tcpip 次数，供用例证明流量确实过境。
+    forwards: Arc<AtomicU32>,
+    /// 各条 TCP 桥泵任务的中止柄，供用例掐断隧道。
+    bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
 }
 
 #[allow(dead_code)]
@@ -280,11 +284,15 @@ impl TestSsh {
             .expect("bind an ephemeral port");
         let addr = listener.local_addr().expect("listener address");
         let shell_channel = Arc::new(tokio::sync::Mutex::new(None));
+        let forwards = Arc::new(AtomicU32::new(0));
+        let bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>> = Arc::new(Mutex::new(Vec::new()));
         let accept = {
             let config = Arc::clone(&config);
             let root = std::env::temp_dir().join(format!("rterm-ssh-{}", std::process::id()));
             std::fs::create_dir_all(&root).expect("create the ssh jail");
             let shell_channel = Arc::clone(&shell_channel);
+            let forwards = Arc::clone(&forwards);
+            let bridges = Arc::clone(&bridges);
             tokio::spawn(async move {
                 loop {
                     let Ok((stream, _)) = listener.accept().await else {
@@ -295,6 +303,8 @@ impl TestSsh {
                         Arc::new(Faults::default()),
                         root.clone(),
                         Arc::clone(&shell_channel),
+                        Arc::clone(&forwards),
+                        Arc::clone(&bridges),
                     );
                     tokio::spawn(async move {
                         if let Err(e) = russh::server::run_stream(config, stream, session).await {
@@ -308,6 +318,26 @@ impl TestSsh {
             addr,
             accept: Some(accept),
             shell_channel,
+            forwards,
+            bridges,
+        }
+    }
+
+    /// 本服务端监听端口（跳板机测试据此把它当作「目标主机」来连）。
+    pub(crate) fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    /// 经本服务端转发的 direct-tcpip 次数。
+    pub(crate) fn forwards(&self) -> u32 {
+        self.forwards.load(Ordering::Relaxed)
+    }
+
+    /// 掐断所有经本机转发的 TCP 桥（模拟跳板机侧隧道断裂）。
+    pub(crate) async fn kill_bridges(&self) {
+        let mut bridges = self.bridges.lock().await;
+        for handle in bridges.drain(..) {
+            handle.abort();
         }
     }
 
@@ -336,12 +366,9 @@ impl TestSsh {
         }
     }
 
-    /// 经生产入口 [`rterm_core::SshConnection::connect`] 建一条已认证的连接。
-    ///
-    /// 主机密钥确认由后台任务自动答复「信任」：测试不覆盖 TOFU 弹窗流程，
-    /// 只想拿到一具可桥接的活连接。
-    pub(crate) async fn connect(&self) -> TestSshConnection {
-        let config = rterm_config::SessionConfig {
+    /// 本服务端对应的会话配置（用户名 / 密码与本服务端一致）。
+    fn session_config(&self) -> rterm_config::SessionConfig {
+        rterm_config::SessionConfig {
             id: "test".to_string(),
             name: "test".to_string(),
             host: Ipv4Addr::LOCALHOST.to_string(),
@@ -349,11 +376,42 @@ impl TestSsh {
             username: USER.to_string(),
             auth: rterm_config::AuthMethod::Password { password: None },
             group: None,
-        };
-        let secrets = rterm_core::SessionSecrets {
+            jumps: Vec::new(),
+        }
+    }
+
+    /// 本服务端接受的明文凭据。
+    fn secrets() -> rterm_core::SessionSecrets {
+        rterm_core::SessionSecrets {
             password: Some(zeroize::Zeroizing::new(PASSWORD.to_string())),
             key_passphrase: None,
-        };
+        }
+    }
+
+    /// 一条以本服务端为跳板机的 [`rterm_core::HopSpec`]。
+    pub(crate) fn hop(&self) -> rterm_core::HopSpec {
+        rterm_core::HopSpec {
+            config: rterm_config::JumpHost {
+                host: Ipv4Addr::LOCALHOST.to_string(),
+                port: self.addr.port(),
+                username: USER.to_string(),
+                auth: rterm_config::AuthMethod::Password { password: None },
+            },
+            secrets: Self::secrets(),
+        }
+    }
+
+    /// 经生产入口 [`rterm_core::SshConnection::connect`] 建一条已认证的连接。
+    ///
+    /// 主机密钥确认由后台任务自动答复「信任」：测试不覆盖 TOFU 弹窗流程，
+    /// 只想拿到一具可桥接的活连接。
+    pub(crate) async fn connect(&self) -> TestSshConnection {
+        self.connect_via(&[]).await
+    }
+
+    /// 同 [`TestSsh::connect`]，但先经给定跳板链（由外到内）建立隧道再握手。
+    pub(crate) async fn connect_via(&self, jumps: &[rterm_core::HopSpec]) -> TestSshConnection {
+        let config = self.session_config();
         let (prompt_tx, mut prompt_rx) =
             tokio::sync::mpsc::channel::<(rterm_core::HostKeyPrompt, rterm_core::HostKeyReply)>(1);
         tokio::spawn(async move {
@@ -361,9 +419,16 @@ impl TestSsh {
                 reply.reply(true);
             }
         });
-        let conn = rterm_core::SshConnection::connect(&config, &secrets, None, 0, prompt_tx)
-            .await
-            .expect("connect to the test ssh server");
+        let conn = rterm_core::SshConnection::connect(
+            &config,
+            &Self::secrets(),
+            jumps,
+            None,
+            0,
+            prompt_tx,
+        )
+        .await
+        .expect("connect to the test ssh server");
         assert!(!conn.is_closed().await, "新建连接必然是活的");
         TestSshConnection {
             conn: Some(Arc::new(conn)),
@@ -400,37 +465,57 @@ impl TestSshConnection {
     }
 }
 
-/// SSH 服务端 handler：只认密码认证，把 `sftp` 子系统接到 [`SftpBackend`]。
+/// SSH 服务端 handler：只认密码认证，把 `sftp` 子系统接到 [`SftpBackend`]，
+/// 并为 direct-tcpip 请求架一条到目标主机的 TCP 桥（跳板机语义）。
 struct SshSession {
     faults: Arc<Faults>,
     root: PathBuf,
     channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
     /// 服务端侧最近一条 shell 通道的存放位（仅供 [`TestSsh::close_shell`] 使用）。
     shell_slot: Option<Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>>,
+    /// 已接受的 direct-tcpip 次数（供用例证明流量确实经过了本机）。
+    forwards: Arc<AtomicU32>,
+    /// 各条 TCP 桥泵任务的中止柄（仅供 [`TestSsh::kill_bridges`] 掐断隧道）。
+    bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
 }
 
 impl SshSession {
     fn new(faults: Arc<Faults>, root: PathBuf) -> Self {
-        Self {
+        Self::build(
             faults,
             root,
-            channels: Arc::default(),
-            shell_slot: None,
-        }
+            None,
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(Mutex::new(Vec::new())),
+        )
     }
 
-    /// 同 [`SshSession::new`]，但把 shell 请求收到的通道存进共享槽位。
-    #[allow(dead_code)] // 仅终端桥接测试走这条构造
+    /// 同 [`SshSession::new`]，但把 shell 通道与转发计数 / 桥柄寄存到宿主的共享槽位。
+    #[allow(dead_code)] // 仅终端桥接与跳板机测试走这条构造
     fn with_shell_slot(
         faults: Arc<Faults>,
         root: PathBuf,
         shell_slot: Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>,
+        forwards: Arc<AtomicU32>,
+        bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+    ) -> Self {
+        Self::build(faults, root, Some(shell_slot), forwards, bridges)
+    }
+
+    fn build(
+        faults: Arc<Faults>,
+        root: PathBuf,
+        shell_slot: Option<Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>>,
+        forwards: Arc<AtomicU32>,
+        bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
     ) -> Self {
         Self {
             faults,
             root,
             channels: Arc::default(),
-            shell_slot: Some(shell_slot),
+            shell_slot,
+            forwards,
+            bridges,
         }
     }
 }
@@ -533,6 +618,37 @@ impl russh::server::Handler for SshSession {
             SftpBackend::new(Arc::clone(&self.faults), self.root.clone()),
         )
         .await;
+        Ok(())
+    }
+
+    /// 跳板机语义：把请求的 direct-tcpip 通道桥到真实的 `host_to_connect:port_to_connect`。
+    ///
+    /// 这正是 sshd 的 `direct-tcpip` 转发。目标不可达时按协议回 `ConnectFailed`，
+    /// 让客户端在建连时就拿到明确失败，而非挂在半开的通道上。
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Ok(stream) =
+            tokio::net::TcpStream::connect((host_to_connect, port_to_connect as u16)).await
+        else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        self.forwards.fetch_add(1, Ordering::Relaxed);
+        reply.accept().await;
+        let mut chan = channel.into_stream();
+        let mut stream = stream;
+        let bridge = tokio::spawn(async move {
+            let _ = tokio::io::copy_bidirectional(&mut chan, &mut stream).await;
+        });
+        self.bridges.lock().await.push(bridge.abort_handle());
         Ok(())
     }
 }

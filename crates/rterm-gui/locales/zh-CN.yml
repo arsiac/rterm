@@ -116,6 +116,13 @@ session:
   host_empty: 主机不能为空
   port_invalid: 端口必须是数字
   port_zero: 端口不能为 0
+  section_jumps: 跳板机
+  jumps_empty: 暂无跳板机，将直连目标主机。
+  jump_label: "跳板机 %{index}"
+  jump_add: 添加跳板机
+  jump_remove: 移除该跳板机
+  jump_host_empty: "跳板机 %{index}：主机不能为空"
+  jump_port_invalid: "跳板机 %{index}：端口必须是非 0 数字"
 masterpw:
   set_title: 设置主密码
   set_body: 请设置用于加密会话凭据的主密码。它将派生主密钥，口令本身不会保存在本机；一旦忘记，已保存的凭据将无法恢复。
@@ -301,6 +308,7 @@ app:
 errors:
   io: "I/O 错误: %{detail}"
   ssh_connect: "连接失败: %{detail}"
+  ssh_jump_connect: "跳板机 %{index}（%{host}）连接失败: %{detail}"
   ssh_missing_password: 缺少解密后的密码
   ssh_auth_password_request: "密码认证请求失败: %{detail}"
   ssh_auth_password_rejected: 密码认证被服务器拒绝
