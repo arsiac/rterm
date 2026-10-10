@@ -122,8 +122,10 @@ pub struct CustomPalette {
     pub surface: Color,
     /// 抬升表面色（用于弹窗、悬浮元素、行悬浮态等）。
     pub surface_raised: Color,
-    /// 次要文本 / 图标颜色（说明文字、图标等）。
+    /// 次要文本 / 图标颜色（字段标签、图标等）。
     pub text_secondary: Color,
+    /// 弱文本色（说明 / 提示文字）：比 `text_secondary` 再弱一档。
+    pub text_tertiary: Color,
     /// 悬浮态背景色（行 / 按钮悬停时，较表面更突出）。
     pub hover: Color,
     /// 抬升表面（弹窗、dropdown 面板）内的行悬浮色。
@@ -198,6 +200,7 @@ pub fn custom_palette(theme: &Theme) -> CustomPalette {
                 (bg.b - 0.08).max(0.0),
             ),
             text_secondary: Color::from_rgb(0.45, 0.45, 0.45),
+            text_tertiary: Color::from_rgb(0.60, 0.60, 0.60),
             hover: Color::from_rgb(
                 (bg.r - 0.08).max(0.0),
                 (bg.g - 0.08).max(0.0),
@@ -228,6 +231,7 @@ pub fn custom_palette(theme: &Theme) -> CustomPalette {
                 (bg.b + 0.10).min(1.0),
             ),
             text_secondary: Color::from_rgb(0.6, 0.6, 0.6),
+            text_tertiary: Color::from_rgb(0.45, 0.45, 0.45),
             hover: Color::from_rgb(
                 (bg.r + 0.10).min(1.0),
                 (bg.g + 0.10).min(1.0),

@@ -199,7 +199,7 @@ pub fn hint_text<'a, M: Clone + 'a>(label: impl Into<String>) -> Element<'a, M> 
         .size(12)
         .wrapping(Wrapping::Word)
         .style(|theme: &Theme| iced::widget::text::Style {
-            color: Some(theme.extended_palette().background.weak.text),
+            color: Some(theme::custom_palette(theme).text_tertiary),
         })
         .into()
 }
