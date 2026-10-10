@@ -51,23 +51,39 @@ const LANGUAGE_OPTIONS: [LanguageOption; 3] = [
     LanguageOption(Language::En),
 ];
 
-/// 设置弹窗面板宽度（像素）。
-const SETTINGS_W: f32 = 720.0;
-/// 设置弹窗面板高度（像素）。
-const SETTINGS_H: f32 = 480.0;
+/// 设置弹窗面板目标宽度（像素）。
+const SETTINGS_W: f32 = 860.0;
+/// 设置弹窗面板目标高度（像素）。
+const SETTINGS_H: f32 = 560.0;
+/// 面板与窗口边缘的留白（像素）：窗口小于面板目标尺寸时生效。
+const DIALOG_MARGIN: f32 = 16.0;
 /// 左侧分类导航栏宽度（像素）。
 const NAV_W: f32 = 160.0;
 
 /// 根据当前是否显示设置弹窗返回遮罩层元素；未显示时返回 `None`。
+///
+/// 面板取目标尺寸与「窗口尺寸 - 留白」的较小者：窗口足够大时固定为目标尺寸，
+/// 被缩到更小时随之收缩，避免面板溢出窗口被裁掉。
 pub fn view(app: &App) -> Option<Element<'_, Message>> {
     if !app.settings.show_settings {
         return None;
     }
-    let panel = container(body(app))
-        .width(SETTINGS_W)
-        .height(SETTINGS_H)
-        .style(crate::ui::dialog_panel_style(None))
-        .padding(0);
+    let panel = iced::widget::responsive(move |size| {
+        let width = (size.width - DIALOG_MARGIN * 2.0).clamp(0.0, SETTINGS_W);
+        let height = (size.height - DIALOG_MARGIN * 2.0).clamp(0.0, SETTINGS_H);
+        container(
+            container(body(app))
+                .width(width)
+                .height(height)
+                .style(crate::ui::dialog_panel_style(None))
+                .padding(0),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+    });
     Some(sftp_dialogs::overlay_wrap(panel.into()))
 }
 

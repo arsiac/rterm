@@ -37,6 +37,10 @@ use rterm_config::AppConfig;
 pub(crate) const DEFAULT_WINDOW_WIDTH: f32 = 1144.0;
 /// 默认窗口高度（像素）：首次启动或未启用 / 已清除窗口记忆时使用。
 pub(crate) const DEFAULT_WINDOW_HEIGHT: f32 = 768.0;
+/// 窗口最小宽度（像素）：三栏布局与弹窗可用的下限。
+pub(crate) const MIN_WINDOW_WIDTH: f32 = 640.0;
+/// 窗口最小高度（像素）：三栏布局与弹窗可用的下限。
+pub(crate) const MIN_WINDOW_HEIGHT: f32 = 480.0;
 
 // 编译期嵌入翻译资源；缺失键回退到 en。
 rust_i18n::i18n!("locales", fallback = "en");
@@ -64,8 +68,11 @@ pub fn run(config: AppConfig) -> Result {
     };
 
     // 恢复窗口尺寸：仅当「记住窗口大小」开启且存在有效记录时使用，否则回退默认尺寸。
+    // 历史记录可能小于窗口下限（旧版本在更小的窗口下保存），需钳到下限，
+    // 否则首帧尺寸低于 `min_size` 会被窗口管理器顶回，与配置记录不一致。
     let (window_width, window_height) = config
         .remembered_size()
+        .map(|(w, h)| (w.max(MIN_WINDOW_WIDTH), h.max(MIN_WINDOW_HEIGHT)))
         .unwrap_or((DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
 
     let window_icon = iced::window::icon::from_file_data(crate::icons::WINDOW_ICON, None).ok();
@@ -81,6 +88,7 @@ pub fn run(config: AppConfig) -> Result {
     .title(app_title)
     .window(iced::window::Settings {
         size: iced::Size::new(window_width, window_height),
+        min_size: Some(iced::Size::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)),
         icon: window_icon,
         platform_specific: platform_specific_settings(),
         // 关闭请求改由 `app::window` 模块接管：先查询是否最大化并落盘非最大化尺寸，再关闭窗口。
