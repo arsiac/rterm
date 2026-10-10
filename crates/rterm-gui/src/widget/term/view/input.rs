@@ -200,17 +200,29 @@ impl<'a> TerminalView<'a> {
         // 根据终端模式与修饰键，分派命令或选区更新
         if state.is_dragged {
             let terminal_mode = terminal_content.terminal_mode;
-            let cmd = if terminal_mode.intersects(TermMode::MOUSE_MOTION) {
-                Command::MouseReport(
+            if terminal_mode.intersects(TermMode::MOUSE_MOTION) {
+                commands.push(Command::MouseReport(
                     MouseButton::LeftMove,
                     state.keyboard_modifiers,
                     state.mouse_position_on_grid,
                     true,
-                )
+                ));
             } else {
-                Command::SelectUpdate((cursor_x, cursor_y))
-            };
-            commands.push(cmd);
+                // 备用屏无回滚历史，且 `Command::Scroll` 在此会改发方向键给远端（误输入），故不自动滚动。
+                if !terminal_mode.contains(TermMode::ALT_SCREEN)
+                    && let Some(delta) = selection_autoscroll_delta(
+                        cursor_y,
+                        terminal_content.rows(),
+                        terminal_content.terminal_size.cell_height as f32,
+                    )
+                {
+                    // 先滚后更新选区：后端在更新时现读回滚偏移，端点随之延伸到新揭示的行。
+                    commands.push(Command::Scroll(delta));
+                    // 视口上移 `delta` 行后，同一像素对应的网格行同步下移，保持悬浮 / 上报坐标一致。
+                    state.mouse_position_on_grid.line -= delta;
+                }
+                commands.push(Command::SelectUpdate((cursor_x, cursor_y)));
+            }
         }
 
         // 处理链接悬浮态（如适用）
@@ -576,6 +588,37 @@ pub(super) fn read_middle_paste(clipboard: &dyn iced_graphics::core::Clipboard) 
         .filter(|data| !data.is_empty())
 }
 
+/// 拖选自动滚动的单次最大行数：拖得越远滚得越快，封顶避免长距离拖动时视口跳跃。
+pub(super) const SELECTION_AUTOSCROLL_MAX_LINES: i32 = 5;
+
+/// 拖选越出内容区上下边缘时的自动滚动增量（纯函数），`None` 表示未越界。
+///
+/// 正值向上回滚历史、负值贴回实时输出（同 [`Command::Scroll`]）。越界行数按单元格高度
+/// 折算，拖得越远滚得越快，并封顶 [`SELECTION_AUTOSCROLL_MAX_LINES`]。
+pub(super) fn selection_autoscroll_delta(
+    cursor_y: f32,
+    rows: usize,
+    cell_height: f32,
+) -> Option<i32> {
+    if rows == 0 || cell_height <= 0.0 {
+        return None;
+    }
+
+    let content_bottom = rows as f32 * cell_height;
+    let lines = if cursor_y < 0.0 {
+        (-cursor_y / cell_height).floor() as i32 + 1
+    } else if cursor_y >= content_bottom {
+        -(((cursor_y - content_bottom) / cell_height).floor() as i32 + 1)
+    } else {
+        return None;
+    };
+
+    Some(lines.clamp(
+        -SELECTION_AUTOSCROLL_MAX_LINES,
+        SELECTION_AUTOSCROLL_MAX_LINES,
+    ))
+}
+
 /// 把 `Ctrl+字母/数字/符号` 转成对应的 ASCII 控制字符（如 `Ctrl+C` => `\x03`）。
 ///
 /// 仅在系统未给出 `text` 时作为回退；普通字符键优先走 `text` 路径，不经过此处。
@@ -709,6 +752,9 @@ pub(super) fn update(
     }
 
     let is_cursor_in_layout = view.is_cursor_in_layout(cursor, layout);
+    // 拖选期间即使指针移出部件矩形也继续接管：边缘自动滚动正依赖越界后的移动事件，
+    // 否则一离开内容区事件即被丢弃，选区停在边缘不再滚动；释放点落在部件外也借此收尾。
+    let handles_mouse = cursor.position().is_some() && (is_cursor_in_layout || state.is_dragged);
 
     // 滚动条优先于选区 / 鼠标上报，且须早于下方 `!view.focused` 门控：否则未聚焦时首次按下
     // 会被转成 `FocusRequest` 而拖动失效。拖动中光标移出部件也继续接管，保证在别处释放也能收尾。
@@ -727,8 +773,8 @@ pub(super) fn update(
         scrollbar_commands
     } else {
         match event {
-            iced::Event::Mouse(mouse_event) if is_cursor_in_layout => {
-                if !view.focused {
+            iced::Event::Mouse(mouse_event) if handles_mouse => {
+                if !view.focused && is_cursor_in_layout {
                     // 终端未持键盘焦点时，在终端区域按下鼠标即请求交还焦点；否则点击会被完全忽略，
                     // 失去焦点后只能切标签页才能找回。
                     if matches!(

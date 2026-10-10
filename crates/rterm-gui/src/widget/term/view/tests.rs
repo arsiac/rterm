@@ -1,4 +1,6 @@
-use super::input::{paste_bytes, read_middle_paste};
+use super::input::{
+    SELECTION_AUTOSCROLL_MAX_LINES, paste_bytes, read_middle_paste, selection_autoscroll_delta,
+};
 use super::scrollbar::{
     SCROLLBAR_INSET, SCROLLBAR_MIN_THUMB, SCROLLBAR_WIDTH, scrollbar_drag_step,
     scrollbar_drag_target, scrollbar_geometry, scrollbar_releases_drag,
@@ -162,7 +164,8 @@ mod handle_cursor_moved_tests {
         state.is_dragged = true; // 模拟进行中的拖拽操作
         let terminal_content = RenderableContent::default();
         let layout_position = Point { x: 5.0, y: 5.0 };
-        let cursor_position = Point { x: 100.0, y: 150.0 };
+        // 光标落在内容区内（默认终端 50 行），隔离出纯选区更新、不触发边缘滚动。
+        let cursor_position = Point { x: 100.0, y: 45.0 };
         let mut commands = Vec::new();
 
         TerminalView::handle_cursor_moved(
@@ -175,7 +178,7 @@ mod handle_cursor_moved_tests {
         );
 
         assert_eq!(commands.len(), 1);
-        assert!(matches!(commands[0], Command::SelectUpdate((91.0, 141.0))));
+        assert!(matches!(commands[0], Command::SelectUpdate((91.0, 36.0))));
     }
 
     #[test]
@@ -225,7 +228,8 @@ mod handle_cursor_moved_tests {
             ..Default::default()
         };
         let layout_position = Point { x: 5.0, y: 5.0 };
-        let cursor_position = Point { x: 100.0, y: 150.0 };
+        // 光标落在内容区内，隔离出纯选区更新、不触发边缘滚动。
+        let cursor_position = Point { x: 100.0, y: 45.0 };
         let mut commands = Vec::new();
 
         TerminalView::handle_cursor_moved(
@@ -238,7 +242,7 @@ mod handle_cursor_moved_tests {
         );
 
         assert_eq!(commands.len(), 1);
-        assert!(matches!(commands[0], Command::SelectUpdate((91.0, 141.0))));
+        assert!(matches!(commands[0], Command::SelectUpdate((91.0, 36.0))));
     }
 
     #[test]
@@ -251,7 +255,8 @@ mod handle_cursor_moved_tests {
             ..Default::default()
         };
         let layout_position = Point { x: 5.0, y: 5.0 };
-        let cursor_position = Point { x: 100.0, y: 150.0 };
+        // 光标落在内容区内，隔离出纯选区更新、不触发边缘滚动。
+        let cursor_position = Point { x: 100.0, y: 45.0 };
         let mut commands = Vec::new();
 
         TerminalView::handle_cursor_moved(
@@ -264,17 +269,159 @@ mod handle_cursor_moved_tests {
         );
 
         assert_eq!(commands.len(), 2);
-        assert!(matches!(commands[0], Command::SelectUpdate((91.0, 141.0))));
+        assert!(matches!(commands[0], Command::SelectUpdate((91.0, 36.0))));
         assert!(matches!(
             commands[1],
             Command::ProcessLink(
                 LinkAction::Hover,
                 TerminalGridPoint {
-                    line: Line(49),
+                    line: Line(36),
                     column: Column(79),
                 },
             )
         ));
+    }
+
+    #[test]
+    fn scrolls_up_when_dragged_above_content() {
+        let mut state = TerminalViewState::new();
+        state.is_dragged = true;
+        // 默认终端 50 行、单元格 1×1 像素：内容区为 y ∈ [padding, padding + 50)。
+        let terminal_content = RenderableContent::default();
+        let layout_position = Point { x: 0.0, y: 0.0 };
+        // 光标越过顶边（y = padding）2px => 越界 2 行 + 1 = 3 行。
+        let cursor_position = Point { x: 0.0, y: 2.0 };
+        let mut commands = Vec::new();
+
+        TerminalView::handle_cursor_moved(
+            &mut state,
+            &terminal_content,
+            &cursor_position,
+            layout_position,
+            TEST_PADDING,
+            &mut commands,
+        );
+
+        // 先滚动再更新选区，端点才能跟着新揭示的行延伸。
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], Command::Scroll(3)));
+        assert!(matches!(commands[1], Command::SelectUpdate(_)));
+    }
+
+    #[test]
+    fn scrolls_down_when_dragged_below_content() {
+        let mut state = TerminalViewState::new();
+        state.is_dragged = true;
+        let terminal_content = RenderableContent::default();
+        let layout_position = Point { x: 0.0, y: 0.0 };
+        // 光标恰落在底边（y = padding + 50）上 => 越界 0 行 + 1 = -1 行。
+        let cursor_position = Point { x: 0.0, y: 54.0 };
+        let mut commands = Vec::new();
+
+        TerminalView::handle_cursor_moved(
+            &mut state,
+            &terminal_content,
+            &cursor_position,
+            layout_position,
+            TEST_PADDING,
+            &mut commands,
+        );
+
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], Command::Scroll(-1)));
+        assert!(matches!(commands[1], Command::SelectUpdate(_)));
+    }
+
+    #[test]
+    fn caps_autoscroll_at_max_lines() {
+        let mut state = TerminalViewState::new();
+        state.is_dragged = true;
+        let terminal_content = RenderableContent::default();
+        let layout_position = Point { x: 0.0, y: 0.0 };
+        // 光标越过内容区底边极远，增量应被封顶为单次最大行数。
+        let cursor_position = Point { x: 0.0, y: 5004.0 };
+        let mut commands = Vec::new();
+
+        TerminalView::handle_cursor_moved(
+            &mut state,
+            &terminal_content,
+            &cursor_position,
+            layout_position,
+            TEST_PADDING,
+            &mut commands,
+        );
+
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            commands[0],
+            Command::Scroll(n) if n == -SELECTION_AUTOSCROLL_MAX_LINES
+        ));
+    }
+
+    #[test]
+    fn skips_autoscroll_in_alt_screen() {
+        let mut state = TerminalViewState::new();
+        state.is_dragged = true;
+        let terminal_content = RenderableContent {
+            terminal_mode: TermMode::ALT_SCREEN,
+            ..Default::default()
+        };
+        let layout_position = Point { x: 0.0, y: 0.0 };
+        let cursor_position = Point { x: 0.0, y: 54.0 };
+        let mut commands = Vec::new();
+
+        TerminalView::handle_cursor_moved(
+            &mut state,
+            &terminal_content,
+            &cursor_position,
+            layout_position,
+            TEST_PADDING,
+            &mut commands,
+        );
+
+        // 备用屏下 `Command::Scroll` 会改发方向键给远端，故只更新选区、不产生滚动。
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(commands[0], Command::SelectUpdate(_)));
+    }
+}
+
+mod selection_autoscroll_delta_tests {
+    use super::*;
+
+    #[test]
+    fn returns_none_inside_content() {
+        assert_eq!(selection_autoscroll_delta(0.0, 50, 1.0), None);
+        assert_eq!(selection_autoscroll_delta(49.9, 50, 1.0), None);
+    }
+
+    #[test]
+    fn scrolls_up_proportional_to_overshoot() {
+        assert_eq!(selection_autoscroll_delta(-0.5, 50, 1.0), Some(1));
+        assert_eq!(selection_autoscroll_delta(-2.0, 50, 1.0), Some(3));
+    }
+
+    #[test]
+    fn scrolls_down_proportional_to_overshoot() {
+        assert_eq!(selection_autoscroll_delta(50.0, 50, 1.0), Some(-1));
+        assert_eq!(selection_autoscroll_delta(53.0, 50, 1.0), Some(-4));
+    }
+
+    #[test]
+    fn caps_overshoot_at_max_lines() {
+        assert_eq!(
+            selection_autoscroll_delta(-100.0, 50, 1.0),
+            Some(SELECTION_AUTOSCROLL_MAX_LINES)
+        );
+        assert_eq!(
+            selection_autoscroll_delta(1000.0, 50, 1.0),
+            Some(-SELECTION_AUTOSCROLL_MAX_LINES)
+        );
+    }
+
+    #[test]
+    fn returns_none_for_degenerate_geometry() {
+        assert_eq!(selection_autoscroll_delta(-5.0, 0, 1.0), None);
+        assert_eq!(selection_autoscroll_delta(-5.0, 50, 0.0), None);
     }
 }
 

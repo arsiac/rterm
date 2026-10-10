@@ -109,6 +109,13 @@ pub struct RenderableContent {
     pub terminal_size: TerminalSize,
 }
 
+impl RenderableContent {
+    /// 视口行数
+    pub fn rows(&self) -> usize {
+        self.terminal_size.num_lines as usize
+    }
+}
+
 impl Default for RenderableContent {
     /// 返回空视口的 RenderableContent 默认值。
     fn default() -> Self {
