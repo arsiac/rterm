@@ -59,6 +59,8 @@ settings:
   trim_trailing_whitespace_hint: 开启后每次复制多行文本时自动去除每行末尾的多余空白字符。
   bell: 响铃视觉提示（闪烁标签）
   bell_hint: 开启后终端收到响铃字符（BEL，即 \a）时对应标签短暂闪烁，作为程序提示音的可视替代。
+  scrollbar: 显示终端滚动条
+  scrollbar_hint: 在终端内容右侧叠加一条半透明滚动条，可拖动或点击空轨回看历史输出。
   remember_window_size: 记住窗口大小
   remember_window_size_hint: 下次启动恢复上次非最大化的窗口大小；若关闭时处于最大化，则保留上一次非最大化尺寸。关闭此开关会同时清除已保存的尺寸。
   sub_known_hosts: 已知主机

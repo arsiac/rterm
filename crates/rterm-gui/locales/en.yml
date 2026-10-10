@@ -59,6 +59,8 @@ settings:
   trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
   bell: Visual bell (flash the tab)
   bell_hint: When enabled, the tab briefly flashes when the terminal receives a bell character (BEL), so programs can alert you without a sound.
+  scrollbar: Show terminal scrollbar
+  scrollbar_hint: Overlays a translucent scrollbar on the right edge of the terminal; drag it or click the empty track to look back through history.
   remember_window_size: Remember window size
   remember_window_size_hint: Restores the last non-maximized window size on startup. Closing a maximized window keeps the previous non-maximized size. Turning this off clears the saved size.
   sub_known_hosts: Known hosts

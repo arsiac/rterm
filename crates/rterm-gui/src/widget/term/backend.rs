@@ -341,6 +341,7 @@ impl Backend {
             .extend(grid.display_iter().map(|indexed| indexed.cell.clone()));
         content.columns = grid.columns();
         content.display_offset = grid.display_offset();
+        content.history_size = grid.history_size();
         content.cursor_point = grid.cursor.point;
         content.cursor = cursor;
         content.cursor_shape = cursor_shape;
@@ -795,6 +796,8 @@ pub struct RenderableContent {
     pub columns: usize,
     /// 视口滚动偏移（0 表示贴住实时输出）。
     pub display_offset: usize,
+    /// 视口之上可回滚的历史总行数（0 表示无历史）。
+    pub history_size: usize,
     /// 当前光标所在的网格坐标。
     pub cursor_point: Point,
     /// 当前悬停命中、可点击的超链接坐标范围。
@@ -818,6 +821,7 @@ impl Default for RenderableContent {
             cells: Vec::new(),
             columns: 1,
             display_offset: 0,
+            history_size: 0,
             cursor_point: Point::default(),
             hovered_hyperlink: None,
             selectable_range: None,
@@ -885,6 +889,29 @@ mod tests {
         assert_eq!(content.columns, size.columns());
         assert_eq!(content.cells.len(), size.screen_lines() * size.columns());
         assert_eq!(content.display_offset, 0);
+    }
+
+    /// 历史行数须取自网格：`TerminalSize` 的 `total_lines()` 是视口行数，其 `history_size()`
+    /// 恒为 0，照它画滚动条会永远没有可滚动区间。
+    #[test]
+    fn viewport_snapshot_reports_scrollback_history_size() {
+        // 未溢出：无历史可回滚。
+        let mut term = test_term();
+        let content = snapshot_after(&mut term, b"abc");
+        assert_eq!(content.history_size, 0);
+        assert_eq!(TerminalSize::default().history_size(), 0);
+
+        // 写满一屏并溢出：历史被 `scrolling_history = 10` 封顶。
+        let input: String = (0..60).map(|i| format!("L{i}\r\n")).collect();
+        let content = snapshot_after(&mut term, input.as_bytes());
+        assert_eq!(content.history_size, 10);
+
+        // 回滚只改偏移，不改历史总量。
+        term.grid_mut().scroll_display(Scroll::Delta(3));
+        let mut content = RenderableContent::default();
+        Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+        assert_eq!(content.history_size, 10);
+        assert_eq!(content.display_offset, 3);
     }
 
     #[test]

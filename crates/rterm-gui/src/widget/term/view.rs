@@ -21,6 +21,19 @@ use iced_graphics::core::widget::{Tree, tree};
 use iced_graphics::geometry::Stroke;
 use std::cell::Cell;
 
+/// 滚动条滑块宽度（像素）：叠加在终端内容最右侧一列之上。
+const SCROLLBAR_WIDTH: f32 = 6.0;
+/// 滚动条轨道相对内容上下边缘的留白（像素）。
+const SCROLLBAR_INSET: f32 = 2.0;
+/// 滚动条滑块最小高度（像素）：历史极长时仍可抓取。
+const SCROLLBAR_MIN_THUMB: f32 = 24.0;
+/// 滚动条滑块圆角半径（像素）。
+const SCROLLBAR_RADIUS: f32 = 3.0;
+/// 滚动条滑块透明度：常态 / 悬停 / 拖动。
+const SCROLLBAR_ALPHA: f32 = 0.28;
+const SCROLLBAR_ALPHA_HOVER: f32 = 0.45;
+const SCROLLBAR_ALPHA_DRAG: f32 = 0.60;
+
 /// 终端画布部件：实现 iced `Widget`，把后端渲染内容绘成像素并转发鼠标 / 键盘事件。
 pub struct TerminalView<'a> {
     /// 被渲染的终端实例，提供后端渲染内容、主题与字体等。
@@ -30,6 +43,8 @@ pub struct TerminalView<'a> {
     /// 终端内容与外层容器边框之间的内边距（像素）。
     /// 由 widget 自行在绘制与事件坐标中偏移，外层容器不再设 padding。
     padding: f32,
+    /// 是否显示并接管右侧滚动条。
+    scrollbar: bool,
 }
 
 impl<'a> TerminalView<'a> {
@@ -39,12 +54,19 @@ impl<'a> TerminalView<'a> {
             term,
             focused,
             padding: 4.0,
+            scrollbar: true,
         }
     }
 
     /// 设置终端内容的内边距（像素）。
     pub fn padding(mut self, value: f32) -> Self {
         self.padding = value;
+        self
+    }
+
+    /// 设置是否显示右侧滚动条。
+    pub fn scrollbar(mut self, enabled: bool) -> Self {
+        self.scrollbar = enabled;
         self
     }
 
@@ -342,6 +364,86 @@ impl<'a> TerminalView<'a> {
                     commands.push(Command::Scroll(lines as i32));
                 }
             }
+        }
+    }
+
+    /// 处理滚动条条带内的鼠标事件；返回待发命令，未命中且未拖拽时返回 `None` 交回选区 / 鼠标上报。
+    ///
+    /// 拖动期间即使光标移出条带也持续接管，直到左键释放。
+    fn handle_scrollbar_event(
+        &self,
+        state: &mut TerminalViewState,
+        layout: iced_graphics::core::Layout<'_>,
+        cursor: Cursor,
+        event: &iced::mouse::Event,
+        shell: &mut iced_graphics::core::Shell<'_, Event>,
+    ) -> Option<Vec<Command>> {
+        // 指针在窗外释放时 `cursor.position()` 不可得会提前返回，须先于位置判断解锁存，免残留成幻影拖拽。
+        if scrollbar_releases_drag(event, state.scrollbar_drag.is_some()) {
+            state.scrollbar_drag = None;
+            return Some(Vec::new());
+        }
+
+        let content = self.term.backend.renderable_content();
+        let geometry = if self.scrollbar {
+            scrollbar_geometry(layout.bounds(), self.padding, content)
+        } else {
+            None
+        };
+        let position = cursor.position()?;
+        let over_track = geometry
+            .as_ref()
+            .is_some_and(|(track, _)| track.contains(position));
+
+        // 悬停高亮：几何被 `Cache` 缓存，跨边界时须清缓存并请求重绘，否则透明度变化不重绘。
+        if state.scrollbar_hovered != over_track {
+            state.scrollbar_hovered = over_track;
+            self.term.cache.clear();
+            shell.request_redraw();
+        }
+
+        let Some((track, thumb)) = geometry else {
+            // 条带消失（关闭开关 / 备用屏 / 无历史）时收尾拖拽态，避免状态卡住。
+            state.scrollbar_drag = None;
+            return None;
+        };
+
+        match event {
+            iced_core::mouse::Event::ButtonPressed(iced_core::mouse::Button::Left) => {
+                if !track.contains(position) {
+                    return None;
+                }
+                if thumb.contains(position) {
+                    // 记下抓取点相对滑块顶部的偏移（拖动才跟手），并以当前偏移播种增量基准。
+                    state.scrollbar_drag = Some(position.y - thumb.y);
+                    state.scrollbar_target = content.display_offset;
+                    Some(Vec::new())
+                } else {
+                    // 点击空轨翻一页：页大小取当前视口行数，方向由点击落在滑块的哪一侧决定。
+                    let rows = (content.cells.len() / content.columns.max(1)) as i32;
+                    let delta = if position.y < thumb.y { rows } else { -rows };
+                    Some(vec![Command::Scroll(delta)])
+                }
+            }
+            iced_core::mouse::Event::CursorMoved { .. } => {
+                let grab = state.scrollbar_drag?;
+                let target = scrollbar_drag_target(
+                    track,
+                    thumb.height,
+                    content.history_size,
+                    position.y,
+                    grab,
+                );
+                let (delta, tracked) = scrollbar_drag_step(target, state.scrollbar_target);
+                state.scrollbar_target = tracked;
+                // 偏移未变时不发空命令（`Scroll(0)` 只会白跑一趟后端）。
+                Some(if delta == 0 {
+                    Vec::new()
+                } else {
+                    vec![Command::Scroll(delta)]
+                })
+            }
+            _ => None,
         }
     }
 
@@ -666,11 +768,12 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         let layout_offset_y = layout.position().y;
         let layout_size = layout.bounds().size();
 
-        // 焦点变化但布局尺寸不变时，几何缓存直接复用旧绘制结果，导致光标（实心/空心）
-        // 不随键盘焦点切换刷新。此处检测焦点变化并清缓存，强制本帧重绘光标状态。
-        if self.focused != state.last_focus.get() {
+        // 焦点 / 滚动条开关变化但布局尺寸不变时，几何缓存直接复用旧绘制结果，导致光标
+        // （实心/空心）与滚动条不随状态切换刷新。此处检测变化并清缓存，强制本帧重绘。
+        if self.focused != state.last_focus.get() || self.scrollbar != state.last_scrollbar.get() {
             self.term.cache.clear();
             state.last_focus.set(self.focused);
+            state.last_scrollbar.set(self.scrollbar);
         }
 
         let geom = self.term.cache.draw(renderer, viewport.size(), |frame| {
@@ -928,6 +1031,32 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
                     });
                 }
             }); // with_clip
+
+            // 滚动条叠加在内容最右侧，画在 `with_clip` 外故不被裁剪；配色取终端前景色以兼顾深浅底色。
+            if self.scrollbar
+                && let Some((_track, thumb)) =
+                    scrollbar_geometry(layout.bounds(), self.padding, content)
+            {
+                let base = self
+                    .term
+                    .theme
+                    .get_color(ansi::Color::Named(NamedColor::Foreground));
+                let alpha = if state.scrollbar_drag.is_some() {
+                    SCROLLBAR_ALPHA_DRAG
+                } else if state.scrollbar_hovered {
+                    SCROLLBAR_ALPHA_HOVER
+                } else {
+                    SCROLLBAR_ALPHA
+                };
+                frame.fill(
+                    &Path::rounded_rectangle(
+                        thumb.position(),
+                        thumb.size(),
+                        SCROLLBAR_RADIUS.into(),
+                    ),
+                    Color { a: alpha, ..base },
+                );
+            }
         });
 
         use iced::advanced::graphics::geometry::Renderer as _;
@@ -948,6 +1077,18 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
     ) {
         let state = tree.state.downcast_mut::<TerminalViewState>();
         self.handle_resize(state, layout, shell);
+
+        // 指针离窗或窗口失焦后左键释放不再送达本部件；在此收起交互锁存，
+        // 否则重新进入终端区域时滑过会被误当成仍在拖拽（滑块幻影跟随、选区幻影延伸）。
+        if matches!(
+            event,
+            iced_core::Event::Mouse(iced_core::mouse::Event::CursorLeft)
+                | iced_core::Event::Window(iced::window::Event::Unfocused)
+        ) && state.end_pointer_interactions()
+        {
+            self.term.cache.clear();
+            shell.request_redraw();
+        }
 
         // 输入法策略逐帧续期：iced 每次事件分发都以 `InputMethod::Disabled` 起算、合并全树部件
         // 的申请，且只在重绘路径把结果落到窗口（交互路径会丢弃），故申请必须挂在重绘事件上。
@@ -976,86 +1117,104 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
 
         let is_cursor_in_layout = self.is_cursor_in_layout(cursor, layout);
 
-        let commands = match event {
-            iced::Event::Mouse(mouse_event) if is_cursor_in_layout => {
-                if !self.focused {
-                    // 终端未持键盘焦点时，用户在终端区域按下鼠标即请求把焦点交还终端。
-                    // 否则（见 `handle_mouse_event` 的早返回）点击会被完全忽略，
-                    // 失去焦点后只能靠切标签页才能找回焦点。
-                    if matches!(
-                        mouse_event,
-                        iced_core::mouse::Event::ButtonPressed(iced_core::mouse::Button::Left)
-                            | iced_core::mouse::Event::ButtonPressed(
-                                iced_core::mouse::Button::Right
-                            )
-                            | iced_core::mouse::Event::ButtonPressed(
-                                iced_core::mouse::Button::Middle
-                            )
-                    ) {
-                        shell.publish(Event::FocusRequest(self.term.id));
-                        shell.capture_event();
-                    }
-                    Vec::new()
-                } else {
-                    let was_dragged = state.is_dragged;
-                    let commands = self.handle_mouse_event(
-                        state,
-                        layout.position(),
-                        cursor.position().unwrap(),
-                        mouse_event,
-                        clipboard,
-                    );
+        // 滚动条优先于选区 / 鼠标上报，且须早于下方 `!self.focused` 门控：否则未聚焦时首次按下
+        // 会被转成 `FocusRequest` 而拖动失效。拖动中光标移出部件也继续接管，保证在别处释放也能收尾。
+        let mut consumed = false;
+        let mut scrollbar_commands = Vec::new();
+        if let iced::Event::Mouse(mouse_event) = event
+            && (is_cursor_in_layout || state.scrollbar_drag.is_some())
+            && let Some(commands) =
+                self.handle_scrollbar_event(state, layout, cursor, mouse_event, shell)
+        {
+            consumed = true;
+            scrollbar_commands = commands;
+        }
 
-                    // 左键拖选结束即把选区写入 PRIMARY（Linux 惯例：中键粘贴刚选中的内容，
-                    // 供本应用及系统其它应用使用）。鼠标模式下的拖拽是上报而非选区，不写。
-                    if was_dragged
-                        && matches!(
+        let commands = if consumed {
+            scrollbar_commands
+        } else {
+            match event {
+                iced::Event::Mouse(mouse_event) if is_cursor_in_layout => {
+                    if !self.focused {
+                        // 终端未持键盘焦点时，在终端区域按下鼠标即请求交还焦点；否则点击会被完全忽略，
+                        // 失去焦点后只能切标签页才能找回。
+                        if matches!(
                             mouse_event,
-                            iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Left)
-                        )
-                        && !self
-                            .term
-                            .backend
-                            .renderable_content()
-                            .terminal_mode
-                            .intersects(TermMode::MOUSE_MODE)
-                    {
-                        let selection = self.term.backend.selectable_content();
-                        if !selection.is_empty() {
-                            clipboard.write(ClipboardKind::Primary, selection);
+                            iced_core::mouse::Event::ButtonPressed(iced_core::mouse::Button::Left)
+                                | iced_core::mouse::Event::ButtonPressed(
+                                    iced_core::mouse::Button::Right
+                                )
+                                | iced_core::mouse::Event::ButtonPressed(
+                                    iced_core::mouse::Button::Middle
+                                )
+                        ) {
+                            shell.publish(Event::FocusRequest(self.term.id));
+                            shell.capture_event();
                         }
+                        Vec::new()
+                    } else {
+                        let was_dragged = state.is_dragged;
+                        let commands = self.handle_mouse_event(
+                            state,
+                            layout.position(),
+                            cursor.position().unwrap(),
+                            mouse_event,
+                            clipboard,
+                        );
+
+                        // 左键拖选结束即把选区写入 PRIMARY（Linux 中键粘贴惯例）；鼠标模式下的拖拽是上报而非选区，不写。
+                        if was_dragged
+                            && matches!(
+                                mouse_event,
+                                iced_core::mouse::Event::ButtonReleased(
+                                    iced_core::mouse::Button::Left
+                                )
+                            )
+                            && !self
+                                .term
+                                .backend
+                                .renderable_content()
+                                .terminal_mode
+                                .intersects(TermMode::MOUSE_MODE)
+                        {
+                            let selection = self.term.backend.selectable_content();
+                            if !selection.is_empty() {
+                                clipboard.write(ClipboardKind::Primary, selection);
+                            }
+                        }
+
+                        commands
+                    }
+                }
+                iced::Event::Keyboard(keyboard_event) => {
+                    if !self.focused {
+                        return;
                     }
 
-                    commands
+                    self.handle_keyboard_event(state, clipboard, keyboard_event)
+                        .into_iter()
+                        .collect()
                 }
-            }
-            iced::Event::Keyboard(keyboard_event) => {
-                if !self.focused {
-                    return;
-                }
+                iced::Event::InputMethod(input_method_event) => {
+                    if !self.focused {
+                        return;
+                    }
 
-                self.handle_keyboard_event(state, clipboard, keyboard_event)
-                    .into_iter()
-                    .collect()
-            }
-            iced::Event::InputMethod(input_method_event) => {
-                if !self.focused {
-                    return;
+                    let previous = state.preedit.clone();
+                    let command = Self::handle_input_method_event(state, input_method_event);
+                    if state.preedit != previous {
+                        // 预编辑串参与几何缓存，内容变化须清缓存并在本帧重绘。
+                        self.term.cache.clear();
+                        shell.request_redraw();
+                    }
+                    command.into_iter().collect()
                 }
-
-                let previous = state.preedit.clone();
-                let command = Self::handle_input_method_event(state, input_method_event);
-                if state.preedit != previous {
-                    // 预编辑串参与几何缓存，内容变化须清缓存并在本帧重绘。
-                    self.term.cache.clear();
-                    shell.request_redraw();
-                }
-                command.into_iter().collect()
+                _ => Vec::new(),
             }
-            _ => Vec::new(),
         };
 
-        if !commands.is_empty() {
+        // 滚动条按下 / 拖动可能不产生命令（原地按下），但事件已被接管，仍须捕获以免下层重复处理左键。
+        if consumed || !commands.is_empty() {
             shell.capture_event();
         }
 
@@ -1064,7 +1223,7 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
         }
     }
 
-    /// 返回鼠标交互样式：超链接上显示手型，其余文本光标。
+    /// 返回鼠标交互样式：滚动条上竖直调整，超链接上显示手型，其余文本光标。
     fn mouse_interaction(
         &self,
         tree: &Tree,
@@ -1083,6 +1242,20 @@ impl Widget<Event, Theme, iced::Renderer> for TerminalView<'_> {
 
         if self.is_cursor_hovered_hyperlink(state) {
             cursor_mode = iced_core::mouse::Interaction::Pointer;
+        }
+
+        // 滚动条条带优先于文本 / 手型：拖动中或悬停在轨道上都用竖直调整光标。
+        if let Some(position) = cursor.position() {
+            let over_track = self.scrollbar
+                && scrollbar_geometry(
+                    layout.bounds(),
+                    self.padding,
+                    self.term.backend.renderable_content(),
+                )
+                .is_some_and(|(track, _)| track.contains(position));
+            if state.scrollbar_drag.is_some() || over_track {
+                cursor_mode = iced_core::mouse::Interaction::ResizingVertically;
+            }
         }
 
         cursor_mode
@@ -1113,8 +1286,18 @@ struct TerminalViewState {
     mouse_position_on_grid: TerminalGridPoint,
     /// 上次绘制时记录的焦点状态：焦点变化但布局尺寸不变时，几何缓存不会重跑，故在 `draw` 中据此判断是否需清缓存以重绘光标（实心/空心）。
     last_focus: Cell<bool>,
+    /// 上次绘制时记录的滚动条开关：同理，开关切换需清缓存才能让滚动条消失 / 出现。
+    last_scrollbar: Cell<bool>,
     /// 输入法预编辑串（组合中、尚未上屏的文本），由本部件绘制在光标格处。
     preedit: Option<String>,
+    /// 滚动条拖拽态：`Some` 为抓取点相对滑块顶部的偏移，`None` 表示未拖拽。
+    scrollbar_drag: Option<f32>,
+    /// 拖拽中上一次已下达的回滚偏移，作为相对增量的基准。
+    ///
+    /// 后端 `display_offset` 晚一轮才更新，同批事件读到同一旧值；拿它当基准会让增量叠加过冲。
+    scrollbar_target: usize,
+    /// 指针是否悬停在滚动条上（仅用于加深透明度）。
+    scrollbar_hovered: bool,
 }
 
 impl TerminalViewState {
@@ -1128,8 +1311,21 @@ impl TerminalViewState {
             size: Size::from([0.0, 0.0]),
             mouse_position_on_grid: TerminalGridPoint::default(),
             last_focus: Cell::new(false),
+            last_scrollbar: Cell::new(true),
             preedit: None,
+            scrollbar_drag: None,
+            scrollbar_target: 0,
+            scrollbar_hovered: false,
         }
+    }
+
+    /// 收起指针离窗 / 窗口失焦后不再有释放事件送达的交互锁存；返回是否需要重绘。
+    fn end_pointer_interactions(&mut self) -> bool {
+        // 两个 take 都必须求值，不能并入 `||` 链——否则前项为真时短路，后续锁存清不掉。
+        let hovered = std::mem::take(&mut self.scrollbar_hovered);
+        let dragging = self.scrollbar_drag.take().is_some();
+        let selecting = std::mem::take(&mut self.is_dragged);
+        hovered || dragging || selecting
     }
 }
 
@@ -1138,6 +1334,82 @@ impl Default for TerminalViewState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 滚动条几何（纯函数）：返回 `(轨道矩形, 滑块矩形)`，无历史 / 视口为空 / 备用屏下返回 `None`。
+///
+/// 备用屏判据只取 [`TermMode::ALT_SCREEN`]：[`TermMode::ALTERNATE_SCROLL`] 是默认就置位的修饰位。
+fn scrollbar_geometry(
+    bounds: Rectangle,
+    padding: f32,
+    content: &RenderableContent,
+) -> Option<(Rectangle, Rectangle)> {
+    let rows = content.cells.len() / content.columns.max(1);
+    let history = content.history_size;
+    if history == 0 || rows == 0 || content.terminal_mode.contains(TermMode::ALT_SCREEN) {
+        return None;
+    }
+
+    let track = Rectangle::new(
+        Point::new(
+            bounds.x + bounds.width - padding - SCROLLBAR_WIDTH,
+            bounds.y + padding + SCROLLBAR_INSET,
+        ),
+        Size::new(
+            SCROLLBAR_WIDTH,
+            bounds.height - (padding + SCROLLBAR_INSET) * 2.0,
+        ),
+    );
+    if track.height <= 0.0 || track.width <= 0.0 {
+        return None;
+    }
+
+    let total = (history + rows) as f32;
+    let thumb_height = (track.height * rows as f32 / total)
+        .max(SCROLLBAR_MIN_THUMB)
+        .min(track.height);
+    // 偏移 0 表示贴住实时输出，对应滑块在轨道最下。
+    let progress = (history - content.display_offset) as f32 / history as f32;
+    let thumb = Rectangle::new(
+        Point::new(track.x, track.y + progress * (track.height - thumb_height)),
+        Size::new(track.width, thumb_height),
+    );
+
+    Some((track, thumb))
+}
+
+/// 由拖拽光标位置反算目标回滚偏移（纯函数）；`grab` 为抓取点相对滑块顶部的偏移。
+fn scrollbar_drag_target(
+    track: Rectangle,
+    thumb_height: f32,
+    history: usize,
+    cursor_y: f32,
+    grab: f32,
+) -> usize {
+    let span = track.height - thumb_height;
+    if span <= 0.0 {
+        return 0;
+    }
+    let progress = ((cursor_y - track.y - grab) / span).clamp(0.0, 1.0);
+    (((1.0 - progress) * history as f32).round() as usize).min(history)
+}
+
+/// 由拖拽目标与上一次已下达的偏移算出相对增量（纯函数），返回 `(增量, 新的基准)`。
+///
+/// 基准取自上次已下达值而非后端 `display_offset`，同批多次移动的增量依次相消、合计恰为目标。
+fn scrollbar_drag_step(target: usize, tracked: usize) -> (i32, usize) {
+    (target as i32 - tracked as i32, target)
+}
+
+/// 该事件是否应解除滚动条拖拽锁存（纯函数）：左键释放一律解除，未拖拽时不解除。
+///
+/// 不看光标是否可得——指针在窗外释放时 iced 报告光标不可得，走不到常规释放分支而残留幻影拖拽。
+fn scrollbar_releases_drag(event: &iced::mouse::Event, dragging: bool) -> bool {
+    dragging
+        && matches!(
+            event,
+            iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Left)
+        )
 }
 
 /// 用于批量合并并绘制连续同色背景矩形的辅助结构。
@@ -1981,6 +2253,195 @@ mod tests {
             let rect = TerminalView::caret_rect(bounds, TEST_PADDING, &content_at(1000, 0));
 
             assert_eq!(rect.y, 100.0 - TEST_PADDING - 1.0);
+        }
+    }
+
+    mod scrollbar_tests {
+        use super::*;
+
+        /// 测试用快照：`rows` 行视口、`columns` 列、`history` 行历史。
+        fn content_with(
+            rows: usize,
+            columns: usize,
+            history: usize,
+            display_offset: usize,
+        ) -> RenderableContent {
+            RenderableContent {
+                cells: vec![cell::Cell::default(); rows * columns],
+                columns,
+                display_offset,
+                history_size: history,
+                ..Default::default()
+            }
+        }
+
+        /// 轨道贴住内容右缘、上下各内缩 `padding + SCROLLBAR_INSET`。
+        #[test]
+        fn track_hugs_the_right_content_edge() {
+            let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(400.0, 300.0));
+            let (track, _thumb) =
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(50, 80, 50, 0)).unwrap();
+
+            assert_eq!(track.x, 10.0 + 400.0 - TEST_PADDING - SCROLLBAR_WIDTH);
+            assert_eq!(track.y, 20.0 + TEST_PADDING + SCROLLBAR_INSET);
+            assert_eq!(track.width, SCROLLBAR_WIDTH);
+            assert_eq!(track.height, 300.0 - (TEST_PADDING + SCROLLBAR_INSET) * 2.0);
+        }
+
+        /// 贴住实时输出（偏移 0）时滑块在轨道最下；滚到历史顶端时在最上。
+        #[test]
+        fn thumb_travels_between_track_ends() {
+            let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(400.0, 300.0));
+
+            let (_track, bottom) =
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(50, 80, 50, 0)).unwrap();
+            assert_eq!(bottom.y + bottom.height, 26.0 + 288.0);
+
+            let (_track, top) =
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(50, 80, 50, 50)).unwrap();
+            assert_eq!(top.y, 26.0);
+        }
+
+        /// 历史越长滑块越短，但不低于 [`SCROLLBAR_MIN_THUMB`]。
+        #[test]
+        fn thumb_shrinks_with_history_but_keeps_a_grabable_minimum() {
+            let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(400.0, 300.0));
+
+            // 视口 50 行、历史 50 行 ⇒ 占总行数一半。
+            let (_track, half) =
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(50, 80, 50, 0)).unwrap();
+            assert_eq!(half.height, 288.0 / 2.0);
+
+            // 历史极长时钳到最小高度，否则滑块细到抓不住。
+            let (_track, tiny) =
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(50, 80, 100_000, 0))
+                    .unwrap();
+            assert_eq!(tiny.height, SCROLLBAR_MIN_THUMB);
+        }
+
+        /// 无历史 / 备用屏 / 视口为空时不画滚动条。
+        #[test]
+        fn no_geometry_without_scrollback_or_on_the_alternate_screen() {
+            let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(400.0, 300.0));
+
+            assert!(
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(50, 80, 0, 0)).is_none()
+            );
+            assert!(
+                scrollbar_geometry(bounds, TEST_PADDING, &content_with(0, 80, 50, 0)).is_none()
+            );
+
+            let alt_screen = RenderableContent {
+                terminal_mode: TermMode::ALT_SCREEN,
+                ..content_with(50, 80, 50, 0)
+            };
+            assert!(scrollbar_geometry(bounds, TEST_PADDING, &alt_screen).is_none());
+        }
+
+        /// 默认终端模式（含 [`TermMode::ALTERNATE_SCROLL`]）仍须显示滚动条。
+        ///
+        /// 该位是 alacritty 默认就置位的修饰位而非「备用屏」信号，曾据它排除致普通会话无滚动条。
+        #[test]
+        fn default_term_mode_still_shows_scrollbar() {
+            let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(400.0, 300.0));
+            assert!(TermMode::default().contains(TermMode::ALTERNATE_SCROLL));
+
+            let content = RenderableContent {
+                terminal_mode: TermMode::default(),
+                ..content_with(50, 80, 50, 0)
+            };
+            assert!(scrollbar_geometry(bounds, TEST_PADDING, &content).is_some());
+        }
+
+        /// 拖动映射：抓取点跟手（端点与中点），越界钳到两端。
+        #[test]
+        fn drag_target_maps_cursor_to_scroll_offset() {
+            let track = Rectangle::new(Point::new(400.0, 26.0), Size::new(6.0, 288.0));
+            let thumb_height = 144.0;
+            let span = 288.0 - thumb_height;
+
+            // 抓在滑块顶部拖到轨道顶 ⇒ 完全回滚（偏移 = 历史长度）。
+            assert_eq!(
+                scrollbar_drag_target(track, thumb_height, 50, track.y, 0.0),
+                50
+            );
+            // 拖到轨道底 ⇒ 贴住实时输出。
+            assert_eq!(
+                scrollbar_drag_target(track, thumb_height, 50, track.y + span, 0.0),
+                0
+            );
+            // 中点 ⇒ 一半。
+            assert_eq!(
+                scrollbar_drag_target(track, thumb_height, 50, track.y + span / 2.0, 0.0),
+                25
+            );
+            // 抓取偏移抵消光标位移：光标相对滑块顶部的落点未变则偏移不变。
+            assert_eq!(
+                scrollbar_drag_target(track, thumb_height, 50, track.y + 72.0, 72.0),
+                50
+            );
+            // 拖出轨道两端钳到极限。
+            assert_eq!(
+                scrollbar_drag_target(track, thumb_height, 50, track.y - 500.0, 0.0),
+                50
+            );
+            assert_eq!(
+                scrollbar_drag_target(track, thumb_height, 50, track.y + 5000.0, 0.0),
+                0
+            );
+        }
+
+        /// 一步增量以「上次已下达的偏移」为基准，故一批多次移动的增量之和恰为最终目标。
+        ///
+        /// 若改用晚一轮才更新的后端 `display_offset` 作基准，同批增量叠加会冲过目标再回弹——即抖动成因。
+        #[test]
+        fn drag_step_telescopes_across_a_batch() {
+            let seed = 12usize;
+            let mut tracked = seed;
+            let mut applied = 0i32;
+
+            for target in [30usize, 8, 45, 45] {
+                let (delta, next) = scrollbar_drag_step(target, tracked);
+                applied += delta;
+                tracked = next;
+            }
+
+            // 总和即最终目标相对种子的位移，中途的来回都被抵消。
+            assert_eq!(applied, 45 - seed as i32);
+            assert_eq!(tracked, 45);
+            // 目标与基准相同则不发命令。
+            assert_eq!(scrollbar_drag_step(45, 45), (0, 45));
+        }
+
+        /// 仅「拖拽中 + 左键释放」解除锁存；未拖拽的释放留给选区 / 鼠标上报。
+        #[test]
+        fn only_left_release_while_dragging_ends_the_drag() {
+            let release = iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Left);
+            assert!(scrollbar_releases_drag(&release, true));
+            assert!(!scrollbar_releases_drag(&release, false));
+
+            let moved = iced_core::mouse::Event::CursorMoved {
+                position: Point::ORIGIN,
+            };
+            assert!(!scrollbar_releases_drag(&moved, true));
+        }
+
+        /// 离窗 / 失焦收尾：清空拖拽与悬停锁存并报告需要重绘；全空时不动重绘。
+        #[test]
+        fn ending_pointer_interactions_clears_latches() {
+            let mut state = TerminalViewState {
+                scrollbar_drag: Some(3.0),
+                is_dragged: true,
+                scrollbar_hovered: true,
+                ..TerminalViewState::new()
+            };
+            assert!(state.end_pointer_interactions());
+            assert!(state.scrollbar_drag.is_none());
+            assert!(!state.is_dragged);
+            assert!(!state.scrollbar_hovered);
+
+            // 已无任何锁存 / 悬停：不要求重绘。
+            assert!(!state.end_pointer_interactions());
         }
     }
 }

@@ -436,6 +436,11 @@ fn terminal_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::Bell(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.bell_hint")),
+        checkbox(app.config.terminal.show_scrollbar)
+            .label(t!("settings.scrollbar"))
+            .on_toggle(|v| Message::Settings(settings::Message::Scrollbar(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.scrollbar_hint")),
     ]
     .spacing(10)
     .into()

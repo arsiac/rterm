@@ -324,6 +324,11 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::Scrollbar(v) => {
+            app.config.terminal.show_scrollbar = v;
+            contexts::save_config(app);
+            Task::none()
+        }
         settings::Event::RememberWindowSize(v) => {
             app.config.window.remember_size = v;
             // 关闭「记住窗口大小」时顺带清除已保存尺寸（一次），避免下次启动仍恢复旧尺寸；

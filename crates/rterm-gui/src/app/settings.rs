@@ -156,6 +156,8 @@ pub enum Message {
     TrimTrailingWhitespace(bool),
     /// 修改「响铃视觉提示」设置（携带开关状态，即时持久化；关闭后新响铃不再闪烁标签）。
     Bell(bool),
+    /// 修改「显示终端滚动条」设置（携带开关状态，即时持久化并即刻作用于所有终端标签）。
+    Scrollbar(bool),
     /// 修改「记住窗口大小」设置（携带开关状态，即时持久化；关闭时清除已存尺寸）。
     RememberWindowSize(bool),
     /// 遗忘某台已信任主机（携带 host 与 port，删除对应 known_hosts 记录并刷新列表）。
@@ -220,6 +222,8 @@ pub enum Event {
     TrimTrailingWhitespace(bool),
     /// 写回"响铃视觉提示"配置（携带开关状态）。
     Bell(bool),
+    /// 写回"显示终端滚动条"配置（携带开关状态）。
+    Scrollbar(bool),
     /// 写回"记住窗口大小"配置（携带开关状态）。
     RememberWindowSize(bool),
 }
@@ -331,6 +335,7 @@ impl State {
             Message::SuppressBootstrapEcho(v) => Task::done(Event::SuppressBootstrapEcho(v)),
             Message::TrimTrailingWhitespace(v) => Task::done(Event::TrimTrailingWhitespace(v)),
             Message::Bell(v) => Task::done(Event::Bell(v)),
+            Message::Scrollbar(v) => Task::done(Event::Scrollbar(v)),
             Message::RememberWindowSize(v) => Task::done(Event::RememberWindowSize(v)),
             Message::ForgetKnownHost(host, port) => {
                 match rterm_core::host_key::forget_host_key(&host, port) {

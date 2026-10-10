@@ -257,6 +257,9 @@ pub struct TerminalConfig {
     /// 终端收到响铃（BEL）时是否闪烁对应标签作为视觉提示，默认开启。
     #[serde(default = "default_true")]
     pub bell: bool,
+    /// 是否在终端内容右侧显示滚动条（叠加式，可拖动回滚历史），默认开启。
+    #[serde(default = "default_true")]
+    pub show_scrollbar: bool,
 }
 
 impl Default for TerminalConfig {
@@ -271,6 +274,7 @@ impl Default for TerminalConfig {
             suppress_bootstrap_echo: default_true(),
             trim_trailing_whitespace: default_true(),
             bell: default_true(),
+            show_scrollbar: default_true(),
         }
     }
 }
@@ -675,6 +679,8 @@ impl From<LegacyAppConfig> for AppConfig {
                 trim_trailing_whitespace: l.trim_trailing_whitespace,
                 // 旧版没有响铃开关：取默认（开启）。
                 bell: default_true(),
+                // 旧版没有滚动条开关：取默认（开启）。
+                show_scrollbar: default_true(),
             },
             // 旧版没有传输段：一律取默认值（并发 3）。
             transfer: TransferConfig::default(),
@@ -963,6 +969,8 @@ window_height = 720.0
         assert!(!config.terminal.trim_trailing_whitespace);
         // 旧格式无响铃开关：迁移后取默认（开启）。
         assert!(config.terminal.bell);
+        // 旧格式无滚动条开关：迁移后取默认（开启）。
+        assert!(config.terminal.show_scrollbar);
         assert_eq!(config.appearance.theme, "Dracula");
         assert_eq!(config.appearance.ui_font, "Noto Sans");
         assert_eq!(config.appearance.language, Language::ZhCn);
@@ -1003,6 +1011,8 @@ theme = "Light"
         // 未给出的段 / 字段回退默认。
         assert!(config.window.remember_size);
         assert_eq!(config.terminal.scrollback, 10_000);
+        // `[terminal]` 段内未给出 `show_scrollbar`：回退默认（开启）。
+        assert!(config.terminal.show_scrollbar);
         assert_eq!(config.appearance.language, Language::System);
     }
 

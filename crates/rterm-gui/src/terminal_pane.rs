@@ -268,6 +268,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 let terminal_elem: Element<'_, TerminalEvent> =
                     TerminalView::show(term, app.terminal_focused)
                         .padding(4.0)
+                        .scrollbar(app.config.terminal.show_scrollbar)
                         .into();
                 let terminal_elem =
                     terminal_elem.map(|e| Message::Tabs(tabs::Message::Terminal(e)));
