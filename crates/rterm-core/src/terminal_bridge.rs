@@ -396,15 +396,9 @@ async fn local_side_reason(state: &BridgeState, conn: &SshConnection) -> Disconn
 
 /// 扫描字节流中的 OSC 7 序列（`ESC ]7;file://<path> BEL|ST`），提取路径写入 `cwd`。
 ///
-/// OSC 7 序列可能跨多次 `read` 被截断，故用 `carry` 保留「已出现 `ESC ]7;` 起始、
-/// 但尚未遇到终结符」的尾部，与下一读拼接后继续解析。本次扫描未出现任何起始标记时，
-/// `carry` 只保留末尾几个字节（起始标记本身可能被读边界切断），使普通日志输出下
-/// `carry` 的长度恒为常数，不会随输出累积、也不会被反复重扫。
-///
-/// 只认标准 `file://` 前缀：钩子输出形如 `file:///home/user`，故取 `file://` 之后
-/// 的内容即为绝对路径（含开头 `/`）。其他内容（如 `file://host/path`）会被忽略，
-/// 以免误取 host 段。
+/// 只认 host 为空的绝对路径形式（`file:///home/user`，即本桥接注入钩子的输出）。
 fn scan_osc7_cwd(carry: &mut Vec<u8>, chunk: &[u8], cwd: &Arc<Mutex<Option<String>>>) {
+    // 先与上次保留的未终结尾部拼接：OSC 序列可能被单次 `read` 从中间切断。
     carry.extend_from_slice(chunk);
     // OSC 序列起始标记：ESC ] 7 ;
     const MARK: [u8; 4] = [0x1b, 0x5d, 0x37, 0x3b];
@@ -430,11 +424,16 @@ fn scan_osc7_cwd(carry: &mut Vec<u8>, chunk: &[u8], cwd: &Arc<Mutex<Option<Strin
             break;
         };
         let payload = &carry[i + MARK.len()..end];
-        if let Some(rest) = payload.strip_prefix(b"file://") {
+        // 绝对路径必以 `/` 开头，故 `file://` 后的首个字节就是「host 是否为空」的判据
+        // （空载荷也在此判掉）。带 host 的形式（`file://host/path`、`file://host:/path`，
+        // iTerm2 一系约定）整条忽略而不剥离：`cwd` 只有一个路径槽位，剥离后「终端已跳到
+        // 第三台机」的信号消失，SFTP 会静默跳到目标机上的同名目录。识别 host 需先给 cwd
+        // 加主机归属并与会话主机比对，见路线图 M3-5。
+        if let Some(rest) = payload.strip_prefix(b"file://")
+            && rest.starts_with(b"/")
+        {
             let path = String::from_utf8_lossy(rest);
-            if !path.is_empty()
-                && let Ok(mut g) = cwd.lock()
-            {
+            if let Ok(mut g) = cwd.lock() {
                 // 仅当目录真正变化时才写入并输出 debug 日志，避免每个提示符
                 // 都重复打印（OSC 7 在每个 prompt 都会上报，cwd 通常不变）。
                 if g.as_deref() != Some(path.as_ref()) {
@@ -674,5 +673,71 @@ mod tests {
         )
         .await
         .expect("已置位的停止请求不应让等待者挂死");
+    }
+
+    /// 组装一条 OSC 7 序列（`ESC ] 7 ; <payload> BEL`）。
+    fn osc7(payload: &str) -> Vec<u8> {
+        let mut bytes = vec![0x1b, b']', b'7', b';'];
+        bytes.extend_from_slice(payload.as_bytes());
+        bytes.push(0x07);
+        bytes
+    }
+
+    /// 带 host 的 OSC 7 上报一律整条忽略：远端自带钩子（iTerm2 一系约定）写成
+    /// `file://<host><path>`，剥离 host 会让「终端已跳到第三台机」的信号消失，
+    /// SFTP 随后会静默跳到目标机上的同名目录。
+    #[test]
+    fn an_osc7_report_with_a_host_never_overwrites_cwd() {
+        let cwd = Arc::new(Mutex::new(Some("/keep/me".to_string())));
+        let mut carry = Vec::new();
+
+        for payload in [
+            "file://web01:/etc",
+            "file://web01/etc",
+            "file://[::1]:/etc",
+            "file://localhost:/etc",
+        ] {
+            scan_osc7_cwd(&mut carry, &osc7(payload), &cwd);
+            assert_eq!(
+                cwd.lock().unwrap().as_deref(),
+                Some("/keep/me"),
+                "{payload} 带 host 段，不得写入 cwd"
+            );
+        }
+    }
+
+    /// host 为空（本桥接钩子的输出形式）才是有效上报；空载荷不改动已有 cwd。
+    #[test]
+    fn an_osc7_report_without_a_host_updates_cwd() {
+        let cwd = Arc::new(Mutex::new(None));
+        let mut carry = Vec::new();
+
+        scan_osc7_cwd(&mut carry, &osc7("file:///home/user"), &cwd);
+        assert_eq!(cwd.lock().unwrap().as_deref(), Some("/home/user"));
+
+        scan_osc7_cwd(&mut carry, &osc7("file://"), &cwd);
+        assert_eq!(
+            cwd.lock().unwrap().as_deref(),
+            Some("/home/user"),
+            "空载荷不应把 cwd 抹成空串"
+        );
+
+        // 根目录是合法值，须能写入（`/` 本身即 host 为空的证明）。
+        scan_osc7_cwd(&mut carry, &osc7("file:///"), &cwd);
+        assert_eq!(cwd.lock().unwrap().as_deref(), Some("/"));
+    }
+
+    /// 一次提示符里远端与本地钩子先后各报一次时，只有无 host 的那条胜出：
+    /// 带 host 的后续上报不得覆盖已捕获的目录。
+    #[test]
+    fn a_host_form_report_following_a_valid_one_leaves_cwd_intact() {
+        let cwd = Arc::new(Mutex::new(None));
+        let mut carry = Vec::new();
+
+        let mut chunk = osc7("file:///srv/app");
+        chunk.extend_from_slice(&osc7("file://web01:/srv/app"));
+        scan_osc7_cwd(&mut carry, &chunk, &cwd);
+
+        assert_eq!(cwd.lock().unwrap().as_deref(), Some("/srv/app"));
     }
 }
