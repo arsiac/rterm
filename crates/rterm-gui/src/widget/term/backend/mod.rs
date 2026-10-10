@@ -52,7 +52,7 @@ impl Backend {
     /// 上层入口 `Terminal::new` 无调用方，整条路径目前是死的，保留以支撑将来的本地 shell 标签页。
     pub fn new(
         id: u64,
-        pty_event_proxy_sender: mpsc::Sender<Event>,
+        pty_event_proxy_sender: mpsc::UnboundedSender<Event>,
         settings: BackendSettings,
     ) -> Result<Self> {
         let pty_config = tty::Options {
@@ -75,7 +75,7 @@ impl Backend {
     /// SSH 场景：直接桥接 russh shell 通道，不经过本地 PTY 子进程。
     pub fn new_with_pty(
         id: u64,
-        pty_event_proxy_sender: mpsc::Sender<Event>,
+        pty_event_proxy_sender: mpsc::UnboundedSender<Event>,
         pty: RusshPty,
         scrollback: usize,
         trim_trailing_whitespace: bool,
@@ -92,7 +92,7 @@ impl Backend {
     /// 以给定 PTY 构造后端，初始化 alacritty 终端与 event loop。
     fn from_pty<Pty>(
         _id: u64,
-        pty_event_proxy_sender: mpsc::Sender<Event>,
+        pty_event_proxy_sender: mpsc::UnboundedSender<Event>,
         pty: Pty,
         scrollback: usize,
         trim_trailing_whitespace: bool,
@@ -235,12 +235,16 @@ impl Drop for Backend {
 }
 /// 实现 alacritty `EventListener`：将事件转发给宿主的消息通道。
 #[derive(Clone)]
-pub struct EventProxy(mpsc::Sender<Event>);
+pub struct EventProxy(mpsc::UnboundedSender<Event>);
 
 impl EventListener for EventProxy {
-    /// 以阻塞方式将 alacritty 事件发送到宿主通道。
+    /// 以非阻塞方式将 alacritty 事件发送到宿主通道。
+    ///
+    /// 必须是**无界非阻塞**发送：alacritty 在持有终端锁时回调本方法（PTY 读取线程解析
+    /// 输出期间会发出 `Wakeup`/`Title`/`Bell`/`PtyWrite` 等），若此处阻塞在有界通道上，
+    /// 一旦宿主订阅转发滞后，读取线程就会持锁卡死，UI 线程随后的 `term.lock()` 永久挂起。
     fn send_event(&self, event: Event) {
-        let _ = self.0.blocking_send(event);
+        let _ = self.0.send(event);
     }
 }
 

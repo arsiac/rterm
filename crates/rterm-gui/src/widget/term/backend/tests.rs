@@ -8,7 +8,7 @@ use iced_core::Size;
 
 /// 构造无 PTY 的终端：历史缓冲 10 行，视口取 [`TerminalSize::default`]（80×50）。
 fn test_term() -> Term<EventProxy> {
-    let (tx, _rx) = mpsc::channel(16);
+    let (tx, _rx) = mpsc::unbounded_channel();
     let config = term::Config {
         scrolling_history: 10,
         ..Default::default()
@@ -124,7 +124,7 @@ fn bell_event_maps_to_a_bell_action() {
 /// 喂真实字节流（而非直接构造事件），上游 alacritty 若改了行为这里有红灯。
 #[test]
 fn a_bel_byte_in_the_stream_emits_a_bell_event() {
-    let (tx, mut rx) = mpsc::channel(16);
+    let (tx, mut rx) = mpsc::unbounded_channel();
     let mut term = Term::new(
         term::Config::default(),
         &TerminalSize::default(),
@@ -163,7 +163,7 @@ struct Fixture {
     /// 尺寸变更接收端（pty 转发 window-change 的去向）。
     resizes: mpsc::Receiver<(u32, u32)>,
     /// 后端事件通道的接收端（宿主订阅的原型）。
-    events: mpsc::Receiver<Event>,
+    events: mpsc::UnboundedReceiver<Event>,
 }
 
 #[cfg(unix)]
@@ -180,7 +180,7 @@ impl Fixture {
             resize_tx,
         )
         .expect("wrap the sync end as a pty");
-        let (event_tx, events) = mpsc::channel(64);
+        let (event_tx, events) = mpsc::unbounded_channel();
         let backend =
             Backend::new_with_pty(1, event_tx, pty, scrollback, true).expect("create the backend");
         Self {
@@ -288,7 +288,10 @@ fn wait_grid_contains(term: &Arc<FairMutex<Term<EventProxy>>>, needle: &str) {
 
 /// 等一条满足条件的事件（其余事件跳过）；超时或通道关闭判失败。
 #[cfg(unix)]
-async fn wait_event(rx: &mut mpsc::Receiver<Event>, pred: impl Fn(&Event) -> bool) -> Event {
+async fn wait_event(
+    rx: &mut mpsc::UnboundedReceiver<Event>,
+    pred: impl Fn(&Event) -> bool,
+) -> Event {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let event = match tokio::time::timeout_at(deadline, rx.recv()).await {
@@ -403,8 +406,6 @@ async fn grid_size_reflects_the_last_layout() {
 }
 
 /// 「视口回到底部」：翻回历史后回到底部、贴住实时输出。
-///
-/// 用普通 `#[test]` 而非 `#[tokio::test]`：`blocking_send` 不允许在 tokio 运行时线程上调用。
 #[cfg(unix)]
 #[test]
 fn scroll_to_bottom_resets_a_scrolled_viewport() {

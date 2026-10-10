@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::{self, Receiver};
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 #[derive(Debug, Clone)]
 /// 终端部件向宿主抛出的事件。
@@ -59,14 +59,14 @@ pub struct Terminal {
     pub(crate) bindings: BindingsLayout,
     /// 终端后端：负责 PTY/SSH 数据收发与内容解析。
     pub(crate) backend: backend::Backend,
-    /// 后端事件接收端（被订阅流共享）。
-    backend_event_rx: Arc<Mutex<Receiver<AlacrittyEvent>>>,
+    /// 后端事件接收端（被订阅流共享）。无界通道：见 `EventProxy::send_event` 的说明。
+    backend_event_rx: Arc<Mutex<UnboundedReceiver<AlacrittyEvent>>>,
 }
 
 impl Terminal {
     /// 以本地 PTY 路径创建终端实例（非 SSH 场景）。
     pub fn new(id: u64, settings: Settings) -> Result<Self> {
-        let (backend_event_tx, backend_event_rx) = mpsc::channel(100);
+        let (backend_event_tx, backend_event_rx) = mpsc::unbounded_channel();
         let theme = Theme::new(settings.theme);
         let font = TermFont::new(settings.font);
 
@@ -84,7 +84,7 @@ impl Terminal {
 
     /// SSH 场景：复用已建立的 russh shell 通道，跳过本地 PTY 子进程。
     pub fn new_with_pty(id: u64, settings: Settings, pty: RusshPty) -> Result<Self> {
-        let (backend_event_tx, backend_event_rx) = mpsc::channel(100);
+        let (backend_event_tx, backend_event_rx) = mpsc::unbounded_channel();
         let theme = Theme::new(settings.theme);
         let font = TermFont::new(settings.font);
 
@@ -187,7 +187,7 @@ struct TerminalSubscriptionData {
     /// 标签唯一 id。
     id: u64,
     /// 后端事件接收端（被多订阅共享）。
-    event_receiver: Arc<Mutex<Receiver<AlacrittyEvent>>>,
+    event_receiver: Arc<Mutex<UnboundedReceiver<AlacrittyEvent>>>,
 }
 
 impl Hash for TerminalSubscriptionData {
@@ -226,12 +226,17 @@ impl EventBatch {
 }
 
 /// 阻塞等待一条后端事件；通道关闭（终端部件已销毁）时返回 `None`。
-async fn recv_event(receiver: &Arc<Mutex<Receiver<AlacrittyEvent>>>) -> Option<AlacrittyEvent> {
+async fn recv_event(
+    receiver: &Arc<Mutex<UnboundedReceiver<AlacrittyEvent>>>,
+) -> Option<AlacrittyEvent> {
     receiver.lock().await.recv().await
 }
 
 /// 取走通道中当前已就绪的全部事件（不等待），并入 `batch`。
-async fn drain_events(receiver: &Arc<Mutex<Receiver<AlacrittyEvent>>>, batch: &mut EventBatch) {
+async fn drain_events(
+    receiver: &Arc<Mutex<UnboundedReceiver<AlacrittyEvent>>>,
+    batch: &mut EventBatch,
+) {
     let mut receiver = receiver.lock().await;
     loop {
         match receiver.try_recv() {
