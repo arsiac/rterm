@@ -564,7 +564,7 @@ fn make_pipe(suffix: &str) -> io::Result<(tokio::net::windows::named_pipe::Named
             std::ptr::null(),
             OPEN_EXISTING,
             0,
-            0,
+            std::ptr::null_mut(),
         )
     };
     if client == INVALID_HANDLE_VALUE {
