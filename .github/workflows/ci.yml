@@ -10,20 +10,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Run clippy (release gate, -D warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
   build:
     name: build-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
     strategy:
@@ -67,10 +53,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy (release gate, -D warnings)
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
       - name: Run tests
         run: cargo test --target ${{ matrix.target }}
