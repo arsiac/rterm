@@ -88,6 +88,8 @@ settings:
 session:
   new: 新建会话
   refresh: 刷新
+  filter_placeholder: 筛选会话…
+  filter_no_match: 没有匹配的会话。
   import: 导入会话
   export: 导出会话
   connect: 连接

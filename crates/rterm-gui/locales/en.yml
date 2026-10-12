@@ -88,6 +88,8 @@ settings:
 session:
   new: New session
   refresh: Refresh
+  filter_placeholder: Filter sessions…
+  filter_no_match: No matching sessions.
   import: Import sessions
   export: Export sessions
   connect: Connect

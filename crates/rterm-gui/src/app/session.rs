@@ -355,6 +355,8 @@ pub struct State {
     pub collapsed_groups: HashSet<String>,
     /// 工具栏「更多」 dropdown 是否展开。
     pub show_more_menu: bool,
+    /// 会话列表过滤词：对名称 / 主机 / 用户名 / 分组做大小写不敏感子串匹配，空串 = 全量。
+    pub filter: String,
     /// 会话编辑器中的草稿（无则未编辑）。
     pub editor: Option<EditorDraft>,
 }
@@ -369,6 +371,7 @@ impl State {
             selected_session: None,
             collapsed_groups: HashSet::new(),
             show_more_menu: false,
+            filter: String::new(),
             editor: None,
         }
     }
@@ -467,6 +470,8 @@ pub enum Message {
     OpenFiles(String),
     /// 切换工具栏「更多」dropdown显隐。
     ToggleMoreMenu,
+    /// 会话列表过滤词变更（携带输入框最新文本）。
+    FilterChanged(String),
     /// 打开系统文件选择器以指定导出目标文件（结果经 `Event::Emit` 自回路流入
     /// [`Message::ExportSessionsToFile]`）。
     ExportSessions,
@@ -700,6 +705,12 @@ impl State {
                 self.show_more_menu = !self.show_more_menu;
                 Task::none()
             }
+            Message::FilterChanged(query) => {
+                // 过滤后原悬浮项可能被隐藏，残留高亮会指向不存在的行，顺手清掉。
+                self.hovered_session = None;
+                self.filter = query;
+                Task::none()
+            }
             Message::ExportSessions => {
                 self.show_more_menu = false;
                 Task::perform(
@@ -776,6 +787,30 @@ impl State {
             }
         }
     }
+}
+
+/// 按过滤词筛选会话：对名称 / 主机 / 用户名 / 分组做大小写不敏感的子串匹配。
+///
+/// 过滤词先 `trim`，空串返回全量；返回引用切片避免逐帧克隆。纯展示过滤，不触碰磁盘。
+pub(crate) fn filtered_sessions<'a>(
+    sessions: &'a [SessionConfig],
+    query: &str,
+) -> Vec<&'a SessionConfig> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return sessions.iter().collect();
+    }
+    sessions
+        .iter()
+        .filter(|s| {
+            s.name.to_lowercase().contains(&query)
+                || s.host.to_lowercase().contains(&query)
+                || s.username.to_lowercase().contains(&query)
+                || s.group
+                    .as_deref()
+                    .is_some_and(|g| g.to_lowercase().contains(&query))
+        })
+        .collect()
 }
 
 /// 构造分组字段的自动补全状态：候选为现有会话去重后的分组名，初始文本取草稿当前分组。
@@ -881,6 +916,47 @@ mod tests {
             group: Some("prod".into()),
             jumps: Vec::new(),
         }
+    }
+
+    /// 构造指定名称 / 主机 / 用户名 / 分组的会话（其余字段固定），供过滤用例使用。
+    fn s(name: &str, host: &str, user: &str, group: Option<&str>) -> SessionConfig {
+        SessionConfig {
+            id: new_id(),
+            name: name.into(),
+            host: host.into(),
+            port: 22,
+            username: user.into(),
+            auth: AuthMethod::Agent,
+            group: group.map(str::to_string),
+            jumps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn filter_matches_across_fields_case_insensitively() {
+        let sessions = vec![
+            s("Web Server", "web-01.example.com", "alice", Some("Prod")),
+            s("Database", "db-01.example.com", "bob", Some("Staging")),
+            s("Bastion", "bastion.example.com", "ops", None),
+        ];
+
+        // 名称、主机、用户名、分组任一字段命中即可。
+        assert_eq!(filtered_sessions(&sessions, "web").len(), 1);
+        assert_eq!(filtered_sessions(&sessions, "example.com").len(), 3);
+        assert_eq!(filtered_sessions(&sessions, "bob").len(), 1);
+        assert_eq!(filtered_sessions(&sessions, "prod").len(), 1);
+        // 大小写不敏感，前后空白被裁掉。
+        assert_eq!(filtered_sessions(&sessions, "WEB SERVER").len(), 1);
+        assert_eq!(filtered_sessions(&sessions, "  prod  ").len(), 1);
+    }
+
+    #[test]
+    fn filter_empty_query_returns_all_and_no_match_returns_empty() {
+        let sessions = vec![s("a", "h1", "u", None), s("b", "h2", "u", None)];
+
+        assert_eq!(filtered_sessions(&sessions, "").len(), 2);
+        assert_eq!(filtered_sessions(&sessions, "   ").len(), 2);
+        assert!(filtered_sessions(&sessions, "nope").is_empty());
     }
 
     #[test]

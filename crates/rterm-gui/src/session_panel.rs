@@ -83,10 +83,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
 /// 会话列表视图：按 `group` 聚合成可折叠分组区块，未分组会话置于末尾。
 fn list_view(app: &App) -> Element<'_, Message> {
-    // 分组名（Some）进 BTreeMap 自动按名称排序；None 归入未分组列表置后显示。
+    // 先按过滤词收窄，再分组：分组名（Some）进 BTreeMap 自动按名称排序；None 归入未分组列表置后显示。
+    let visible =
+        crate::app::session::filtered_sessions(&app.session.sessions, &app.session.filter);
+    let filtering = !app.session.filter.trim().is_empty();
     let mut grouped: BTreeMap<String, Vec<&SessionConfig>> = BTreeMap::new();
     let mut ungrouped: Vec<&SessionConfig> = Vec::new();
-    for s in &app.session.sessions {
+    for s in visible {
         match &s.group {
             Some(g) => grouped.entry(g.clone()).or_default().push(s),
             None => ungrouped.push(s),
@@ -98,11 +101,12 @@ fn list_view(app: &App) -> Element<'_, Message> {
     }
     ungrouped.sort_by(by_name);
 
-    // 依次铺分组头与（未折叠时的）组内会话行；键为空串代表「未分组」区块。
+    // 依次铺分组头与组内会话行；键为空串代表「未分组」区块。
+    // 过滤时忽略折叠态（自动展开命中行），空组因无可见项自然不出现。
     let mut items: Vec<Element<'_, Message>> = Vec::new();
     for (name, list) in &grouped {
         items.push(group_header(app, name, list.len()));
-        if !app.session.collapsed_groups.contains(name) {
+        if filtering || !app.session.collapsed_groups.contains(name) {
             for s in list {
                 items.push(session_row(app, s));
             }
@@ -110,7 +114,7 @@ fn list_view(app: &App) -> Element<'_, Message> {
     }
     if !ungrouped.is_empty() {
         items.push(group_header(app, "", ungrouped.len()));
-        if !app.session.collapsed_groups.contains("") {
+        if filtering || !app.session.collapsed_groups.contains("") {
             for s in &ungrouped {
                 items.push(session_row(app, s));
             }
@@ -166,16 +170,30 @@ fn list_view(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .align_x(iced::alignment::Horizontal::Right);
 
-    // 列表主体：有会话时铺可滚动列表；完全无会话时显示居中空状态提示。
+    // 过滤输入框：随输入即时过滤（`Message::FilterChanged`），清空即恢复全量。
+    let filter_input = text_input(&t!("session.filter_placeholder"), &app.session.filter)
+        .on_input(Message::FilterChanged)
+        .size(13)
+        .padding([5u16, 8u16])
+        .style(crate::ui::search_input_style);
+
+    // 列表主体：有会话时铺可滚动列表；完全无会话显示空状态，有会话但无命中显示无匹配提示。
     let body: Element<'_, Message> = if app.session.sessions.is_empty() {
         empty_state()
+    } else if items.is_empty() {
+        no_match_state()
     } else {
         scrollable(column(items).spacing(4))
             .height(Length::Fill)
             .into()
     };
 
-    column![toolbar, body].spacing(8).padding(10).into()
+    // 无会话时不显示过滤框（无处可筛）。
+    let mut content = column![toolbar].spacing(8).padding(10);
+    if !app.session.sessions.is_empty() {
+        content = content.push(filter_input);
+    }
+    content.push(body).into()
 }
 
 /// 会话列表为空时的占位提示
@@ -194,6 +212,16 @@ fn empty_state<'a>() -> Element<'a, Message> {
     .spacing(4)
     .align_x(iced::alignment::Horizontal::Center);
     container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+}
+
+/// 会话列表过滤后无命中时的占位提示。
+fn no_match_state<'a>() -> Element<'a, Message> {
+    container(crate::ui::hint_text(t!("session.filter_no_match")))
         .width(Length::Fill)
         .height(Length::Fill)
         .center_x(Length::Fill)

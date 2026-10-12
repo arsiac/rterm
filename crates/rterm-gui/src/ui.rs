@@ -393,6 +393,30 @@ pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input
     }
 }
 
+/// 列表工具条内搜索 / 过滤输入框样式：静息无描边、浅底色弱化存在感，
+/// 悬停浮出细边框，聚焦仍用强调色描边（保证键盘焦点可见）。
+pub fn search_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let p = theme::custom_palette(theme);
+    let pal = theme.extended_palette();
+    let (border_color, border_width) = match status {
+        text_input::Status::Focused { .. } => (theme::accent_color(theme), 1.0),
+        text_input::Status::Hovered => (p.border, 1.0),
+        _ => (p.border, 0.0),
+    };
+    text_input::Style {
+        background: Background::Color(p.surface),
+        border: Border {
+            color: border_color,
+            width: border_width,
+            radius: 6.0.into(),
+        },
+        icon: pal.background.base.text,
+        placeholder: p.text_tertiary,
+        value: pal.background.base.text,
+        selection: pal.primary.strong.color,
+    }
+}
+
 /// 弹窗按钮的视觉样式。
 #[derive(Debug, Clone, Copy)]
 pub enum DialogBtnStyle {
