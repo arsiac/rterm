@@ -9,7 +9,6 @@
 mod support;
 
 use rterm_core::{BridgeState, DisconnectReason, spawn_terminal_bridge};
-use std::os::fd::IntoRawFd;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -32,15 +31,16 @@ fn init_test_root() {
 
 /// 起连接并挂桥接，返回 `(测试连接, 桥接状态)`；`ssh` 由调用方持有（服务端随其存活）。
 ///
-/// 桥接的本地端（out / in）被转成裸 fd 留在进程里：pump 只认远端事件与停止请求，
-/// 不会因测试把本地管道关掉而走错分支；测试进程结束后 fd 由内核统一回收。
+/// 桥接的本地端（out / in）被故意泄漏、留在进程里：pump 只认远端事件与停止请求，
+/// 不会因测试把本地管道关掉而走错分支；测试进程结束后由内核统一回收。
 async fn bridge_up(ssh: &TestSsh) -> (TestSshConnection, Arc<BridgeState>) {
     let conn = ssh.connect().await;
     let (out, r#in, state, _resize_tx) =
         spawn_terminal_bridge(Arc::clone(conn.conn()), 80, 24, None, false, false, None)
             .await
             .expect("bridge setup must succeed against the test server");
-    let _ = (out.into_raw_fd(), r#in.into_raw_fd());
+    std::mem::forget(out);
+    std::mem::forget(r#in);
     (conn, state)
 }
 

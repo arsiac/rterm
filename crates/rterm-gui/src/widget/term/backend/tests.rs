@@ -4,6 +4,7 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::viewport_to_point;
 use alacritty_terminal::vte::ansi::Processor;
+#[cfg(unix)]
 use iced_core::Size;
 
 /// 构造无 PTY 的终端：历史缓冲 10 行，视口取 [`TerminalSize::default`]（80×50）。
