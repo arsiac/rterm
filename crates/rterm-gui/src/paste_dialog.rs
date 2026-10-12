@@ -5,7 +5,7 @@
 //! 与主机密钥指纹变更的强调反转同理。面板随窗口等比例缩放（见 [`view`]）。
 
 use crate::app::paste::{self, PendingPaste};
-use crate::sftp_dialogs::overlay_wrap;
+use crate::modal::overlay_wrap;
 use crate::t;
 use crate::ui::{DANGER, WARNING};
 use iced::widget::text::Wrapping;

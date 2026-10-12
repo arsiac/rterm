@@ -324,7 +324,7 @@ pub fn editor_overlay(app: &App) -> Option<Element<'_, Message>> {
         .height(EDITOR_H)
         .style(crate::ui::dialog_panel_style(None))
         .padding(0);
-    Some(crate::sftp_dialogs::overlay_wrap(panel.into()))
+    Some(crate::modal::overlay_wrap(panel.into()))
 }
 
 /// 弹窗主体：标题栏（含关闭按钮）+ 可滚动表单（分节）+ 固定底部按钮行。

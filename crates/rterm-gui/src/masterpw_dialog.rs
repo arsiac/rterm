@@ -11,7 +11,7 @@ use crate::t;
 
 use crate::app::App;
 use crate::app::masterpw::{Message, MpwStage};
-use crate::sftp_dialogs::overlay_wrap;
+use crate::modal::overlay_wrap;
 use crate::ui::{
     DialogBtnStyle, DialogButton, dialog_footer, dialog_panel, dialog_panel_style,
     dialog_title_bar, field_label, hairline, hint_text, text_input_style,

@@ -2,7 +2,7 @@
 //!
 //! 面板内部采用「左侧分类导航 + 右侧滚动内容」双栏结构。弹窗由
 //! [`App::settings`](crate::app::App::settings) 驱动，复用
-//! [`sftp_dialogs::overlay_wrap`] 叠加到窗口最顶层。
+//! [`crate::modal::overlay_wrap`] 叠加到窗口最顶层。
 //!
 //! 本文件仅负责纯渲染：所有交互经 [`crate::message::Message::Settings`] 路由进
 //! [`crate::app::settings`] 模块，自身不持有业务逻辑。
@@ -15,7 +15,7 @@ use crate::app::settings;
 use crate::app::updates;
 use crate::icons::{ICON_SIZE, Icon, icon_button};
 use crate::message::Message;
-use crate::sftp_dialogs;
+use crate::modal;
 use crate::theme;
 use iced::widget::text::Wrapping;
 use iced::widget::{
@@ -83,7 +83,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
         .center_y(Length::Fill)
         .into()
     });
-    Some(sftp_dialogs::overlay_wrap(panel.into()))
+    Some(modal::overlay_wrap(panel.into()))
 }
 
 /// 弹窗主体：顶部标题栏（含强调条与关闭按钮）+ 左侧分类导航 + 右侧内容区。

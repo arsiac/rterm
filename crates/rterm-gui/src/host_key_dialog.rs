@@ -8,7 +8,8 @@
 use crate::t;
 
 use crate::app::hostkey::Message;
-use crate::sftp_dialogs::{overlay_wrap, prop_row};
+use crate::modal::overlay_wrap;
+use crate::sftp_dialogs::prop_row;
 use crate::ui::DANGER;
 use iced::widget::{column, text};
 use iced::{Color, Element};
