@@ -655,10 +655,10 @@ fn security_pane(app: &App) -> Element<'_, Message> {
                 &app.settings.known_hosts_filter,
             )
             .on_input(|text| Message::Settings(settings::Message::KnownHostFilterChanged(text)))
-            .size(14)
-            .padding([6u16, 8u16])
+            .size(13)
+            .padding([5u16, 8u16])
             .width(Length::Fill)
-            .style(crate::ui::text_input_style),
+            .style(crate::ui::search_input_style),
         );
         let filtered = settings::filtered_known_hosts(
             &app.settings.known_hosts,
