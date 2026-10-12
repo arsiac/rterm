@@ -59,6 +59,11 @@ const DIALOG_MARGIN: f32 = 16.0;
 /// 左侧分类导航栏宽度（像素）。
 const NAV_W: f32 = 160.0;
 
+/// 细滚动条方向：轨道与滑块同为 6px
+fn thin_scrollbar() -> scrollable::Direction {
+    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6.0).scroller_width(6.0))
+}
+
 /// 根据当前是否显示设置弹窗返回遮罩层元素；未显示时返回 `None`。
 ///
 /// 面板取目标尺寸与「窗口尺寸 - 留白」的较小者：窗口足够大时固定为目标尺寸，
@@ -244,7 +249,10 @@ fn content_pane(app: &App) -> Element<'_, Message> {
         });
     column![
         header,
-        scrollable(body).width(Length::Fill).height(Length::Fill),
+        scrollable(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .direction(thin_scrollbar()),
     ]
     .width(Length::Fill)
     .height(Length::Fill)
@@ -665,9 +673,14 @@ fn security_pane(app: &App) -> Element<'_, Message> {
             }
             // 内层滚动 + 外层封顶（见 `KNOWN_HOSTS_LIST_MAX_H`）；滚轮到内层边缘后外层接管。
             col = col.push(
-                container(scrollable(rows).width(Length::Fill).height(Length::Shrink))
-                    .width(Length::Fill)
-                    .max_height(KNOWN_HOSTS_LIST_MAX_H),
+                container(
+                    scrollable(rows)
+                        .width(Length::Fill)
+                        .height(Length::Shrink)
+                        .direction(thin_scrollbar()),
+                )
+                .width(Length::Fill)
+                .max_height(KNOWN_HOSTS_LIST_MAX_H),
             );
         }
     }
