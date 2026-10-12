@@ -7,6 +7,7 @@
 use crate::app::hostkey;
 use crate::app::masterpw;
 use crate::app::panes;
+use crate::app::paste;
 use crate::app::session;
 use crate::app::settings;
 use crate::app::sftp;
@@ -106,6 +107,13 @@ pub enum Message {
     Settings(settings::Message),
     /// 设置弹窗模块上行事件，由父层收到后写回 `AppConfig` 并落盘（模块绝不写父状态）。
     SettingsEvent(settings::Event),
+
+    // ===== 粘贴确认模块（路由）=====
+    /// 粘贴确认模块内部消息：粘贴请求与弹窗决策（确认 / 取消 / 本次不再提醒），
+    /// 由父层经此变体路由进 `app::paste` 模块。
+    Paste(paste::Message),
+    /// 粘贴确认模块上行事件：放行的粘贴交父层编码并写入终端。
+    PasteEvent(paste::Event),
 
     // ===== 更新检查（路由）=====
     /// 更新检查模块内部消息：启动自动检查 / 立即检查 / 检查结果 / 打开发布页 / 关闭横幅，

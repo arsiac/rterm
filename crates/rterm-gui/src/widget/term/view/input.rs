@@ -67,6 +67,9 @@ impl<'a> TerminalView<'a> {
     }
 
     /// 分发鼠标事件为后端命令（鼠标报告、选区、滚轮滚动、中键粘贴等）。
+    ///
+    /// `paste` 为中键粘贴的出参：命中时写出待粘贴文本，由 `update` 转成 [`Event::PasteRequest`]
+    /// 交宿主收口（此处不直接写入 PTY）。
     pub(super) fn handle_mouse_event(
         &self,
         state: &mut TerminalViewState,
@@ -74,6 +77,7 @@ impl<'a> TerminalView<'a> {
         cursor_position: Point,
         event: &iced::mouse::Event,
         clipboard: &dyn iced_graphics::core::Clipboard,
+        paste: &mut Option<String>,
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let terminal_content = self.term.backend.renderable_content();
@@ -125,7 +129,13 @@ impl<'a> TerminalView<'a> {
                     return Vec::default();
                 }
 
-                Self::handle_middle_button_pressed(state, &terminal_mode, clipboard, &mut commands);
+                Self::handle_middle_button_pressed(
+                    state,
+                    &terminal_mode,
+                    clipboard,
+                    &mut commands,
+                    paste,
+                );
             }
             iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Middle) => {
                 if !self.focused {
@@ -265,13 +275,16 @@ impl<'a> TerminalView<'a> {
         }
     }
 
-    /// 处理鼠标中键按下：鼠标模式下作为 button 2 上报给远端应用，否则粘贴
+    /// 处理鼠标中键按下：鼠标模式下作为 button 2 上报给远端应用，否则产出粘贴请求
     /// （PRIMARY 优先，Linux 惯例；见 `read_middle_paste`）。
+    ///
+    /// 非鼠标模式命中剪贴板时写入 `paste` 出参，由 `update` 交宿主收口，本函数不直接写入。
     pub(super) fn handle_middle_button_pressed(
         state: &TerminalViewState,
         terminal_mode: &TermMode,
         clipboard: &dyn iced_graphics::core::Clipboard,
         commands: &mut Vec<Command>,
+        paste: &mut Option<String>,
     ) {
         if terminal_mode.intersects(TermMode::MOUSE_MODE) {
             commands.push(Command::MouseReport(
@@ -281,8 +294,7 @@ impl<'a> TerminalView<'a> {
                 true,
             ));
         } else if let Some(data) = read_middle_paste(clipboard) {
-            let bracketed = terminal_mode.contains(TermMode::BRACKETED_PASTE);
-            commands.push(Command::Write(paste_bytes(&data, bracketed)));
+            *paste = Some(data);
         }
     }
 
@@ -411,11 +423,15 @@ impl<'a> TerminalView<'a> {
     }
 
     /// 处理键盘事件：解析键位绑定并生成写入、复制、粘贴等命令。
+    ///
+    /// `paste` 为粘贴出参：命中 `BindingAction::Paste` 时写出剪贴板文本，由 `update` 转成
+    /// [`Event::PasteRequest`] 交宿主收口（此处不直接写入 PTY）。
     pub(super) fn handle_keyboard_event(
         &self,
         state: &mut TerminalViewState,
         clipboard: &mut dyn iced_graphics::core::Clipboard,
         event: &iced::keyboard::Event,
+        paste: &mut Option<String>,
     ) -> Option<Command> {
         let mut binding_action = BindingAction::Ignore;
         let last_content = self.term.backend.renderable_content();
@@ -488,13 +504,7 @@ impl<'a> TerminalView<'a> {
             }
             BindingAction::Paste => {
                 if let Some(data) = clipboard.read(ClipboardKind::Standard) {
-                    let bracketed = self
-                        .term
-                        .backend
-                        .renderable_content()
-                        .terminal_mode
-                        .contains(TermMode::BRACKETED_PASTE);
-                    return Some(Command::Write(paste_bytes(&data, bracketed)));
+                    *paste = Some(data);
                 }
             }
             BindingAction::Copy => {
@@ -769,6 +779,9 @@ pub(super) fn update(
         scrollbar_commands = commands;
     }
 
+    // 粘贴出参：键盘 / 中键命中时写出剪贴板文本，随后统一转成 `PasteRequest` 交宿主收口。
+    let mut paste: Option<String> = None;
+
     let commands = if consumed {
         scrollbar_commands
     } else {
@@ -799,6 +812,7 @@ pub(super) fn update(
                         cursor.position().unwrap(),
                         mouse_event,
                         clipboard,
+                        &mut paste,
                     );
 
                     // 左键拖选结束即把选区写入 PRIMARY（Linux 中键粘贴惯例）；鼠标模式下的拖拽是上报而非选区，不写。
@@ -828,7 +842,7 @@ pub(super) fn update(
                     return;
                 }
 
-                view.handle_keyboard_event(state, clipboard, keyboard_event)
+                view.handle_keyboard_event(state, clipboard, keyboard_event, &mut paste)
                     .into_iter()
                     .collect()
             }
@@ -851,8 +865,16 @@ pub(super) fn update(
     };
 
     // 滚动条按下 / 拖动可能不产生命令（原地按下），但事件已被接管，仍须捕获以免下层重复处理左键。
-    if consumed || !commands.is_empty() {
+    // 粘贴请求同理：无命令但须拦下按键，否则同一次粘贴还会被上层当普通按键重复处理。
+    if consumed || !commands.is_empty() || paste.is_some() {
         shell.capture_event();
+    }
+
+    if let Some(text) = paste {
+        shell.publish(Event::PasteRequest {
+            tab_id: view.term.id,
+            text,
+        });
     }
 
     for cmd in commands {

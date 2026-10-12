@@ -2,6 +2,7 @@
 
 use crate::app::App;
 use crate::app::contexts;
+use crate::app::paste;
 use crate::app::tabs;
 use crate::app::tasks::{BridgeOptions, open_terminal_task};
 use crate::font;
@@ -303,6 +304,13 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             app.terminal_focused = true;
             Task::none()
         }
+        // 粘贴意图（键盘快捷键 / 中键）：交粘贴确认模块判定直接写入或先弹窗确认。
+        TermEvent::PasteRequest { tab_id, text } => {
+            let ctx = contexts::paste_ctx(app);
+            app.paste
+                .update(paste::Message::Request { tab_id, text }, &ctx)
+                .map(Message::PasteEvent)
+        }
         TermEvent::BackendCall(id, backend_cmd) => {
             // 点击 / 选择 / 滚轮 / 键入等「用户与终端的交互」都以非 Resize 的 BackendCall 形式到达；
             // 一旦出现即说明键盘焦点已落回终端，恢复聚焦态（修正「点回终端边框仍显未聚焦」）。
@@ -372,6 +380,26 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             }
             Task::none()
         }
+    }
+}
+
+/// 把一段粘贴文本按标签当前括号粘贴模式编码后写入，复用后端写入通道与断开态闸门。
+///
+/// 标签不存在或尚无终端时无操作（粘贴请求只可能来自已有终端）。
+pub(crate) fn write_paste(app: &mut App, tab_id: u64, text: String) -> Task<Message> {
+    let bytes = app
+        .tabs
+        .list()
+        .iter()
+        .find(|t| t.id == tab_id)
+        .and_then(|t| t.terminal.as_ref())
+        .map(|term| term.encode_paste(&text));
+    match bytes {
+        Some(bytes) => handle_terminal_event(
+            app,
+            TermEvent::BackendCall(tab_id, BackendCommand::Write(bytes)),
+        ),
+        None => Task::none(),
     }
 }
 

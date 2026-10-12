@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
-use crate::app::{events, hostkey, masterpw, session, settings, sftp, tabs, window};
+use crate::app::{events, hostkey, masterpw, paste, session, settings, sftp, tabs, window};
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
 use crate::t;
@@ -103,6 +103,12 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::TerminalCopy => handle_terminal_copy(app),
         Message::TerminalPaste => iced::clipboard::read().map(Message::TerminalPasteLoaded),
         Message::TerminalPasteLoaded(contents) => handle_terminal_paste(app, contents),
+        // 粘贴确认模块：路由进模块自身 `update`，放行事件经 `Message::PasteEvent` 落地。
+        Message::Paste(m) => {
+            let ctx = contexts::paste_ctx(app);
+            app.paste.update(m, &ctx).map(Message::PasteEvent)
+        }
+        Message::PasteEvent(e) => events::apply_paste_event(app, e),
         // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
         Message::Settings(m) => {
             let ctx = contexts::settings_ctx(app);
@@ -134,6 +140,12 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.masterpw
             .update(masterpw::Message::DisableCancel, &ctx)
             .map(Message::MasterPwEvent)
+    } else if app.paste.pending().is_some() {
+        // 粘贴确认框：Esc 等价于取消（丢弃本次粘贴，不写入）。
+        let ctx = contexts::paste_ctx(app);
+        app.paste
+            .update(paste::Message::Cancel, &ctx)
+            .map(Message::PasteEvent)
     } else if app.settings.show_settings {
         let ctx = contexts::settings_ctx(app);
         app.settings
@@ -188,18 +200,18 @@ fn handle_terminal_copy(app: &mut App) -> iced::Task<Message> {
     iced::clipboard::write(text)
 }
 
-/// 终端右键菜单「粘贴」：把读回的剪贴板文本按括号粘贴模式写入活动终端。
+/// 终端右键菜单「粘贴」：把读回的剪贴板文本交给粘贴确认模块（判定后再决定直接写入或弹窗）。
 fn handle_terminal_paste(app: &mut App, contents: Option<String>) -> iced::Task<Message> {
     let Some(text) = contents.filter(|s| !s.is_empty()) else {
         return iced::Task::none();
     };
-    let Some(id) = app.tabs.active() else {
+    let Some(tab_id) = app.tabs.active() else {
         return iced::Task::none();
     };
-    if let Some(term) = app.tabs.tab_mut(id).and_then(|tab| tab.terminal.as_mut()) {
-        let _ = term.paste(&text);
-    }
-    iced::Task::none()
+    let ctx = contexts::paste_ctx(app);
+    app.paste
+        .update(paste::Message::Request { tab_id, text }, &ctx)
+        .map(Message::PasteEvent)
 }
 
 /// 切换中央视图；切到文件管理时若活动标签尚未打开 SFTP 则自动打开。

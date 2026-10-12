@@ -1,6 +1,6 @@
 //! 父状态到子模块的只读上下文适配层，以及父状态的通用写入动作。
 
-use crate::app::{App, masterpw, session, settings, tabs, transfer, updates, window};
+use crate::app::{App, masterpw, paste, session, settings, tabs, transfer, updates, window};
 use crate::state::{SftpView, ToastKind};
 use crate::t;
 use crate::widget::toast::{ToastLevel, toast};
@@ -113,6 +113,19 @@ pub(crate) fn tabs_ctx(app: &App) -> tabs::Ctx {
         active_session: app.active_session.clone(),
         terminal_focused: app.terminal_focused,
         window_focus_saved: app.window_focus_saved,
+    }
+}
+
+/// 组装粘贴确认模块所需的只读上下文（拦截开关与量级阈值）。
+///
+/// 每次 `update` 调用前重建，确保模块读到最新父状态；阈值只经此注入、绝不缓存进模块状态，
+/// 否则设置界面改动后模块仍读旧值。
+pub(crate) fn paste_ctx(app: &App) -> paste::Ctx {
+    paste::Ctx {
+        paste_warn_enabled: app.config.terminal.paste_warn_enabled,
+        paste_warn_lines: app.config.terminal.paste_warn_lines,
+        paste_warn_bytes: app.config.terminal.paste_warn_bytes,
+        paste_warn_control_chars: app.config.terminal.paste_warn_control_chars,
     }
 }
 

@@ -61,6 +61,10 @@ settings:
   bell_hint: 开启后终端收到响铃字符（BEL，即 \a）时对应标签短暂闪烁，作为程序提示音的可视替代。
   scrollbar: 显示终端滚动条
   scrollbar_hint: 在终端内容右侧叠加一条半透明滚动条，可拖动或点击空轨回看历史输出。
+  paste_warn_enabled: 粘贴大量文本前确认
+  paste_warn_enabled_hint: 当粘贴达到行数或字节阈值时弹窗确认，避免误贴一批命令直接执行。对所有已打开的标签立即生效。
+  paste_warn_control_chars: 含控制字符时同样确认
+  paste_warn_control_chars_hint: 只要粘贴内容含有制表符、回车、换行以外的控制字符，即使未达尺寸阈值也弹窗确认——这类字符可能驱动 shell 或改变终端状态。
   remember_window_size: 记住窗口大小
   remember_window_size_hint: 下次启动恢复上次非最大化的窗口大小；若关闭时处于最大化，则保留上一次非最大化尺寸。关闭此开关会同时清除已保存的尺寸。
   sub_known_hosts: 已知主机
@@ -261,6 +265,12 @@ terminal:
   ready: 终端已就绪
   menu_copy: 复制
   menu_paste: 粘贴
+  paste_warn_title: 粘贴确认
+  paste_warn_summary: "即将粘贴 %{lines} 行 · %{chars} 字符 · %{bytes} 字节。"
+  paste_warn_multiline: "内容跨 %{lines} 行。"
+  paste_warn_control: "含 %{count} 个控制字符，可能触发命令或改变终端状态。"
+  paste_confirm: 粘贴
+  paste_suppress: 本次会话不再提醒
 activity:
   settings: 设置
   sessions: 会话

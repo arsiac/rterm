@@ -260,6 +260,18 @@ pub struct TerminalConfig {
     /// 是否在终端内容右侧显示滚动条（叠加式，可拖动回滚历史），默认开启。
     #[serde(default = "default_true")]
     pub show_scrollbar: bool,
+    /// 是否在粘贴大量文本前弹窗确认（关闭后一切粘贴直接写入），默认开启。
+    #[serde(default = "default_true")]
+    pub paste_warn_enabled: bool,
+    /// 粘贴确认的多行阈值：逻辑行数达到该值即弹窗；0 表示不按行数判定。
+    #[serde(default = "default_paste_warn_lines")]
+    pub paste_warn_lines: usize,
+    /// 粘贴确认的巨量阈值：字节数达到该值即弹窗；0 表示不按字节数判定。
+    #[serde(default = "default_paste_warn_bytes")]
+    pub paste_warn_bytes: usize,
+    /// 粘贴文本含 `\t` / `\n` / `\r` 之外的控制字符时是否弹窗确认，默认开启。
+    #[serde(default = "default_true")]
+    pub paste_warn_control_chars: bool,
 }
 
 impl Default for TerminalConfig {
@@ -275,6 +287,10 @@ impl Default for TerminalConfig {
             trim_trailing_whitespace: default_true(),
             bell: default_true(),
             show_scrollbar: default_true(),
+            paste_warn_enabled: default_true(),
+            paste_warn_lines: default_paste_warn_lines(),
+            paste_warn_bytes: default_paste_warn_bytes(),
+            paste_warn_control_chars: default_true(),
         }
     }
 }
@@ -548,6 +564,16 @@ fn default_scrollback() -> usize {
     10000
 }
 
+/// 粘贴确认的多行阈值默认值：4 行。
+fn default_paste_warn_lines() -> usize {
+    4
+}
+
+/// 粘贴确认的巨量阈值默认值：1024 字节。
+fn default_paste_warn_bytes() -> usize {
+    1024
+}
+
 /// 探测系统当前是否处于深色外观。
 ///
 /// 3.x 在 Linux 上统一走 XDG Desktop Portal 的 `color-scheme`，即 GNOME/KDE 各自的权威来源，
@@ -681,6 +707,11 @@ impl From<LegacyAppConfig> for AppConfig {
                 bell: default_true(),
                 // 旧版没有滚动条开关：取默认（开启）。
                 show_scrollbar: default_true(),
+                // 旧版没有粘贴确认相关字段：一律取默认。
+                paste_warn_enabled: default_true(),
+                paste_warn_lines: default_paste_warn_lines(),
+                paste_warn_bytes: default_paste_warn_bytes(),
+                paste_warn_control_chars: default_true(),
             },
             // 旧版没有传输段：一律取默认值（并发 3）。
             transfer: TransferConfig::default(),

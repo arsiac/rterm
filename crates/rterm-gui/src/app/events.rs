@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
-use crate::app::{masterpw, session, settings, sftp, tabs, transfer, updates, window};
+use crate::app::{masterpw, paste, session, settings, sftp, tabs, transfer, updates, window};
 use crate::message::Message;
 use crate::vault_keyring;
 use crate::widget::term::{BackendCommand, Command as TermCommand};
@@ -32,6 +32,7 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
             let closed = connect::close_session_tabs(app, &id);
             let mut tasks = Vec::with_capacity(closed.len());
             for tab_id in closed {
+                app.paste.remove_for_tab(tab_id);
                 tasks.push(close_tab_transfers(app, tab_id));
             }
             Task::batch(tasks)
@@ -92,9 +93,10 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
         tabs::Event::SpawnTerminal(tab_id, conout, conin, disc, resize) => {
             terminal_bridge::spawn_terminal_widget(app, tab_id, conout, conin, disc, resize)
         }
-        // 关闭标签时清理其挂起的主机密钥确认与传输态。
+        // 关闭标签时清理其挂起的主机密钥确认、粘贴确认与传输态。
         tabs::Event::RemoveHostKeyForTab(tab_id) => {
             app.hostkey.remove_for_tab(tab_id);
+            app.paste.remove_for_tab(tab_id);
             close_tab_transfers(app, tab_id)
         }
         // 转发终端部件事件给父层（父层拥有的 widget 交互逻辑）。
@@ -193,6 +195,13 @@ pub(crate) fn apply_transfer_event(app: &mut App, e: transfer::Event) -> Task<Me
             let ctx = contexts::transfer_ctx(app);
             app.transfer.update(*m, &ctx).map(Message::TransferEvent)
         }
+    }
+}
+
+/// 落地 `paste::Event`：把放行的粘贴编码后经终端写入通道落笔。
+pub(crate) fn apply_paste_event(app: &mut App, e: paste::Event) -> Task<Message> {
+    match e {
+        paste::Event::Paste { tab_id, text } => terminal_bridge::write_paste(app, tab_id, text),
     }
 }
 
@@ -326,6 +335,16 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
         }
         settings::Event::Scrollbar(v) => {
             app.config.terminal.show_scrollbar = v;
+            contexts::save_config(app);
+            Task::none()
+        }
+        settings::Event::PasteWarnEnabled(v) => {
+            app.config.terminal.paste_warn_enabled = v;
+            contexts::save_config(app);
+            Task::none()
+        }
+        settings::Event::PasteWarnControlChars(v) => {
+            app.config.terminal.paste_warn_control_chars = v;
             contexts::save_config(app);
             Task::none()
         }

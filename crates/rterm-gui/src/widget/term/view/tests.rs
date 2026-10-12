@@ -604,6 +604,7 @@ mod middle_paste_tests {
             standard: None,
         };
         let mut commands = Vec::new();
+        let mut paste = None;
         let _modifiers = Modifiers::empty();
 
         TerminalView::handle_middle_button_pressed(
@@ -611,6 +612,7 @@ mod middle_paste_tests {
             &TermMode::MOUSE_MODE,
             &clipboard,
             &mut commands,
+            &mut paste,
         );
 
         assert_eq!(commands.len(), 1);
@@ -626,67 +628,70 @@ mod middle_paste_tests {
                 true,
             )
         ));
+        assert!(paste.is_none(), "鼠标模式下中键是上报，不该产出粘贴请求");
     }
 
     #[test]
-    fn middle_press_pastes_outside_mouse_mode() {
+    fn middle_press_yields_paste_text_outside_mouse_mode() {
         let state = TerminalViewState::new();
         let clipboard = StubClipboard {
             primary: Some("primary".into()),
             standard: None,
         };
         let mut commands = Vec::new();
+        let mut paste = None;
 
         TerminalView::handle_middle_button_pressed(
             &state,
             &TermMode::empty(),
             &clipboard,
             &mut commands,
+            &mut paste,
         );
 
-        assert_eq!(commands.len(), 1);
-        assert!(matches!(
-            &commands[0],
-            Command::Write(bytes) if bytes == b"primary"
-        ));
+        // 部件只上抛原始文本（括号粘贴编码改由宿主经 `Terminal::encode_paste` 完成）。
+        assert!(commands.is_empty());
+        assert_eq!(paste.as_deref(), Some("primary"));
     }
 
     #[test]
-    fn middle_press_wraps_paste_when_bracketed() {
+    fn middle_press_yields_raw_text_even_when_bracketed() {
         let state = TerminalViewState::new();
         let clipboard = StubClipboard {
             primary: Some("primary".into()),
             standard: None,
         };
         let mut commands = Vec::new();
+        let mut paste = None;
 
         TerminalView::handle_middle_button_pressed(
             &state,
             &TermMode::BRACKETED_PASTE,
             &clipboard,
             &mut commands,
+            &mut paste,
         );
 
-        assert_eq!(commands.len(), 1);
-        assert!(matches!(
-            &commands[0],
-            Command::Write(bytes) if bytes == b"\x1b[200~primary\x1b[201~"
-        ));
+        assert!(commands.is_empty());
+        assert_eq!(paste.as_deref(), Some("primary"));
     }
 
     #[test]
-    fn middle_press_with_empty_clipboard_writes_nothing() {
+    fn middle_press_with_empty_clipboard_yields_nothing() {
         let state = TerminalViewState::new();
         let mut commands = Vec::new();
+        let mut paste = None;
 
         TerminalView::handle_middle_button_pressed(
             &state,
             &TermMode::empty(),
             &StubClipboard::default(),
             &mut commands,
+            &mut paste,
         );
 
         assert!(commands.is_empty());
+        assert!(paste.is_none());
     }
 
     #[test]

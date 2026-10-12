@@ -441,6 +441,16 @@ fn terminal_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::Scrollbar(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.scrollbar_hint")),
+        checkbox(app.config.terminal.paste_warn_enabled)
+            .label(t!("settings.paste_warn_enabled"))
+            .on_toggle(|v| Message::Settings(settings::Message::PasteWarnEnabled(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.paste_warn_enabled_hint")),
+        checkbox(app.config.terminal.paste_warn_control_chars)
+            .label(t!("settings.paste_warn_control_chars"))
+            .on_toggle(|v| Message::Settings(settings::Message::PasteWarnControlChars(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.paste_warn_control_chars_hint")),
     ]
     .spacing(10)
     .into()

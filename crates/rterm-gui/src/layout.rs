@@ -105,6 +105,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::session_panel::editor_overlay(app) {
         layers.push(dialog.map(Message::Session));
     }
+    // 大量粘贴确认弹窗：置于会话编辑器之上、主密码弹窗之下。
+    if let Some(dialog) = crate::paste_dialog::view(app) {
+        layers.push(dialog.map(Message::Paste));
+    }
     // 主密码设置 / 解锁弹窗：未就绪时强制拦截，置于编辑器之上。
     // 视图生产 `masterpw::Message`，经 `.map(Message::MasterPw)` 接入顶层路由。
     if let Some(dialog) = crate::masterpw_dialog::view(app) {

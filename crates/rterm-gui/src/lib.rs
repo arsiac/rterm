@@ -13,6 +13,7 @@ pub mod layout;
 pub mod masterpw_change_dialog;
 pub mod masterpw_dialog;
 pub mod message;
+pub mod paste_dialog;
 pub mod session_panel;
 pub mod settings_dialog;
 pub mod sftp_dialogs;

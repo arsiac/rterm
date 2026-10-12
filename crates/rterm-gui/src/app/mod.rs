@@ -7,6 +7,7 @@ pub(crate) mod events;
 pub(crate) mod hostkey;
 pub(crate) mod masterpw;
 pub(crate) mod panes;
+pub(crate) mod paste;
 pub(crate) mod routing;
 pub(crate) mod session;
 pub(crate) mod settings;
@@ -81,6 +82,9 @@ pub struct App {
     /// 模块经 `Message::Settings` 接收意图、经 `Message::SettingsEvent` 回写 `config`，
     /// 自身绝不修改 `App`。
     pub settings: settings::State,
+    /// 粘贴确认模块状态：待确认的大量粘贴与标签级豁免记录。三条粘贴入口在此收口，
+    /// 达阈值者弹窗询问。模块经 `Message::Paste` 接收意图、经 `Message::PasteEvent` 回写父状态。
+    pub paste: paste::State,
     /// 状态栏提示。
     pub status: Option<String>,
     /// toast 通知管理器：所有全局提示（导入 / 导出结果、连接状态、SFTP 反馈等）经

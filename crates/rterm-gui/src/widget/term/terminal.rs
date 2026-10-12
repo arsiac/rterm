@@ -30,6 +30,15 @@ pub enum Event {
     /// 因 `handle_mouse_event` 在 `!focused` 时会早返回、不产出任何 `BackendCall`，
     /// 故需独立的聚焦请求事件，否则失去焦点后只能靠切标签页才能找回焦点。
     FocusRequest(u64),
+    /// 粘贴请求：部件已读好剪贴板文本，交宿主按配置决定直接写入或先弹窗确认。
+    ///
+    /// 键盘快捷键 / 中键 / 右键菜单三路粘贴统一走此事件，宿主据此收口做量级判定。
+    PasteRequest {
+        /// 发起粘贴的标签 id。
+        tab_id: u64,
+        /// 待粘贴的剪贴板文本。
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -146,16 +155,17 @@ impl Terminal {
         self.backend.selectable_content()
     }
 
-    /// 以当前括号粘贴模式把剪贴板文本写入 PTY。
-    pub(crate) fn paste(&mut self, data: &str) -> Action {
+    /// 按当前括号粘贴模式把剪贴板文本编码为待写入 PTY 的字节（不落笔）。
+    ///
+    /// 粘贴的写入路径改由宿主收口（量级判定 / 确认弹窗），故此处只做编码：
+    /// 宿主拿到字节后经 [`Command::ProxyToBackend`] 走正常写入通道（含断开态闸门）。
+    pub(crate) fn encode_paste(&self, data: &str) -> Vec<u8> {
         let bracketed = self
             .backend
             .renderable_content()
             .terminal_mode
             .contains(TermMode::BRACKETED_PASTE);
-        self.handle(Command::ProxyToBackend(backend::Command::Write(
-            paste_bytes(data, bracketed),
-        )))
+        paste_bytes(data, bracketed)
     }
 
     /// 返回 iced 部件 id。
