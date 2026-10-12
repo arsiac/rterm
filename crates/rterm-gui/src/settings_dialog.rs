@@ -1,6 +1,5 @@
 //! 设置弹窗（应用级偏好配置）。
 //!
-//! 借鉴 s3dm 的弹窗规范：半透明黑遮罩 + 居中面板 + 圆角 + `opaque` 拦截穿透，
 //! 面板内部采用「左侧分类导航 + 右侧滚动内容」双栏结构。弹窗由
 //! [`App::settings`](crate::app::App::settings) 驱动，复用
 //! [`sftp_dialogs::overlay_wrap`] 叠加到窗口最顶层。
