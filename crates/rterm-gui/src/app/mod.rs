@@ -9,6 +9,7 @@ pub(crate) mod masterpw;
 pub(crate) mod panes;
 pub(crate) mod paste;
 pub(crate) mod routing;
+pub(crate) mod search;
 pub(crate) mod session;
 pub(crate) mod settings;
 pub(crate) mod sftp;
@@ -85,6 +86,10 @@ pub struct App {
     /// 粘贴确认模块状态：待确认的大量粘贴与标签级豁免记录。三条粘贴入口在此收口，
     /// 达阈值者弹窗询问。模块经 `Message::Paste` 接收意图、经 `Message::PasteEvent` 回写父状态。
     pub paste: paste::State,
+    /// 终端内搜索模块状态：搜索条开关、查询串与匹配开关。入口为 Ctrl+Shift+F（终端聚焦时）
+    /// 与终端右键菜单「查找」。模块经 `Message::Search` 接收意图、经 `Message::SearchEvent`
+    /// 由父层落地后端命令与焦点，自身绝不修改 `App`。
+    pub search: search::State,
     /// 状态栏提示。
     pub status: Option<String>,
     /// toast 通知管理器：所有全局提示（导入 / 导出结果、连接状态、SFTP 反馈等）经
@@ -169,18 +174,34 @@ impl App {
             _ => None,
         });
 
-        // 监听键盘：Esc 取消对话框 / 内联输入态；F2 对选中的 SFTP 条目触发重命名。
+        // 监听键盘：Esc 取消对话框 / 内联输入态；F2 对选中的 SFTP 条目触发重命名；
+        // Enter / Shift+Enter / ↑ / ↓ 驱动终端搜索的上下跳转（模块按开条态门控，
+        // 未开条时这些消息是无成本空操作）。
         // `listen_with` 只接受非捕获闭包，故 F2 只发无状态消息，选中项判定放在 `update`。
         let keys = iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => match key {
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
-                    Some(Message::Escape)
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                match key {
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                        Some(Message::Escape)
+                    }
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::F2) => {
+                        Some(Message::Sftp(sftp::Message::SftpRenameShortcut))
+                    }
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
+                        if modifiers.shift() =>
+                    {
+                        Some(Message::Search(search::Message::Previous))
+                    }
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
+                    | iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                        Some(Message::Search(search::Message::Next))
+                    }
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                        Some(Message::Search(search::Message::Previous))
+                    }
+                    _ => None,
                 }
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::F2) => {
-                    Some(Message::Sftp(sftp::Message::SftpRenameShortcut))
-                }
-                _ => None,
-            },
+            }
             _ => None,
         });
 

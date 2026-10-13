@@ -3,7 +3,8 @@
 use crate::app::App;
 use crate::app::contexts;
 use crate::app::{
-    hostkey, masterpw, panes, paste, session, settings, sftp, tabs, transfer, updates, window,
+    hostkey, masterpw, panes, paste, search, session, settings, sftp, tabs, transfer, updates,
+    window,
 };
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
@@ -107,6 +108,7 @@ pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
         transfer: transfer::State::default(),
         settings,
         paste: paste::State::new(),
+        search: search::State::new(),
         status: None,
         toaster: toaster(),
         hostkey: hostkey::State::default(),

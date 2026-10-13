@@ -8,6 +8,7 @@ use crate::app::hostkey;
 use crate::app::masterpw;
 use crate::app::panes;
 use crate::app::paste;
+use crate::app::search;
 use crate::app::session;
 use crate::app::settings;
 use crate::app::sftp;
@@ -114,6 +115,13 @@ pub enum Message {
     Paste(paste::Message),
     /// 粘贴确认模块上行事件：放行的粘贴交父层编码并写入终端。
     PasteEvent(paste::Event),
+
+    // ===== 终端内搜索（路由）=====
+    /// 终端内搜索模块内部消息：搜索条开关 / 查询 / 上下跳转 / 两个匹配开关，
+    /// 由父层经此变体路由进 `app::search` 模块。
+    Search(search::Message),
+    /// 终端内搜索模块上行事件：后端搜索命令与焦点意图，由父层落地到目标终端。
+    SearchEvent(search::Event),
 
     // ===== 更新检查（路由）=====
     /// 更新检查模块内部消息：启动自动检查 / 立即检查 / 检查结果 / 打开发布页 / 关闭横幅，

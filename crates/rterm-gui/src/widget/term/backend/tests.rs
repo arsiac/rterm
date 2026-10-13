@@ -1,6 +1,6 @@
 use super::*;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::viewport_to_point;
 use alacritty_terminal::vte::ansi::Processor;
@@ -27,7 +27,7 @@ fn feed(term: &mut Term<EventProxy>, input: &[u8]) {
 fn snapshot_after(term: &mut Term<EventProxy>, input: &[u8]) -> RenderableContent {
     feed(term, input);
     let mut content = RenderableContent::default();
-    Backend::capture_viewport(&mut content, term, TerminalSize::default());
+    Backend::capture_viewport(&mut content, term, TerminalSize::default(), None);
     content
 }
 
@@ -60,7 +60,7 @@ fn viewport_snapshot_reports_scrollback_history_size() {
     // 回滚只改偏移，不改历史总量。
     term.grid_mut().scroll_display(Scroll::Delta(3));
     let mut content = RenderableContent::default();
-    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default(), None);
     assert_eq!(content.history_size, 10);
     assert_eq!(content.display_offset, 3);
 }
@@ -87,7 +87,7 @@ fn viewport_snapshot_matches_alacritty_viewport_mapping() {
     term.grid_mut().scroll_display(Scroll::Delta(5));
 
     let mut content = RenderableContent::default();
-    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default(), None);
 
     assert_eq!(content.display_offset, 5);
     let size = TerminalSize::default();
@@ -529,7 +529,7 @@ fn an_unmoved_click_yields_no_selectable_range() {
     ));
 
     let mut content = RenderableContent::default();
-    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default(), None);
     assert!(content.selectable_range.is_none());
 }
 
@@ -546,8 +546,229 @@ fn a_single_cell_selection_is_still_selectable() {
         .update(point, Side::Right);
 
     let mut content = RenderableContent::default();
-    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default());
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default(), None);
     let range = content.selectable_range.expect("单格选区应产出范围");
     assert_eq!(range.start, range.end);
     assert_eq!(Backend::selection_text(&term, false), "b");
+}
+
+// ===================== 终端内搜索 =====================
+
+use super::search::{
+    SEARCH_COUNT_CAP, build_pattern, run_set_query, run_step, scroll_delta_for_match,
+};
+
+/// 指定历史深度的测试终端（视口 80×50）。
+fn test_term_hist(history: usize) -> Term<EventProxy> {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let config = term::Config {
+        scrolling_history: history,
+        ..Default::default()
+    };
+    Term::new(config, &TerminalSize::default(), EventProxy(tx))
+}
+
+/// 以默认开关执行一次查询，返回（Action 摘要是否命中预期, 搜索态）。
+fn query(term: &mut Term<EventProxy>, q: &str) -> (Action, Option<search::SearchState>) {
+    let mut current = None;
+    let action = run_set_query(term, &mut current, q, SearchFlags::default());
+    (action, current)
+}
+
+fn matches_action(count: usize, capped: bool) -> Action {
+    Action::SearchStats(SearchOutcome::Matches { count, capped })
+}
+
+#[test]
+fn build_pattern_escapes_metachars_and_encodes_case_flag() {
+    let flags = SearchFlags::default();
+    assert_eq!(build_pattern("a.b", &flags), "(?i)a\\.b");
+    assert_eq!(
+        build_pattern(".*+?()[]{}^$\\|", &flags),
+        "(?i)\\.\\*\\+\\?\\(\\)\\[\\]\\{\\}\\^\\$\\\\\\|"
+    );
+    // 大小写开：显式 (?-i) 覆盖 smart-case。
+    let cs = SearchFlags {
+        case_sensitive: true,
+        ..SearchFlags::default()
+    };
+    assert_eq!(build_pattern("foo", &cs), "(?-i)foo");
+    // 正则模式：原样采用，不转义。
+    let rx = SearchFlags {
+        regex: true,
+        ..SearchFlags::default()
+    };
+    assert_eq!(build_pattern("a.*b", &rx), "(?i)a.*b");
+    // 转义后必须能被引擎编译。
+    RegexSearch::new(&build_pattern(".+*?()|[]{}^$\\", &flags)).expect("escaped pattern compiles");
+}
+
+#[test]
+fn scroll_delta_for_match_minimal_moves() {
+    // 视口 10 行、贴住实时输出（offset=0）：行 5 已在视口 [0..9] 内。
+    assert_eq!(scroll_delta_for_match(5, 0, 10, 0), 0);
+    // 在下方：底边 = 9，命中行 12 → 下滚 3（负值），把命中贴到底边。
+    assert_eq!(scroll_delta_for_match(12, 0, 10, 0), -3);
+    // 回滚态 offset=5：视口 [-5..4]。
+    assert_eq!(scroll_delta_for_match(0, 5, 10, 10), 0);
+    // 命中在历史 -8：上滚到顶边（正值）。
+    assert_eq!(scroll_delta_for_match(-8, 5, 10, 10), 3);
+    // 命中在视口下方 7：下滚 9-7-5 = -3。
+    assert_eq!(scroll_delta_for_match(7, 5, 10, 10), -3);
+    // 越界偏移夹紧：offset 超历史不产生非法位移。
+    assert_eq!(scroll_delta_for_match(-8, 99, 10, 10), 0);
+}
+
+#[test]
+fn set_query_counts_across_viewport_and_jumps_first_match() {
+    let mut term = test_term();
+    feed(&mut term, b"foo\r\nbar foo\r\nbaz foo\r\n");
+    let (action, current) = query(&mut term, "foo");
+    assert_eq!(action, matches_action(3, false));
+    let active = current.expect("有命中").active.expect("首个命中已定位");
+    // 视口顶起算的第一个命中在行 0。
+    assert_eq!(active.start().line, Line(0));
+}
+
+#[test]
+fn set_query_covers_scrollback_history() {
+    let mut term = test_term();
+    // 写 60 行使历史溢出 10 行（末行换行再顶 1 行，L0 被挤出缓冲）：
+    // L10 落在绝对行 -1，视口（offset=0）自 L11 起。
+    let input: String = (0..60).map(|i| format!("L{i}\r\n")).collect();
+    feed(&mut term, input.as_bytes());
+    let (action, current) = query(&mut term, "L10");
+    assert_eq!(action, matches_action(1, false));
+    let active = current
+        .expect("搜索态已建立")
+        .active
+        .expect("命中在历史中被找到");
+    assert_eq!(active.start().line, Line(-1));
+    // 滚动到位：L10 行贴视口顶，display_offset 由 0 变 1。
+    assert_eq!(term.grid().display_offset(), 1);
+}
+
+#[test]
+fn step_walks_matches_and_wraps_both_directions() {
+    let mut term = test_term();
+    feed(&mut term, b"foo\r\nbar foo\r\nbaz foo\r\n");
+    let mut current = None;
+    run_set_query(&mut term, &mut current, "foo", SearchFlags::default());
+    let line_of = |current: &Option<search::SearchState>| {
+        current
+            .as_ref()
+            .and_then(|s| s.active.as_ref())
+            .map(|m| m.start().line)
+    };
+    assert_eq!(line_of(&current), Some(Line(0)));
+    run_step(&mut term, &mut current, Direction::Right);
+    assert_eq!(line_of(&current), Some(Line(1)));
+    run_step(&mut term, &mut current, Direction::Right);
+    assert_eq!(line_of(&current), Some(Line(2)));
+    // 末命中再向下：整网格回绕到首命中。
+    run_step(&mut term, &mut current, Direction::Right);
+    assert_eq!(line_of(&current), Some(Line(0)));
+    // 首命中再向上：回绕到末命中。
+    run_step(&mut term, &mut current, Direction::Left);
+    assert_eq!(line_of(&current), Some(Line(2)));
+}
+
+#[test]
+fn empty_query_clears_state_and_no_match_clears_active() {
+    let mut term = test_term();
+    feed(&mut term, b"foo\r\n");
+    let (_, current) = query(&mut term, "foo");
+    assert!(current.is_some());
+
+    let mut current = current;
+    // 空查询：清除状态并回默认 Action（文案由模块侧归空）。
+    let action = run_set_query(&mut term, &mut current, "", SearchFlags::default());
+    assert_eq!(action, Action::default());
+    assert!(current.is_none());
+
+    // 无命中：状态保留但 active 为空（供 Step 从视口顶起搜兜底）。
+    run_set_query(&mut term, &mut current, "zzz", SearchFlags::default());
+    assert_eq!(
+        Action::SearchStats(SearchOutcome::NoMatches),
+        run_set_query(&mut term, &mut current, "zzz", SearchFlags::default())
+    );
+    assert!(current.as_ref().expect("状态保留").active.is_none());
+}
+
+#[test]
+fn invalid_regex_reports_without_touching_state() {
+    let mut term = test_term();
+    feed(&mut term, b"foo bar\r\n");
+    let mut current = None;
+    run_set_query(&mut term, &mut current, "foo", SearchFlags::default());
+    let before = current.as_ref().unwrap().active.clone();
+
+    let rx = SearchFlags {
+        regex: true,
+        ..SearchFlags::default()
+    };
+    let action = run_set_query(&mut term, &mut current, "(", rx);
+    assert_eq!(action, Action::SearchStats(SearchOutcome::Invalid));
+    // 旧搜索态与命中原样保留（高亮不闪断）。
+    assert_eq!(current.as_ref().unwrap().active, before);
+
+    // 合法正则则正常执行。
+    let action = run_set_query(&mut term, &mut current, "f.*r", rx);
+    assert_eq!(action, matches_action(1, false));
+}
+
+#[test]
+fn case_flag_switches_match_count() {
+    let mut term = test_term();
+    feed(&mut term, b"Foo foo foo\r\n");
+    let (action, _) = query(&mut term, "foo");
+    assert_eq!(action, matches_action(3, false), "默认忽略大小写");
+
+    let mut current = None;
+    let cs = SearchFlags {
+        case_sensitive: true,
+        ..SearchFlags::default()
+    };
+    let action = run_set_query(&mut term, &mut current, "foo", cs);
+    assert_eq!(action, matches_action(2, false), "区分大小写只计全小写命中");
+}
+
+#[test]
+fn count_caps_at_display_limit() {
+    let mut term = test_term_hist(SEARCH_COUNT_CAP + 600);
+    let input: String = (0..SEARCH_COUNT_CAP + 600).map(|_| "x\r\n").collect();
+    feed(&mut term, input.as_bytes());
+    let (action, _) = query(&mut term, "x");
+    assert_eq!(action, matches_action(SEARCH_COUNT_CAP, true));
+}
+
+#[test]
+fn sync_snapshot_fills_and_clears_search_highlights() {
+    let mut term = test_term();
+    feed(&mut term, b"foo one\r\nfoo two\r\n");
+    let mut current = None;
+    run_set_query(&mut term, &mut current, "foo", SearchFlags::default());
+
+    let mut content = RenderableContent::default();
+    Backend::capture_viewport(
+        &mut content,
+        &mut term,
+        TerminalSize::default(),
+        current.as_mut(),
+    );
+    assert_eq!(content.search_matches.len(), 2, "视口内两处命中都进快照");
+    assert!(content.search_active.is_some());
+    // 快照里的命中为绝对网格坐标，均落在视口行内。
+    assert!(
+        content
+            .search_matches
+            .iter()
+            .all(|m| m.start().line >= Line(0) && m.start().line <= term.bottommost_line())
+    );
+
+    // 无活动搜索：字段清空。
+    let mut content = RenderableContent::default();
+    Backend::capture_viewport(&mut content, &mut term, TerminalSize::default(), None);
+    assert!(content.search_matches.is_empty());
+    assert!(content.search_active.is_none());
 }

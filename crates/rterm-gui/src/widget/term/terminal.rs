@@ -39,6 +39,10 @@ pub enum Event {
         /// 待粘贴的剪贴板文本。
         text: String,
     },
+    /// 搜索快捷键（Ctrl+Shift+F）按下：请求宿主打开终端内搜索条。
+    ///
+    /// 拦截发生在按键绑定查表之前，故远端程序收不到该组合的任何字节。
+    SearchRequested(u64),
 }
 
 #[derive(Debug, Clone)]

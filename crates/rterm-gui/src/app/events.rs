@@ -4,9 +4,12 @@ use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
-use crate::app::{masterpw, paste, session, settings, sftp, tabs, transfer, updates, window};
+use crate::app::{
+    masterpw, paste, search, session, settings, sftp, tabs, transfer, updates, window,
+};
 use crate::message::Message;
 use crate::vault_keyring;
+use crate::widget::term::actions::Action;
 use crate::widget::term::{BackendCommand, Command as TermCommand};
 use iced::Task;
 use rust_i18n;
@@ -93,10 +96,11 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
         tabs::Event::SpawnTerminal(tab_id, conout, conin, disc, resize) => {
             terminal_bridge::spawn_terminal_widget(app, tab_id, conout, conin, disc, resize)
         }
-        // 关闭标签时清理其挂起的主机密钥确认、粘贴确认与传输态。
+        // 关闭标签时清理其挂起的主机密钥确认、粘贴确认、搜索条与传输态。
         tabs::Event::RemoveHostKeyForTab(tab_id) => {
             app.hostkey.remove_for_tab(tab_id);
             app.paste.remove_for_tab(tab_id);
+            app.search.remove_for_tab(tab_id);
             close_tab_transfers(app, tab_id)
         }
         // 转发终端部件事件给父层（父层拥有的 widget 交互逻辑）。
@@ -202,6 +206,47 @@ pub(crate) fn apply_transfer_event(app: &mut App, e: transfer::Event) -> Task<Me
 pub(crate) fn apply_paste_event(app: &mut App, e: paste::Event) -> Task<Message> {
     match e {
         paste::Event::Paste { tab_id, text } => terminal_bridge::write_paste(app, tab_id, text),
+    }
+}
+
+/// 落地 `search::Event`：把搜索命令下发到绑定的目标终端（锁内执行，同步返回），
+/// 回带的命中统计转成 `SetOutcome` 自回路写回模块；焦点意图写回父状态。
+pub(crate) fn apply_search_event(app: &mut App, e: search::Event) -> Task<Message> {
+    match e {
+        search::Event::Run(cmd) => {
+            let action = if matches!(cmd, BackendCommand::SearchClose) {
+                // 清除广播到所有标签：关条事件异步送达时目标已被复位、活动标签已切走，
+                // 单发会打错对象；旧标签的残留高亮必须随关条一并消失。
+                for tab in app.tabs.list_mut() {
+                    if let Some(term) = tab.terminal.as_mut() {
+                        let _ =
+                            term.handle(TermCommand::ProxyToBackend(BackendCommand::SearchClose));
+                    }
+                }
+                None
+            } else {
+                let target = app.search.target().or(app.tabs.active());
+                target
+                    .and_then(|id| app.tabs.list_mut().iter_mut().find(|t| t.id == id))
+                    .and_then(|tab| tab.terminal.as_mut())
+                    .map(|term| term.handle(TermCommand::ProxyToBackend(cmd)))
+            };
+            match action {
+                Some(Action::SearchStats(outcome)) => {
+                    Task::done(Message::Search(search::Message::SetOutcome(outcome)))
+                }
+                _ => Task::none(),
+            }
+        }
+        // 关闭交还焦点时，若窗口本身失焦（存在保存态）则不写：置位会绕过
+        // 「窗口重新聚焦时按保存态还原」的机制，把用户离开前的其它控件焦点弄丢。
+        search::Event::SetTerminalFocused(b) => {
+            if !(b && app.window_focus_saved.is_some()) {
+                app.terminal_focused = b;
+            }
+            Task::none()
+        }
+        search::Event::FocusInput => iced::widget::operation::focus(app.search.input_id().clone()),
     }
 }
 

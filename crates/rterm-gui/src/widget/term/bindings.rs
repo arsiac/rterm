@@ -309,7 +309,8 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         "c",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x03');
         "d",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x04');
         "e",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x05');
-        "f",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x06');
+        // "f" + SHIFT|CTRL 不在此列：组合键被客户端收作搜索快捷键（见 `view::input::is_search_shortcut`），
+        // 拦截发生在绑定查表之前；裸 Ctrl+F 仍写 `\x06` 透传远端。
         "g",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x07');
         "h",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x08');
         "i",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x09');

@@ -5,15 +5,22 @@ use super::scrollbar::{
     scrollbar_geometry,
 };
 use super::{TerminalView, TerminalViewState};
+use crate::widget::term::backend::RenderableContent;
 use alacritty_terminal::index::{Column, Line, Point as TerminalGridPoint};
+use alacritty_terminal::term::search::Match;
 use alacritty_terminal::term::{TermMode, cell};
 use alacritty_terminal::vte::ansi::{self as ansi, CursorShape, NamedColor};
 use iced::alignment::Vertical;
 use iced::font::{Style as FontStyle, Weight as FontWeight};
-use iced::widget::canvas::{Path, Text};
+use iced::widget::canvas::{Frame, Path, Text};
 use iced::{Color, Point, Rectangle, Size};
 use iced_core::text::{Alignment, LineHeight, Shaping};
 use iced_graphics::geometry::Stroke;
+
+/// 普通搜索命中的底色：半透明淡金，叠加在网格之上，原文字透出保持可读。
+const SEARCH_MATCH_COLOR: Color = Color::from_rgba(1.0, 0.835, 0.31, 0.30);
+/// 当前搜索命中的底色：半透明强金，压过普通命中以标出跳转目标。
+const SEARCH_ACTIVE_COLOR: Color = Color::from_rgba(1.0, 0.655, 0.15, 0.55);
 
 /// 把后端快照绘成几何图元：背景、文本、光标、下划线、滚动条。
 pub(super) fn draw(
@@ -261,6 +268,24 @@ pub(super) fn draw(
                 );
             }
 
+            // 搜索命中叠加在文本与光标之上：半透明底色保证原文字仍可读；
+            // 当前命中最后画，强色压过普通命中。
+            if !content.search_matches.is_empty() || content.search_active.is_some() {
+                draw_search_highlights(
+                    frame,
+                    content,
+                    &SearchGeom {
+                        first_line,
+                        columns,
+                        origin: Point::new(
+                            layout_offset_x + view.padding,
+                            layout_offset_y + view.padding,
+                        ),
+                        cell: Size::new(cell_width, cell_height),
+                    },
+                );
+            }
+
             // 输入法预编辑串叠加在网格之上：先用终端底色盖住光标格（否则实心光标块会
             // 吃掉首字），再按终端字体左对齐、垂直居中绘制，字形间距由字体自行推进。
             if let Some(preedit) = state.preedit.as_ref() {
@@ -320,6 +345,62 @@ pub(super) fn draw(
 
     use iced::advanced::graphics::geometry::Renderer as _;
     renderer.draw_geometry(geom);
+}
+
+/// 把搜索命中（绝对网格坐标）折算为视口内的逐行矩形并填充。
+///
+/// 搜索命中折算到视口像素所需的几何上下文。
+struct SearchGeom {
+    /// 视口首行对应的网格行号（负数 = 历史）。
+    first_line: i32,
+    /// 网格列数。
+    columns: usize,
+    /// 内容区左上原点（含内边距，窗口坐标）。
+    origin: Point,
+    /// 单元格像素尺寸。
+    cell: Size<f32>,
+}
+
+/// 命中可能跨行（折行匹配）或部分落在视口外（快照按视口±余量收集），故逐行裁剪到
+/// `[first_line, first_line + rows - 1]` 再画；段宽按列数换算，宽字符占位格并入所在段。
+fn draw_search_highlights(
+    frame: &mut Frame<iced::Renderer>,
+    content: &RenderableContent,
+    geom: &SearchGeom,
+) {
+    let mut draw_match = |m: &Match, color: Color| {
+        let top = geom.first_line;
+        let bottom = geom.first_line + content.rows() as i32 - 1;
+        for line in m.start().line.0.max(top)..=m.end().line.0.min(bottom) {
+            let col_start = if line == m.start().line.0 {
+                m.start().column.0
+            } else {
+                0
+            };
+            let col_end_exclusive = if line == m.end().line.0 {
+                m.end().column.0 + 1
+            } else {
+                geom.columns
+            };
+            if col_end_exclusive <= col_start {
+                continue;
+            }
+            let x = geom.origin.x + col_start as f32 * geom.cell.width;
+            let y = geom.origin.y + (line - top) as f32 * geom.cell.height;
+            let width = (col_end_exclusive - col_start) as f32 * geom.cell.width;
+            frame.fill(
+                &Path::rectangle(Point::new(x, y), Size::new(width, geom.cell.height)),
+                color,
+            );
+        }
+    };
+
+    for m in &content.search_matches {
+        draw_match(m, SEARCH_MATCH_COLOR);
+    }
+    if let Some(active) = &content.search_active {
+        draw_match(active, SEARCH_ACTIVE_COLOR);
+    }
 }
 
 /// 用于批量合并并绘制连续同色背景矩形的辅助结构。

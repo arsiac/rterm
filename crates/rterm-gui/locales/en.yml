@@ -273,6 +273,18 @@ terminal:
   paste_warn_control: "Contains %{count} control characters; these may run commands or change terminal state."
   paste_confirm: Paste
   paste_suppress: Don't warn again in this session
+  menu_search: Find
+  search:
+    placeholder: Find
+    no_results: No results
+    matches: "%{count} matches"
+    more: 999+ matches
+    invalid_pattern: Invalid pattern
+    case_sensitive: Match case
+    regex: Regular expression
+    prev: Previous match
+    next: Next match
+    close: Close search
 activity:
   settings: Settings
   sessions: Sessions

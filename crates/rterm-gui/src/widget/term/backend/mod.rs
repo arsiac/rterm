@@ -4,11 +4,13 @@
 
 mod content;
 mod input;
+mod search;
 mod types;
 
 pub use self::content::RenderableContent;
-pub use self::types::{Command, LinkAction, MouseButton};
+pub use self::types::{Command, LinkAction, MouseButton, SearchFlags, SearchOutcome};
 
+use self::search::SearchState;
 use self::types::{TerminalSize, URL_REGEX, action_for_event};
 use crate::widget::term::actions::Action;
 use crate::widget::term::russh_pty::RusshPty;
@@ -44,6 +46,8 @@ pub struct Backend {
     pub(crate) url_regex: RegexSearch,
     /// 复制时是否去除每行尾部空格。
     trim_trailing_whitespace: bool,
+    /// 终端内搜索的锁内状态（`None` = 无活动查询）。
+    search: Option<SearchState>,
 }
 
 impl Backend {
@@ -111,7 +115,7 @@ impl Backend {
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
 
         let mut initial_content = RenderableContent::default();
-        Self::capture_viewport(&mut initial_content, &mut term, terminal_size);
+        Self::capture_viewport(&mut initial_content, &mut term, terminal_size, None);
 
         let term = Arc::new(FairMutex::new(term));
 
@@ -130,6 +134,7 @@ impl Backend {
             last_pty_size: None,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
             trim_trailing_whitespace,
+            search: None,
         })
     }
 
@@ -152,6 +157,8 @@ impl Backend {
         // 重置尺寸记忆：新通道在建桥时按自己的 cols/rows 开局，若旧值恰与新尺寸相同，
         // 不重置则后续 Resize 会被去重吞掉，新 shell 将按错尺寸一直活着。
         self.last_pty_size = None;
+        // 重连注入清屏，旧命中坐标随历史一并作废，搜索态无从续用，直接关闭。
+        self.search = None;
         Ok(())
     }
     /// 处理一条宿主下发的 `Command`，返回需要宿主执行的 `Action`。
@@ -205,6 +212,21 @@ impl Backend {
             }
             Command::MouseReport(button, modifiers, point, pressed) => {
                 self.process_mouse_report(button, modifiers, point, pressed);
+                Action::default()
+            }
+            Command::SearchSetQuery(query, flags) => {
+                let term = self.term.clone();
+                let mut term = term.lock();
+                self.search_set_query(&mut term, &query, flags)
+            }
+            Command::SearchStep(direction) => {
+                let term = self.term.clone();
+                let mut term = term.lock();
+                self.search_step(&mut term, direction);
+                Action::default()
+            }
+            Command::SearchClose => {
+                self.search_close();
                 Action::default()
             }
         }

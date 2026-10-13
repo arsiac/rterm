@@ -4,7 +4,7 @@ use crate::widget::term::actions::Action;
 use alacritty_terminal::event::Event;
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use iced::keyboard::Modifiers;
@@ -34,6 +34,48 @@ pub enum Command {
     MouseReport(MouseButton, Modifiers, Point, bool),
     /// 处理底层 alacritty 事件（标题变更、退出、PTY 写入等）。
     ProcessAlacrittyEvent(Event),
+    /// 更新搜索查询：重编译正则、重数命中、必要时跳到首个命中并滚动到位；
+    /// 空查询清除搜索态。执行结果经 [`Action::SearchStats`] 回带。
+    SearchSetQuery(String, SearchFlags),
+    /// 取下一个（`Right`）/ 上一个（`Left`）命中并滚动到位，到边界回绕。
+    SearchStep(Direction),
+    /// 关闭搜索：清空搜索态，下一次同步的快照高亮随之为空。
+    SearchClose,
+}
+
+/// 搜索开关：查询串 → 匹配模式的组装参数（随每次 [`Command::SearchSetQuery`] 下发）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchFlags {
+    /// `true` = 区分大小写；`false` 时按忽略大小写匹配。
+    pub case_sensitive: bool,
+    /// `true` = 查询串按正则解释；`false` = 字面子串（元字符转义）。
+    pub regex: bool,
+}
+
+impl Default for SearchFlags {
+    /// 默认档：字面子串 + 忽略大小写。
+    fn default() -> Self {
+        Self {
+            case_sensitive: false,
+            regex: false,
+        }
+    }
+}
+
+/// 一次搜索查询的执行结果（供搜索条文案显示）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOutcome {
+    /// 正则编译失败（仅正则模式可达）：保留旧搜索态，仅提示。
+    Invalid,
+    /// 无命中。
+    NoMatches,
+    /// 命中 `count` 处；`capped` 表示真实命中数达到封顶（显示「999+」）。
+    Matches {
+        /// 命中数（达到封顶时为上界值）。
+        count: usize,
+        /// 是否触顶。
+        capped: bool,
+    },
 }
 /// 鼠标协议模式，由 alacritty `TermMode` 推导而来。
 #[derive(Debug, Clone)]

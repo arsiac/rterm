@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
-use crate::app::{events, hostkey, masterpw, paste, session, settings, sftp, tabs, window};
+use crate::app::{events, hostkey, masterpw, paste, search, session, settings, sftp, tabs, window};
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
 use crate::t;
@@ -22,8 +22,24 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::SessionEvent(e) => events::apply_session_event(app, e),
         // 终端标签模块：路由进模块自身 `update`，上行事件经 `Message::TabsEvent` 回收。
         Message::Tabs(m) => {
+            // 切换标签先关闭搜索条：搜索态绑定单个终端，不跨标签延续（残留高亮会指向另一个终端）。
+            // TabPressed 一并处理：标签按下即切换活动标签。
+            let close = if app.search.is_open()
+                && matches!(
+                    m,
+                    tabs::Message::SelectTab(..)
+                        | tabs::Message::SwitchTab(..)
+                        | tabs::Message::TabPressed(..)
+                ) {
+                app.search
+                    .update(search::Message::Close)
+                    .map(Message::SearchEvent)
+            } else {
+                Task::none()
+            };
             let ctx = contexts::tabs_ctx(app);
-            app.tabs.update(m, &ctx, &app.sftp).map(Message::TabsEvent)
+            let tabs = app.tabs.update(m, &ctx, &app.sftp).map(Message::TabsEvent);
+            Task::batch([close, tabs])
         }
         Message::TabsEvent(e) => events::apply_tabs_event(app, e),
         Message::ToastDismissed(id) => {
@@ -109,6 +125,9 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.paste.update(m, &ctx).map(Message::PasteEvent)
         }
         Message::PasteEvent(e) => events::apply_paste_event(app, e),
+        // 终端内搜索模块：路由进模块自身 `update`，上行事件经 `Message::SearchEvent` 落地。
+        Message::Search(m) => app.search.update(m).map(Message::SearchEvent),
+        Message::SearchEvent(e) => events::apply_search_event(app, e),
         // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
         Message::Settings(m) => {
             let ctx = contexts::settings_ctx(app);
@@ -151,6 +170,11 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.settings
             .update(settings::Message::Toggle, &ctx)
             .map(Message::SettingsEvent)
+    } else if app.search.is_open() {
+        // 搜索条是内联输入态：弹窗（含设置）全部让位后优先于会话编辑器 / SFTP 对话框关闭。
+        app.search
+            .update(search::Message::Close)
+            .map(Message::SearchEvent)
     } else if app.session.editor.is_some() {
         let ctx = contexts::session_ctx(app);
         app.session

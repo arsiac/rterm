@@ -1,6 +1,6 @@
 //! 终端可见区快照 [`RenderableContent`] 及其捕获、同步与超链接匹配。
 
-use super::{Backend, EventProxy};
+use super::{Backend, EventProxy, SearchState};
 use crate::widget::term::backend::types::TerminalSize;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
@@ -15,10 +15,12 @@ impl Backend {
     /// 捕获终端可见区到 `content`：只遍历视口行，并复用 `content.cells` 已有分配。
     ///
     /// 视口大小为「可见行数 × 列数」，与 scrollback 长度无关，故每条事件后调用也不随历史增长。
+    /// `search` 为活动搜索态（锁内重算视口命中用），无活动时清空快照里的两个高亮字段。
     pub(super) fn capture_viewport(
         content: &mut RenderableContent,
         terminal: &mut Term<EventProxy>,
         size: TerminalSize,
+        search: Option<&mut SearchState>,
     ) {
         let cursor = terminal.grid_mut().cursor_cell().clone();
         let selectable_range = match &terminal.selection {
@@ -42,6 +44,20 @@ impl Backend {
         content.selectable_range = selectable_range;
         content.terminal_mode = terminal_mode;
         content.terminal_size = size;
+
+        match search {
+            None => {
+                content.search_matches.clear();
+                content.search_active = None;
+            }
+            Some(search) => {
+                // 视口命中逐帧重算：新输出顶行后旧坐标不再指向同一文本，缓存列表会画出
+                // 过期高亮；重算范围与 URL 提示同为一个视口加余量，成本与 scrollback 无关。
+                content.search_matches =
+                    visible_regex_match_iter(terminal, &mut search.regex).collect();
+                content.search_active = search.active.clone();
+            }
+        }
     }
 
     /// 将 alacritty 终端最新状态同步到可渲染内容快照。
@@ -52,7 +68,12 @@ impl Backend {
     }
     /// 内部同步：刷新视口单元格、选区、光标与终端模式快照。
     pub(super) fn internal_sync(&mut self, terminal: &mut Term<EventProxy>) {
-        Self::capture_viewport(&mut self.last_content, terminal, self.size);
+        Self::capture_viewport(
+            &mut self.last_content,
+            terminal,
+            self.size,
+            self.search.as_mut(),
+        );
     }
     /// 取自 alacritty/src/display/hint.rs 的 regex_match_at 实现
     /// 若指定坐标落在正则匹配的文本范围内，则取回该匹配。
@@ -99,6 +120,10 @@ pub struct RenderableContent {
     pub hovered_hyperlink: Option<RangeInclusive<Point>>,
     /// 当前选区对应的可复制范围（无选区则为 `None`）。
     pub selectable_range: Option<SelectionRange>,
+    /// 当前视口内的全部搜索命中（绝对网格坐标，按行有序；无活动搜索时为空）。
+    pub search_matches: Vec<Match>,
+    /// 当前搜索命中的跳转目标（强色高亮；无活动搜索时为 `None`）。
+    pub search_active: Option<Match>,
     /// 当前光标所在单元格。
     pub cursor: Cell,
     /// 当前光标形状（由 DECSCUSR 序列设定）。
@@ -131,6 +156,8 @@ impl Default for RenderableContent {
             cursor_shape: CursorShape::default(),
             terminal_mode: TermMode::empty(),
             terminal_size: TerminalSize::default(),
+            search_matches: Vec::new(),
+            search_active: None,
         }
     }
 }

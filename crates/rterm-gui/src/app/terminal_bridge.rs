@@ -3,6 +3,7 @@
 use crate::app::App;
 use crate::app::contexts;
 use crate::app::paste;
+use crate::app::search;
 use crate::app::tabs;
 use crate::app::tasks::{BridgeOptions, open_terminal_task};
 use crate::font;
@@ -282,6 +283,9 @@ fn reattach_terminal_widget(
     tab.resize_tx = Some(resize_tx);
     apply_bridge_mounted_state(tab, &bridge);
     tab.banner_flash = None;
+    // 重连注入清屏、历史作废：若本标签正开着搜索条，随之收起（后端搜索态已由
+    // `Backend::reattach` 清空，这里只处理 UI 侧）。
+    app.search.remove_for_tab(tab_id);
     // 旧 SFTP 客户端绑在已死的连接上（任何调用秒失败），直接作废：视图回到未打开态，
     // 由用户重新打开（不自动重建通道 / 续跑队列）。
     app.sftp.invalidate(tab_id);
@@ -310,6 +314,10 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             app.paste
                 .update(paste::Message::Request { tab_id, text }, &ctx)
                 .map(Message::PasteEvent)
+        }
+        // Ctrl+Shift+F（终端聚焦时部件已拦下、未写 PTY）：打开该标签的搜索条。
+        TermEvent::SearchRequested(id) => {
+            Task::done(Message::Search(search::Message::Open { tab_id: id }))
         }
         TermEvent::BackendCall(id, backend_cmd) => {
             // 点击 / 选择 / 滚轮 / 键入等「用户与终端的交互」都以非 Resize 的 BackendCall 形式到达；

@@ -7,6 +7,7 @@
 use crate::t;
 
 use crate::App;
+use crate::app::search;
 use crate::app::tabs;
 use crate::icons::Icon;
 use crate::message::Message;
@@ -278,7 +279,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 let terminal_elem = if term.mouse_reporting() {
                     terminal_elem
                 } else {
-                    terminal_context_menu(terminal_elem, term.has_selection())
+                    terminal_context_menu(terminal_elem, term.has_selection(), tab.id)
                 };
                 container(terminal_elem)
                     .style(|_theme| container::Style {
@@ -365,6 +366,19 @@ pub fn view(app: &App) -> Element<'_, Message> {
             bottom: 0.0,
         }));
     }
+    // 搜索条：打开时插在标签栏（及断开横幅）与终端区之间，输入框吃掉剩余宽度。
+    if app.search.is_open() {
+        content = content.push(
+            container(search::view(&app.search).map(Message::Search))
+                .width(Length::Fill)
+                .padding(Padding {
+                    left: 4.0,
+                    right: 6.0,
+                    top: 0.0,
+                    bottom: 0.0,
+                }),
+        );
+    }
     content
         // 终端区域：仅左右下侧留白
         .push(container(body).height(Length::Fill).padding(Padding {
@@ -376,10 +390,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// 终端右键菜单：包住终端画布，提供「复制 / 粘贴」。`copy_enabled` 为否时复制项以禁用态呈现。
+/// 终端右键菜单：包住终端画布，提供「查找 / 复制 / 粘贴」。`copy_enabled` 为否时复制项以禁用态呈现。
+/// 「查找」恒可用（不依赖选区），打开携带本标签 id 的搜索条。
 fn terminal_context_menu(
     terminal: Element<'_, Message>,
     copy_enabled: bool,
+    tab_id: u64,
 ) -> Element<'_, Message> {
     let overlay = move || {
         let copy: Element<'_, Message> = if copy_enabled {
@@ -389,6 +405,10 @@ fn terminal_context_menu(
         };
         crate::ui::menu_container(
             column![
+                crate::ui::menu_entry(
+                    t!("terminal.menu_search"),
+                    Message::Search(search::Message::Open { tab_id })
+                ),
                 copy,
                 crate::ui::menu_entry(t!("terminal.menu_paste"), Message::TerminalPaste),
             ]

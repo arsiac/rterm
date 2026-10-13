@@ -273,6 +273,18 @@ terminal:
   paste_warn_control: "含 %{count} 个控制字符，可能触发命令或改变终端状态。"
   paste_confirm: 粘贴
   paste_suppress: 本次会话不再提醒
+  menu_search: 查找
+  search:
+    placeholder: 查找
+    no_results: 无命中
+    matches: "%{count} 处命中"
+    more: 999+ 处命中
+    invalid_pattern: 无效正则
+    case_sensitive: 区分大小写
+    regex: 正则表达式
+    prev: 上一个命中
+    next: 下一个命中
+    close: 关闭搜索
 activity:
   settings: 设置
   sessions: 会话

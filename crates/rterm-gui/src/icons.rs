@@ -93,6 +93,16 @@ pub enum Icon {
     Key,
     /// 垃圾桶（删除）
     Delete,
+    /// 放大镜（搜索）
+    Search,
+    /// 大小写切换（Aa）
+    TextChangeCase,
+    /// 正则模式（.∗）
+    TextPeriodAsterisk,
+    /// 向上箭头
+    ArrowUp,
+    /// 向下箭头
+    ArrowDown,
 }
 
 impl Icon {
@@ -128,6 +138,11 @@ impl Icon {
             Icon::FolderOpen => svg_bytes!("folder-open-16-filled"),
             Icon::Key => svg_bytes!("key-16-filled"),
             Icon::Delete => svg_bytes!("delete-16-filled"),
+            Icon::Search => svg_bytes!("search-16-filled"),
+            Icon::TextChangeCase => svg_bytes!("text-change-case-16-filled"),
+            Icon::TextPeriodAsterisk => svg_bytes!("text-period-asterisk-20-filled"),
+            Icon::ArrowUp => svg_bytes!("arrow-up-16-filled"),
+            Icon::ArrowDown => svg_bytes!("arrow-down-16-filled"),
         }
     }
 
