@@ -85,6 +85,31 @@ settings:
   found_update: 发现新版本
   check_failed: 检查失败
   update_banner: 发现新版本 v%{version}
+shortcuts:
+  title: 快捷键
+  filter_placeholder: 筛选快捷键…
+  group_general: 通用
+  group_session: 会话
+  group_terminal: 终端
+  group_files: 文件传输
+  group_readonly: 固定（不可修改）
+  readonly_hint: 终端复制 / 粘贴沿用平台默认，不可修改。
+  no_match: 无匹配的快捷键
+  unbound: 未绑定
+  record_prompt: 请按下按键…
+  notice_needs_modifier: 无修饰键的裸键会吞掉终端输入，请搭配修饰键或改用功能键。
+  notice_conflict: 该组合键已被「%{name}」占用。
+  reassign: 重新分配
+  reset: 恢复默认
+  reset_all: 全部恢复默认
+  copy: 复制
+  paste: 粘贴
+  cmd_open_settings: 打开设置
+  cmd_open_shortcuts: 打开快捷键
+  cmd_toggle_sidebar: 收起 / 展开侧边栏
+  cmd_new_session: 新建会话
+  cmd_open_search: 终端内搜索
+  cmd_sftp_rename: 重命名文件
 session:
   new: 新建会话
   refresh: 刷新
@@ -287,6 +312,7 @@ terminal:
     close: 关闭搜索
 activity:
   settings: 设置
+  shortcuts: 快捷键
   sessions: 会话
   files: 文件
   transfers: 传输

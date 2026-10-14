@@ -12,6 +12,7 @@ use crate::icons::Icon;
 use crate::message::Message;
 use crate::state::CenterView;
 use crate::theme;
+use crate::ui::menu_entry;
 use iced::mouse::Interaction;
 use iced::widget::space::vertical;
 use iced::widget::tooltip;
@@ -28,8 +29,8 @@ const DISABLED_ICON_COLOR: Color = Color::from_rgb(0.45, 0.47, 0.50);
 
 /// 渲染最左侧活动栏视图。
 ///
-/// 含会话管理、文件管理、传输队列三个切换按钮及固定在底部的设置按钮；
-/// 未连接任何终端会话时“文件管理”按钮禁用。
+/// 含会话管理、文件管理、传输队列三个切换按钮，以及固定在底部的设置入口
+/// （展开「设置 / 快捷键」菜单）；未连接任何终端会话时“文件管理”按钮禁用。
 pub fn view(app: &App) -> Element<'_, Message> {
     // 是否存在已连接的标签：决定“文件管理”按钮是否可用（SFTP 建立在终端标签自己的连接上）。
     let any_connected = app
@@ -59,8 +60,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         t!("activity.transfers"),
         Message::SwitchCenter(CenterView::Transfers),
     );
-    // 设置按钮固定在活动栏最底部：用可拉伸空白把上方按钮与设置按钮分隔开。
-    let settings_btn = settings_button(app.settings.show_settings);
+    // 设置入口固定在活动栏最底部：用可拉伸空白把上方按钮与设置入口分隔开。
+    // 高亮取「设置 / 快捷键弹窗打开」或「菜单展开」，与 `session_panel` 的下拉触发按钮一致。
+    let settings_btn = settings_menu(
+        app.settings.show_settings || app.shortcuts.show_shortcuts || app.settings_menu_open,
+        app.settings_menu_open,
+    );
 
     // 收起 / 展开中间面板的开关按钮：固定在活动栏最上方，按当前收起态切换图标与提示。
     let collapse_btn = collapse_toggle_button(app.panes.center_collapsed);
@@ -105,15 +110,34 @@ fn collapse_toggle_button(collapsed: bool) -> Element<'static, Message> {
         .into()
 }
 
-/// 使用 `settings-16-filled` 图标，点击切换设置弹窗。
+/// 活动栏底部的设置入口：齿轮按钮展开含「设置」「快捷键」两项的下拉菜单。
 ///
-/// `active` 表示设置弹窗当前是否打开，用于高亮当前选中态。
-fn settings_button(active: bool) -> Element<'static, Message> {
-    let btn = button(Icon::Settings.svg(ACTIVITY_ICON_SIZE))
-        .on_press(Message::Settings(crate::app::settings::Message::Toggle))
+/// `active` 为设置 / 快捷键弹窗打开或菜单展开时为真，用于高亮当前选中态；`menu_open` 为
+/// 菜单自身展开态。按钮位于活动栏底部，菜单向右上方展开，避免超出窗口下沿被裁切。
+fn settings_menu(active: bool, menu_open: bool) -> Element<'static, Message> {
+    let trigger = button(Icon::Settings.svg(ACTIVITY_ICON_SIZE))
+        .on_press(Message::ToggleSettingsMenu)
         .width(Length::Fill)
         .style(move |theme, status| theme::icon_button_style(theme, status, active));
-    tooltip(btn, text(t!("activity.settings")), Position::Right)
+    let menu = crate::ui::menu_container(
+        column![
+            menu_entry(
+                t!("settings.title"),
+                Message::Settings(crate::app::settings::Message::Toggle)
+            ),
+            menu_entry(
+                t!("activity.shortcuts"),
+                Message::Shortcuts(crate::app::shortcuts::Message::Toggle)
+            ),
+        ]
+        .spacing(2)
+        .into(),
+    );
+    let dropdown = iced_aw::widget::drop_down::DropDown::new(trigger, menu, menu_open)
+        .width(Length::Fixed(crate::ui::MENU_WIDTH))
+        .alignment(iced_aw::core::alignment::Alignment::TopEnd)
+        .on_dismiss(Message::ToggleSettingsMenu);
+    tooltip(dropdown, text(t!("activity.settings")), Position::Right)
         .delay(iced::time::Duration::from_millis(theme::TOOLTIP_DELAY_MS))
         .style(theme::tooltip_style)
         .into()

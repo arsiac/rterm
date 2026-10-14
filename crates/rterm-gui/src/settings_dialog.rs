@@ -50,11 +50,9 @@ const LANGUAGE_OPTIONS: [LanguageOption; 3] = [
     LanguageOption(Language::En),
 ];
 
-/// 设置弹窗面板目标宽度（像素）。
-const SETTINGS_W: f32 = 860.0;
-/// 设置弹窗面板目标高度（像素）。
-const SETTINGS_H: f32 = 560.0;
-/// 面板与窗口边缘的留白（像素）：窗口小于面板目标尺寸时生效。
+/// 设置弹窗面板占窗口宽 / 高的比例。
+const SETTINGS_SIZE_RATIO: f32 = 0.8;
+/// 面板与窗口边缘的留白（像素）：用于封顶面板尺寸，避免贴边。
 const DIALOG_MARGIN: f32 = 16.0;
 /// 左侧分类导航栏宽度（像素）。
 const NAV_W: f32 = 160.0;
@@ -66,15 +64,17 @@ fn thin_scrollbar() -> scrollable::Direction {
 
 /// 根据当前是否显示设置弹窗返回遮罩层元素；未显示时返回 `None`。
 ///
-/// 面板取目标尺寸与「窗口尺寸 - 留白」的较小者：窗口足够大时固定为目标尺寸，
-/// 被缩到更小时随之收缩，避免面板溢出窗口被裁掉。
+/// 面板宽 / 高按窗口占比取值，并以「窗口尺寸 - 留白」封顶，避免贴边或溢出窗口。
 pub fn view(app: &App) -> Option<Element<'_, Message>> {
     if !app.settings.show_settings {
         return None;
     }
     let panel = iced::widget::responsive(move |size| {
-        let width = (size.width - DIALOG_MARGIN * 2.0).clamp(0.0, SETTINGS_W);
-        let height = (size.height - DIALOG_MARGIN * 2.0).clamp(0.0, SETTINGS_H);
+        // 宽 / 高均按窗口占比取，并以「窗口 - 两侧留白」封顶，避免贴边。
+        let max_w = (size.width - DIALOG_MARGIN * 2.0).max(0.0);
+        let max_h = (size.height - DIALOG_MARGIN * 2.0).max(0.0);
+        let width = (size.width * SETTINGS_SIZE_RATIO).clamp(0.0, max_w);
+        let height = (size.height * SETTINGS_SIZE_RATIO).clamp(0.0, max_h);
         container(
             container(body(app))
                 .width(width)

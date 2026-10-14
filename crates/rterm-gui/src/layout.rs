@@ -101,6 +101,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::settings_dialog::view(app) {
         layers.push(dialog);
     }
+    // 快捷键弹窗与设置弹窗同为活动栏菜单入口，层级相同（二者互斥，不会同时在屏）。
+    if let Some(dialog) = crate::shortcuts_dialog::view(app) {
+        layers.push(dialog);
+    }
     // 会话编辑器弹窗叠加在最上层（列表在遮罩下仍可见）。
     if let Some(dialog) = crate::session_panel::editor_overlay(app) {
         layers.push(dialog.map(Message::Session));

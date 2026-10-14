@@ -3,11 +3,15 @@
 use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
-use crate::app::{events, hostkey, masterpw, paste, search, session, settings, sftp, tabs, window};
+use crate::app::{
+    events, hostkey, masterpw, panes, paste, search, session, settings, sftp, shortcuts, tabs,
+    window,
+};
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
 use crate::t;
 use iced::Task;
+use rterm_config::keybindings::{Chord, ChordKey};
 use rterm_core::ConnectionStatus;
 
 /// iced `update`：根据消息更新状态，并可返回后续任务。
@@ -112,7 +116,7 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.transfer.update(m, &ctx).map(Message::TransferEvent)
         }
         Message::TransferEvent(e) => events::apply_transfer_event(app, e),
-        Message::Escape => handle_escape(app),
+        Message::AppKey { chord, status } => handle_app_key(app, &chord, status),
         // 右键按下：两个列表各自按自己的悬浮态决定选中谁，详见 `handle_right_press`。
         Message::RightPress => handle_right_press(app),
         // 终端右键菜单：复制同步取选区写剪贴板；粘贴需异步读剪贴板，结果另行回流。
@@ -130,10 +134,26 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::SearchEvent(e) => events::apply_search_event(app, e),
         // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
         Message::Settings(m) => {
+            // 到达即收起活动栏菜单（点菜单项 / 按 OpenSettings 快捷键都会走到这里）。
+            if matches!(&m, settings::Message::Toggle) {
+                app.settings_menu_open = false;
+            }
             let ctx = contexts::settings_ctx(app);
             app.settings.update(m, &ctx).map(Message::SettingsEvent)
         }
         Message::SettingsEvent(e) => events::apply_settings_event(app, e),
+        // 活动栏设置菜单：翻转下拉菜单展开态（点外 / Esc 经 DropDown 的 on_dismiss 亦走此处）。
+        Message::ToggleSettingsMenu => {
+            app.settings_menu_open = !app.settings_menu_open;
+            Task::none()
+        }
+        // 快捷键弹窗模块：路由进模块自身 `update`，上行事件经 `Message::ShortcutsEvent` 回收。
+        Message::Shortcuts(m) => {
+            // 到达即收起活动栏菜单（点菜单项 / 关闭按钮 / 按快捷键都会走到这里）。
+            app.settings_menu_open = false;
+            app.shortcuts.update(m).map(Message::ShortcutsEvent)
+        }
+        Message::ShortcutsEvent(_e) => Task::none(),
         Message::Updates(m) => {
             let ctx = contexts::updates_ctx(app);
             app.updates.update(m, &ctx).map(Message::UpdatesEvent)
@@ -144,6 +164,80 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.masterpw.update(m, &ctx).map(Message::MasterPwEvent)
         }
         Message::MasterPwEvent(e) => events::apply_masterpw_event(app, e),
+    }
+}
+
+/// 处理候选按键：录制态 → Esc → 搜索条开条态 → 捕获态 → 键位表，依次分发。
+///
+/// 录制与 Esc 必须先于「已捕获即丢弃」（遮罩会拦键，否则收不到）；搜索条开条时只放行 Enter / ↑ / ↓。
+pub(crate) fn handle_app_key(
+    app: &mut App,
+    chord: &Chord,
+    status: iced::event::Status,
+) -> Task<Message> {
+    if app.shortcuts.is_recording() {
+        return app
+            .shortcuts
+            .update(shortcuts::Message::RecordChord(*chord))
+            .map(Message::ShortcutsEvent);
+    }
+    if is_plain_escape(chord) {
+        return handle_escape(app);
+    }
+    if app.search.is_open() {
+        return search_nav(app, chord);
+    }
+    if status == iced::event::Status::Captured {
+        return Task::none();
+    }
+    match app.shortcuts.command_for(chord) {
+        Some(command) => dispatch_command(app, command),
+        None => Task::none(),
+    }
+}
+
+/// 搜索条开条态的上下文键（不做成可绑定项）：Enter / Shift+Enter / ↑ / ↓ 就地跳转，其余不派发。
+fn search_nav(app: &mut App, chord: &Chord) -> Task<Message> {
+    if chord.ctrl || chord.alt || chord.logo {
+        return Task::none();
+    }
+    let message = match chord.key {
+        ChordKey::Enter if chord.shift => search::Message::Previous,
+        ChordKey::Enter | ChordKey::ArrowDown => search::Message::Next,
+        ChordKey::ArrowUp => search::Message::Previous,
+        _ => return Task::none(),
+    };
+    app.search.update(message).map(Message::SearchEvent)
+}
+
+/// 是否为不带任何修饰键的 Esc（上下文键判据）。
+fn is_plain_escape(chord: &Chord) -> bool {
+    !chord.ctrl && !chord.shift && !chord.alt && !chord.logo && chord.key == ChordKey::Escape
+}
+
+/// 把键位表命中的命令派发为对应模块的既有消息（与菜单 / 按钮入口行为一致）。
+fn dispatch_command(app: &mut App, command: shortcuts::Command) -> Task<Message> {
+    match command {
+        shortcuts::Command::OpenSettings => {
+            Task::done(Message::Settings(settings::Message::Toggle))
+        }
+        shortcuts::Command::OpenShortcuts => {
+            Task::done(Message::Shortcuts(shortcuts::Message::Toggle))
+        }
+        shortcuts::Command::ToggleSidebar => {
+            Task::done(Message::Panes(panes::Message::ToggleCenter))
+        }
+        shortcuts::Command::NewSession => {
+            Task::done(Message::Session(session::Message::NewSession))
+        }
+        // 搜索条绑定单个终端，故取当前活动标签；无活动标签时为空操作。
+        shortcuts::Command::OpenSearch => match app.tabs.active() {
+            Some(tab_id) => Task::done(Message::Search(search::Message::Open { tab_id })),
+            None => Task::none(),
+        },
+        shortcuts::Command::SftpRename => {
+            Task::done(Message::Sftp(sftp::Message::SftpRenameShortcut))
+        }
     }
 }
 
@@ -170,6 +264,11 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.settings
             .update(settings::Message::Toggle, &ctx)
             .map(Message::SettingsEvent)
+    } else if app.shortcuts.show_shortcuts {
+        // 快捷键弹窗与设置弹窗同层（互斥），Esc 等价于点关闭。
+        app.shortcuts
+            .update(shortcuts::Message::Toggle)
+            .map(Message::ShortcutsEvent)
     } else if app.search.is_open() {
         // 搜索条是内联输入态：弹窗（含设置）全部让位后优先于会话编辑器 / SFTP 对话框关闭。
         app.search

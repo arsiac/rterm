@@ -629,18 +629,6 @@ pub(super) fn selection_autoscroll_delta(
     ))
 }
 
-/// 搜索快捷键（Ctrl+Shift+F）的命中判定（纯函数）。
-///
-/// 要求按下 Ctrl + Shift 且未叠加 Alt / Logo（`command()` 在非 macOS 上就是 Ctrl，
-/// 不能用作排除条件）；字符键按 ASCII 大小写不敏感比较——Shift 使 `key` 呈大写 `F`。
-pub(super) fn is_search_shortcut(key: &Key, modifiers: Modifiers) -> bool {
-    modifiers.control()
-        && modifiers.shift()
-        && !modifiers.alt()
-        && !modifiers.logo()
-        && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("f"))
-}
-
 /// 把 `Ctrl+字母/数字/符号` 转成对应的 ASCII 控制字符（如 `Ctrl+C` => `\x03`）。
 ///
 /// 仅在系统未给出 `text` 时作为回退；普通字符键优先走 `text` 路径，不经过此处。
@@ -854,10 +842,11 @@ pub(super) fn update(
                     return;
                 }
 
-                // Ctrl+Shift+F：打开终端内搜索条，早于按键绑定查表拦截，远端收不到任何字节。
-                // 裸 Ctrl+F 不在此列，仍按绑定写 `\x06`（nano / vim 的前向搜索不受影响）。
+                // 键位表命中终端保留命令（如 Ctrl+Shift+F 开搜索条）时由客户端拦下，远端收不到任何字节。
+                // 与绑定同源，用户改键后此处随之变化；未命中的和弦照旧按绑定写 PTY。
                 if let iced::keyboard::Event::KeyPressed { key, modifiers, .. } = keyboard_event
-                    && is_search_shortcut(key, *modifiers)
+                    && let Some(chord) = crate::keymap::chord_from_key(key, *modifiers)
+                    && crate::keymap::is_terminal_reserved(&chord, view.shortcuts)
                 {
                     shell.publish(Event::SearchRequested(view.term.id));
                     shell.capture_event();

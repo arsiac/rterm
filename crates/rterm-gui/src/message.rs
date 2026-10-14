@@ -12,11 +12,14 @@ use crate::app::search;
 use crate::app::session;
 use crate::app::settings;
 use crate::app::sftp;
+use crate::app::shortcuts;
 use crate::app::tabs;
 use crate::app::transfer;
 use crate::app::updates;
 use crate::app::window;
 use crate::state::CenterView;
+use iced::event::Status;
+use rterm_config::keybindings::Chord;
 use tokio::sync::mpsc;
 
 use crate::widget::toast::ToastId;
@@ -102,12 +105,23 @@ pub enum Message {
     /// 无操作占位消息（用于禁用态按钮点击）。
     Noop,
 
+    // ===== 活动栏设置菜单 =====
+    /// 展开 / 收起活动栏底部设置入口的下拉菜单（菜单项：设置 / 快捷键）；
+    /// 点外与 Esc 亦经其 `on_dismiss` 收起。
+    ToggleSettingsMenu,
+
     // ===== 设置弹窗模块（路由）=====
     /// 设置弹窗模块内部消息：各设置项的 UI 意图（含「切换弹窗」「切换分类」「打开日志目录」），
     /// 由父层经此变体路由进 `app::settings` 模块。
     Settings(settings::Message),
     /// 设置弹窗模块上行事件，由父层收到后写回 `AppConfig` 并落盘（模块绝不写父状态）。
     SettingsEvent(settings::Event),
+
+    // ===== 快捷键弹窗模块（路由）=====
+    /// 快捷键弹窗模块内部消息：弹窗开关等 UI 意图，由父层经此变体路由进 `app::shortcuts`。
+    Shortcuts(shortcuts::Message),
+    /// 快捷键弹窗模块上行事件，由父层收到后落地（模块绝不写父状态）。
+    ShortcutsEvent(shortcuts::Event),
 
     // ===== 粘贴确认模块（路由）=====
     /// 粘贴确认模块内部消息：粘贴请求与弹窗决策（确认 / 取消 / 本次不再提醒），
@@ -129,8 +143,14 @@ pub enum Message {
     Updates(updates::Message),
     /// 更新检查模块上行事件（写回「上次检查时间戳」），由父层收到后写回 `AppConfig` 并落盘。
     UpdatesEvent(updates::Event),
-    /// 键盘 Esc 按下：优先回答主机密钥弹窗，其次取消设置弹窗 / 会话编辑器 / SFTP 对话框。
-    Escape,
+    /// 候选按键按下：由全局按键监听归一为和弦送来（常规态为「带修饰键或具名键」，
+    /// 录制态含裸字符键），在 `update` 里查键位表分发（Esc 属上下文键，另作处理）。
+    AppKey {
+        /// 归一化后的和弦（逻辑修饰键 + 按键）。
+        chord: Chord,
+        /// 该事件是否已被部件捕获（模态遮罩 / 终端拦下的保留键），用于避免重复派发。
+        status: Status,
+    },
     /// 鼠标右键按下：把光标所在的会话 / 文件条目标记为选中，使右键菜单作用于哪一条可见。
     ///
     /// 由全局监听下发（`App::subscription`）而非行内 `on_right_press`——`iced_aw::ContextMenu`

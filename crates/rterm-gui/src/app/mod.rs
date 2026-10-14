@@ -13,6 +13,7 @@ pub(crate) mod search;
 pub(crate) mod session;
 pub(crate) mod settings;
 pub(crate) mod sftp;
+pub(crate) mod shortcuts;
 pub(crate) mod tabs;
 pub(crate) mod tasks;
 pub(crate) mod terminal_bridge;
@@ -83,6 +84,11 @@ pub struct App {
     /// 模块经 `Message::Settings` 接收意图、经 `Message::SettingsEvent` 回写 `config`，
     /// 自身绝不修改 `App`。
     pub settings: settings::State,
+    /// 活动栏底部设置入口的下拉菜单是否展开（菜单项：设置 / 快捷键）；属导航态，由父层持有。
+    pub settings_menu_open: bool,
+    /// 快捷键管理模块状态：弹窗显示开关。模块经 `Message::Shortcuts` 接收意图，
+    /// 经 `Message::ShortcutsEvent` 回写父状态，自身绝不修改 `App`。
+    pub shortcuts: shortcuts::State,
     /// 粘贴确认模块状态：待确认的大量粘贴与标签级豁免记录。三条粘贴入口在此收口，
     /// 达阈值者弹窗询问。模块经 `Message::Paste` 接收意图、经 `Message::PasteEvent` 回写父状态。
     pub paste: paste::State,
@@ -174,36 +180,14 @@ impl App {
             _ => None,
         });
 
-        // 监听键盘：Esc 取消对话框 / 内联输入态；F2 对选中的 SFTP 条目触发重命名；
-        // Enter / Shift+Enter / ↑ / ↓ 驱动终端搜索的上下跳转（模块按开条态门控，
-        // 未开条时这些消息是无成本空操作）。
-        // `listen_with` 只接受非捕获闭包，故 F2 只发无状态消息，选中项判定放在 `update`。
-        let keys = iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                match key {
-                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
-                        Some(Message::Escape)
-                    }
-                    iced::keyboard::Key::Named(iced::keyboard::key::Named::F2) => {
-                        Some(Message::Sftp(sftp::Message::SftpRenameShortcut))
-                    }
-                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
-                        if modifiers.shift() =>
-                    {
-                        Some(Message::Search(search::Message::Previous))
-                    }
-                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
-                    | iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
-                        Some(Message::Search(search::Message::Next))
-                    }
-                    iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
-                        Some(Message::Search(search::Message::Previous))
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        });
+        // 监听键盘：按键统一转成和弦（`Message::AppKey`）在 `update` 里分发。常规态只发「带修饰键
+        // 或具名键」的按下（纯字符键是打字，不发以免洪泛）；录制态需捕获任意键以给出「裸键会吞输入」
+        // 的提示，故切换监听。`listen_with` 只接受 `fn` 指针，故用两个具名函数而非捕获闭包。
+        let keys = if self.shortcuts.is_recording() {
+            iced::event::listen_with(record_key_message)
+        } else {
+            iced::event::listen_with(shortcut_key_message)
+        };
 
         // 监听鼠标右键按下：把光标下的会话 / 文件条目标记为选中（右键菜单即针对该条目）。
         // 必须全局监听——`iced_aw::ContextMenu` 在内部处理右键时会 `capture_event()`，
@@ -270,5 +254,38 @@ impl App {
     /// 同步功能接入时，在同步开关 handler / 面板调用此判定并据此禁用 / 拦截开启。
     pub fn can_enable_sync(&self) -> bool {
         contexts::can_enable_sync(self)
+    }
+}
+
+/// 常规按键监听：只把「带修饰键或具名键」的按下发成候选和弦（纯字符键是打字，不发消息）。
+fn shortcut_key_message(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            if !crate::keymap::is_shortcut_candidate(&key, modifiers) {
+                return None;
+            }
+            crate::keymap::chord_from_key(&key, modifiers)
+                .map(|chord| Message::AppKey { chord, status })
+        }
+        _ => None,
+    }
+}
+
+/// 录制态按键监听：记录任意可表示按键（含裸字符键），供录制器判据与提示。
+fn record_key_message(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            crate::keymap::chord_from_key(&key, modifiers)
+                .map(|chord| Message::AppKey { chord, status })
+        }
+        _ => None,
     }
 }

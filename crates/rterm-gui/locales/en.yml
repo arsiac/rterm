@@ -85,6 +85,31 @@ settings:
   found_update: Update available
   check_failed: Check failed
   update_banner: "Update available: v%{version}"
+shortcuts:
+  title: Keyboard Shortcuts
+  filter_placeholder: Filter shortcuts…
+  group_general: General
+  group_session: Session
+  group_terminal: Terminal
+  group_files: File transfer
+  group_readonly: Fixed (not configurable)
+  readonly_hint: Terminal copy / paste use the platform default and cannot be changed.
+  no_match: No matching shortcuts
+  unbound: Unbound
+  record_prompt: Press a key…
+  notice_needs_modifier: A key with no modifier would swallow terminal input. Add a modifier or pick a function key.
+  notice_conflict: "Already used by “%{name}”."
+  reassign: Reassign
+  reset: Reset to default
+  reset_all: Restore all defaults
+  copy: Copy
+  paste: Paste
+  cmd_open_settings: Open settings
+  cmd_open_shortcuts: Open keyboard shortcuts
+  cmd_toggle_sidebar: Toggle sidebar
+  cmd_new_session: New session
+  cmd_open_search: Search in terminal
+  cmd_sftp_rename: Rename file
 session:
   new: New session
   refresh: Refresh
@@ -287,6 +312,7 @@ terminal:
     close: Close search
 activity:
   settings: Settings
+  shortcuts: Shortcuts
   sessions: Sessions
   files: Files
   transfers: Transfers

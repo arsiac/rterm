@@ -13,6 +13,7 @@ use crate::widget::term::terminal::Terminal;
 use alacritty_terminal::index::Point as TerminalGridPoint;
 use iced::Size;
 use iced_core::keyboard::Modifiers;
+use rterm_config::keybindings::Keymap;
 use std::cell::Cell;
 
 /// 终端画布部件：实现 iced `Widget`，把后端渲染内容绘成像素并转发鼠标 / 键盘事件。
@@ -25,16 +26,19 @@ pub struct TerminalView<'a> {
     padding: f32,
     /// 是否显示并接管右侧滚动条。
     scrollbar: bool,
+    /// 当前键位表，用于判定哪些和弦应由客户端拦下（不写入远端）。
+    shortcuts: &'a Keymap,
 }
 
 impl<'a> TerminalView<'a> {
-    /// 以给定终端与焦点态构造可装箱的终端视图元素。
-    pub fn show(term: &'a Terminal, focused: bool) -> Self {
+    /// 以给定终端、焦点态与键位表构造可装箱的终端视图元素。
+    pub fn show(term: &'a Terminal, focused: bool, shortcuts: &'a Keymap) -> Self {
         Self {
             term,
             focused,
             padding: 4.0,
             scrollbar: true,
+            shortcuts,
         }
     }
 

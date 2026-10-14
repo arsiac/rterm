@@ -7,12 +7,14 @@
 //! - `config.toml`：应用级偏好（[`AppConfig`]），按功能域分组为嵌套 TOML 段
 //!   （`[connection]` / `[terminal]` / `[transfer]` / …）；加载时自动迁移旧版扁平格式。
 //! - `sessions.toml`：会话连接配置（[`SessionStore`] / [`SessionConfig`]）。
+//! - `keybindings.toml`：快捷键绑定的稀疏覆盖（[`Keybindings`] / [`Keymap`]）。
 //!
 //! 以上目录经 [`paths`] 统一解析：`debug` 构建下会整体改落在工作区内的 `.dev/`，
 //! 避免开发期读写真实配置；`release` 构建不受影响。
 
 pub mod app_config;
 pub mod error;
+pub mod keybindings;
 pub mod paths;
 pub mod session;
 pub mod store;
@@ -25,5 +27,6 @@ pub use app_config::{
     MAX_RETRY_ATTEMPTS, MIN_CONCURRENT, TransferConfig, log_dir,
 };
 pub use error::ConfigError;
+pub use keybindings::{Chord, ChordKey, Keybindings, Keymap};
 pub use session::{AuthMethod, JumpHost, SessionConfig, new_id};
 pub use store::{SessionStore, export_sessions, import_sessions};

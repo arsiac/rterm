@@ -268,7 +268,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Some(tab) => match &tab.terminal {
             Some(term) => {
                 let terminal_elem: Element<'_, TerminalEvent> =
-                    TerminalView::show(term, app.terminal_focused)
+                    TerminalView::show(term, app.terminal_focused, app.shortcuts.keymap())
                         .padding(4.0)
                         .scrollbar(app.config.terminal.show_scrollbar)
                         .into();
