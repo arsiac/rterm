@@ -171,6 +171,7 @@ masterpw:
   not_memorized: Please confirm you have memorized the passphrase
   write_failed: "Failed to write encrypted file: %{err}"
   no_store: Session store unavailable
+  sessions_file_unusable: The session file cannot be read right now. Fix that file before setting a master password, so the current content is not overwritten
   read_failed: "Failed to read encrypted file: %{err}"
   wrong: Incorrect master passphrase
   deriving: Deriving key...
@@ -195,8 +196,30 @@ masterpw:
   disable_confirm_note: This cannot be undone. The app will then unlock automatically on this device without a passphrase, and syncing across devices stops working until you set a passphrase again.
   setup_hint: After setting a passphrase, credentials are re-encrypted with it and can be synced across devices; the re-encryption runs on this device and requires entering the new passphrase once.
   disabled: Master passphrase disabled; credentials are now encrypted with a local random key (sync unavailable)
-  enable_sync_required: Set a master passphrase before enabling sync
   keyring_lost: The local keyring had no random key; a new local key was generated. Previously saved credentials may no longer decrypt — please re-enter them
+cred:
+  export_title: Export sessions
+  export_body_plain: Exports connection settings only — hosts, ports, usernames and jump paths, with no passwords or key credentials.
+  export_body: 'Set an export passphrase: it derives a key just for this file and re-encrypts every credential into it. If you forget this passphrase, the export cannot be recovered.'
+  export_submit: Export
+  include_credentials: Include credentials
+  toggle_locked: The credential vault is locked, so this export can only carry connection settings.
+  import_title: Import sessions with credentials
+  import_body: This export is protected by its export passphrase. After you enter it, credentials are unwrapped and re-encrypted with this machine's key, so the passphrase is never needed again.
+  import_submit: Import
+  password: Export passphrase
+  confirm: Re-enter passphrase
+  working: Deriving key and processing credentials...
+  empty: Enter an export passphrase
+  mismatch: The two passphrases do not match
+  notice_same_password: Importing this file requires the same passphrase, otherwise the credentials cannot be unwrapped.
+  notice_import_password: Enter the passphrase that was set when this export was created.
+  notice_master_password: 'Your local master password and the system keyring are not involved: the export opens even if the two machines use different master passwords, and an identical master password will not unlock it.'
+  wrong_pass: 'Wrong export passphrase (note: this is not your local master password)'
+  not_export_file: This is not a session export file (it looks like another machine's sessions.toml). Turn on “Include credentials” in the Export sessions dialog on the source machine first.
+  exported: "Exported %{count} session(s) with credentials to %{path}"
+  exported_dropped: "Exported %{count} session(s) to %{path}; %{dropped} credential(s) could not be decrypted and were skipped"
+  imported_dropped: "Imported %{count} session(s); %{dropped} credential(s) could not be decrypted and were skipped"
 sftp:
   open_hint: The file manager is not open yet. Connect a session first, then click the “Files” icon on the left.
   up_dir: Up
@@ -227,9 +250,6 @@ sftp:
   mkdir_failed: Failed to create directory
   delete_failed: Failed to delete
   rename_failed: Failed to rename
-  upload_failed: Failed to upload
-  download_failed: Failed to download
-  transfer_lost: Transfer task terminated unexpectedly
   upload_title: Select files to upload
   upload_folder_title: Select folders to upload
   download_title: Select download folder
@@ -289,7 +309,6 @@ terminal:
   reconnecting: Reconnecting…
   reconnected_notice: Session restarted; previous processes were not resumed
   reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}; use cd to return"
-  ready: Terminal ready
   menu_copy: Copy
   menu_paste: Paste
   paste_warn_title: Paste confirmation
@@ -332,13 +351,8 @@ app:
   reconnected: "Reconnected: %{id}"
   disconnected: "Disconnected: %{id}"
   session_ended: "Session ended: %{id}"
-  sftp_open_failed: "Failed to open SFTP: %{err}"
-  list_failed: "Failed to list directory: %{err}"
-  transfer_partial: Some transfers failed
-  transfer_done: Transfers complete
+  list_failed: Failed to list directory
   canceled: Canceled
-  op_success: Operation succeeded
-  op_failed: "Operation failed: %{err}"
   exported: Exported %{count} sessions to %{path}
   export_failed: "Export failed: %{err}"
   imported: Imported %{count} sessions
@@ -348,6 +362,11 @@ app:
   save_failed: "Save failed: %{err}"
   decrypt_failed: "Failed to decrypt credential (master passphrase may have changed)"
   vault_locked: Credential vault is locked
+  sessions_file_unusable: "Session file unusable (%{path}): %{reason}"
+  sessions_file_unreadable: "cannot be read (%{err})"
+  sessions_file_unparsable: "cannot be parsed (%{err})"
+  sessions_file_is_export: this is a session export file, not a live config — use "Import sessions" instead
+  sessions_file_no_crypto: the file has no crypto header and may have been edited by hand
   terminal_ready: Terminal ready
   terminal_create_failed: "Failed to create terminal widget: %{err}"
   terminal_reattach_failed: "Failed to reattach the terminal: %{err}"
@@ -355,8 +374,6 @@ app:
   config_save_failed: "Failed to save config: %{err}"
   open_terminal_first: Open this session's terminal first
   connect_session_first: Connect to a session first
-  sftp_not_ready: SFTP not ready
-  transfer_error: "Transfer task error: %{err}"
   connect_task_error: "Connection task exited with error: %{err}"
   connect_timeout: Connection timed out
 errors:

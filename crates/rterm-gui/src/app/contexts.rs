@@ -1,6 +1,8 @@
 //! 父状态到子模块的只读上下文适配层，以及父状态的通用写入动作。
 
-use crate::app::{App, masterpw, paste, session, settings, tabs, transfer, updates, window};
+use crate::app::{
+    App, masterpw, paste, session, session_io, settings, tabs, transfer, updates, window,
+};
 use crate::state::{SftpView, ToastKind};
 use crate::t;
 use crate::widget::toast::{ToastLevel, toast};
@@ -57,6 +59,17 @@ pub(crate) fn window_ctx(app: &App) -> window::Ctx {
     }
 }
 
+/// 组装会话文件模块所需的只读上下文（存储 / 保险库 / 会话列表快照）。
+/// 每次 `update` 调用前重建，确保模块读到最新父状态；模块据此加解密并自行落盘，但**绝不写回**，
+/// 合并结果经 `session_io::Event::SetSessions` 由父层落地（与主密码模块同规）。
+pub(crate) fn session_io_ctx(app: &App) -> session_io::Ctx {
+    session_io::Ctx {
+        store: app.session.store.clone(),
+        vault: app.vault.clone(),
+        sessions: app.session.sessions.clone(),
+    }
+}
+
 /// 持久化应用级偏好配置（失败则记日志并弹 toast 提示用户）。
 pub(crate) fn save_config(app: &mut App) {
     if let Err(e) = app.config.save() {
@@ -79,6 +92,7 @@ pub(crate) fn masterpw_ctx(app: &App) -> masterpw::Ctx {
         vault: app.vault.clone(),
         sessions: app.session.sessions.clone(),
         remember: app.config.security.remember_master_key,
+        sessions_file_unusable: app.sessions_file_problem.is_some(),
     }
 }
 

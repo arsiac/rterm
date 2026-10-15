@@ -10,6 +10,7 @@ use crate::t;
 use crate::App;
 use crate::app::sftp::Message;
 use crate::icons::{ICON_SIZE, Icon, icon_button};
+use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::Id;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
@@ -361,59 +362,57 @@ fn panel(app: &App) -> Element<'_, Message> {
 /// 条目“右键”菜单内容：目录给「进入」、文件给「下载」，其余按功能用分割线分组——
 /// 主操作 / 上传 / 编辑 / 复制 / 信息。
 fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Message> {
-    let mut actions = column![];
+    let mut actions: Vec<Element<'a, Message>> = Vec::new();
     if is_dir {
-        actions = actions.push(crate::ui::menu_entry(
+        actions.push(crate::ui::menu_entry(
             t!("sftp.enter"),
             crate::app::sftp::Message::SftpCd(crate::app::tasks::join_path(&path, &name)),
         ));
     } else {
-        actions = actions.push(crate::ui::menu_entry(
+        actions.push(crate::ui::menu_entry(
             t!("sftp.download"),
             crate::app::sftp::Message::SftpPickDownload(name.clone()),
         ));
     }
-    actions = actions
-        .push(crate::ui::menu_separator())
-        .push(crate::ui::menu_entry(
-            t!("sftp.upload"),
-            crate::app::sftp::Message::SftpPickUpload,
-        ))
-        .push(crate::ui::menu_entry(
+    actions.extend([
+        crate::ui::menu_separator(),
+        crate::ui::menu_entry(t!("sftp.upload"), crate::app::sftp::Message::SftpPickUpload),
+        crate::ui::menu_entry(
             t!("sftp.upload_folder"),
             crate::app::sftp::Message::SftpPickUploadFolder,
-        ))
-        .push(crate::ui::menu_separator())
-        .push(crate::ui::menu_entry(
+        ),
+        crate::ui::menu_separator(),
+        crate::ui::menu_entry(
             t!("sftp.rename"),
             crate::app::sftp::Message::SftpRenameConfirm(name.clone()),
-        ))
-        .push(crate::ui::menu_entry(
+        ),
+        crate::ui::menu_entry(
             t!("sftp.delete"),
             crate::app::sftp::Message::SftpDeleteConfirm(name.clone(), is_dir),
-        ))
-        .push(crate::ui::menu_separator())
-        .push(crate::ui::menu_entry(
+        ),
+        crate::ui::menu_separator(),
+        crate::ui::menu_entry(
             t!("sftp.copy_name"),
             crate::app::sftp::Message::SftpCopyName(name.clone()),
-        ))
-        .push(crate::ui::menu_entry(
+        ),
+        crate::ui::menu_entry(
             t!("sftp.copy_path"),
             crate::app::sftp::Message::SftpCopyPath(crate::app::tasks::join_path(&path, &name)),
-        ))
-        .push(crate::ui::menu_separator())
-        .push(crate::ui::menu_entry(
+        ),
+        crate::ui::menu_separator(),
+        crate::ui::menu_entry(
             t!("sftp.properties"),
             crate::app::sftp::Message::SftpShowProperties(name.clone()),
-        ));
-    crate::ui::menu_container(actions.into())
+        ),
+    ]);
+    crate::ui::menu_container(MeasuredColumn::with_children(actions).spacing(2))
 }
 
 /// 文件列表空白处（或 “..” 合成项）的“右键”菜单：上传 / 新建 / 刷新，按功能用分割线分组。
 ///
 /// 上传目标为当前目录（由传输模块读取该标签的 SFTP 当前路径），故无需携带条目名。
 fn blank_menu_actions<'a>(path: String) -> Element<'a, Message> {
-    let actions = column![
+    let actions = MeasuredColumn::with_children(vec![
         crate::ui::menu_entry(t!("sftp.upload"), crate::app::sftp::Message::SftpPickUpload),
         crate::ui::menu_entry(
             t!("sftp.upload_folder"),
@@ -425,9 +424,10 @@ fn blank_menu_actions<'a>(path: String) -> Element<'a, Message> {
             crate::app::sftp::Message::SftpNewDirConfirm,
         ),
         crate::ui::menu_separator(),
-        crate::ui::menu_entry(t!("sftp.refresh"), crate::app::sftp::Message::SftpCd(path),),
-    ];
-    crate::ui::menu_container(actions.into())
+        crate::ui::menu_entry(t!("sftp.refresh"), crate::app::sftp::Message::SftpCd(path)),
+    ])
+    .spacing(2);
+    crate::ui::menu_container(actions)
 }
 
 /// 将字节数格式化为可读大小（B / KB / MB / GB / TB），供列表与属性框复用。

@@ -92,9 +92,8 @@ pub fn delete_dek() -> Result<(), keyring::Error> {
 
 /// 是否可在本机使用钥匙串自动解锁：后端可初始化则返回 `true`。
 ///
-/// 用于测试与诊断：无后端环境（如无 D-Bus 会话总线的服务器）返回 `false`，
-/// 此时应跳过自动解锁相关逻辑并回退主密码弹窗。
-#[allow(dead_code)]
+/// 仅测试用：无后端环境（如无 D-Bus 会话总线的服务器）返回 `false`，用例据此跳过钥匙串分支。
+#[cfg(test)]
 pub fn available() -> bool {
     keyring::Entry::new(SERVICE, account()).is_ok()
 }

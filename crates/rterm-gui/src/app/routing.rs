@@ -4,8 +4,8 @@ use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
 use crate::app::{
-    events, hostkey, masterpw, panes, paste, search, session, settings, sftp, shortcuts, tabs,
-    window,
+    events, hostkey, masterpw, panes, paste, search, session, session_io, settings, sftp,
+    shortcuts, tabs, window,
 };
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
@@ -24,6 +24,12 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.session.update(m, &ctx).map(Message::SessionEvent)
         }
         Message::SessionEvent(e) => events::apply_session_event(app, e),
+        // 会话文件模块：路由进模块自身 `update`，上行事件经 `Message::SessionIoEvent` 回收。
+        Message::SessionIo(m) => {
+            let ctx = contexts::session_io_ctx(app);
+            app.session_io.update(m, &ctx).map(Message::SessionIoEvent)
+        }
+        Message::SessionIoEvent(e) => events::apply_session_io_event(app, e),
         // 终端标签模块：路由进模块自身 `update`，上行事件经 `Message::TabsEvent` 回收。
         Message::Tabs(m) => {
             // 切换标签先关闭搜索条：搜索态绑定单个终端，不跨标签延续（残留高亮会指向另一个终端）。
@@ -247,6 +253,18 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.hostkey
             .update(hostkey::Message::Dismiss)
             .map(Message::HostKeyEvent)
+    } else if app.session_io.export_open || app.session_io.import_open {
+        // 导入导出弹窗压在全部主密码弹窗之上，故先于它们处理；保存框开启或派生 / 落盘进行中都不可
+        // 打断，由模块自身忽略本消息——否则对话框的返回值会投进一个已经没人看的状态机。
+        let ctx = contexts::session_io_ctx(app);
+        let msg = if app.session_io.export_open {
+            session_io::Message::ExportCancel
+        } else {
+            session_io::Message::ImportCancel
+        };
+        app.session_io
+            .update(msg, &ctx)
+            .map(Message::SessionIoEvent)
     } else if app.masterpw.confirm_disable {
         // 确认框压在设置弹窗之上，故必须先于设置分支处理，否则 Esc 会穿过它去关底下的弹窗。
         let ctx = contexts::masterpw_ctx(app);

@@ -3,8 +3,8 @@
 use crate::state::ToastKind;
 use crate::t;
 use iced::Task;
-use log::{error, warn};
-use rterm_config::{AuthMethod, SessionConfig, SessionStore};
+use log::error;
+use rterm_config::{SessionConfig, SessionStore};
 use rterm_crypto::Vault;
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
@@ -260,6 +260,10 @@ pub struct Ctx {
     pub sessions: Vec<SessionConfig>,
     /// 「本机记住主密码」开关（派生完成后是否把 DEK 存入钥匙串）。
     pub remember: bool,
+    /// 会话文件「存在但不可用」（见 [`crate::app::App::sessions_file_problem`]）——此时**禁止一切
+    /// 重建 / 重加密落盘**：写盘会用重加密后的（可能为空的）会话覆盖掉用户现有的不可用文件。
+    /// 置真时启动已抑制解锁弹窗，用户应先修文件。
+    pub sessions_file_unusable: bool,
 }
 
 /// 提交主密码：按当前模式创建或解锁保险库。
@@ -297,6 +301,11 @@ fn submit_setup(state: &mut State, ctx: &Ctx) -> Task<Event> {
         state.error = Some(t!("masterpw.no_store"));
         return Task::none();
     };
+    // 会话文件不可用时禁止设置主密码：重加密落盘会覆盖掉那份尚可修复的文件。
+    if ctx.sessions_file_unusable {
+        state.error = Some(t!("masterpw.sessions_file_unusable"));
+        return Task::none();
+    }
     let new_pass = state.input.clone();
     // 进入派生阶段：按钮显示「正在派生密钥…」。
     state.stage = MpwStage::Deriving;
@@ -323,7 +332,7 @@ fn setup_derive(state: &mut State, new_vault: Arc<Vault>, ctx: &Ctx) -> Task<Eve
                 let new_sessions: Vec<SessionConfig> = sessions
                     .iter()
                     .map(|cfg| match old_vault.as_deref() {
-                        Some(old) => rekey_session(cfg, old, &new_vault),
+                        Some(old) => cfg.rekeyed(old, &new_vault).0,
                         None => cfg.clone(),
                     })
                     .collect();
@@ -499,7 +508,7 @@ fn change_derive(
                 // 逐会话用新 DEK 重新加密凭据（无凭据的会话原样保留）。
                 let new_sessions: Vec<SessionConfig> = sessions
                     .iter()
-                    .map(|cfg| rekey_session(cfg, &old_vault, &new_vault))
+                    .map(|cfg| cfg.rekeyed(&old_vault, &new_vault).0)
                     .collect();
                 store
                     .save(&new_sessions, new_vault.header())
@@ -563,7 +572,7 @@ fn disable(state: &mut State, ctx: &Ctx) -> Task<Event> {
     let new_sessions: Vec<SessionConfig> = ctx
         .sessions
         .iter()
-        .map(|cfg| rekey_session(cfg, &old_vault, &new_vault))
+        .map(|cfg| cfg.rekeyed(&old_vault, &new_vault).0)
         .collect();
 
     let Some(store) = ctx.store.clone() else {
@@ -583,55 +592,6 @@ fn disable(state: &mut State, ctx: &Ctx) -> Task<Event> {
         Task::done(Event::SetSessions(new_sessions)),
         Task::done(Event::Toast(ToastKind::Success, t!("masterpw.disabled"))),
     ])
-}
-
-/// 用新保险库的主密钥重新加密单个会话的凭据，旧保险库用于先解密。
-///
-/// 仅 `Some` 信封参与重加密；`None`（未设置凭据，如仅导入连接配置）保持 `None`。
-/// 无凭据的 `Agent` 认证原样返回。目标会话与每一跳跳板机的凭据一并重加密。
-fn rekey_session(cfg: &SessionConfig, old_vault: &Vault, new_vault: &Vault) -> SessionConfig {
-    let jumps = cfg
-        .jumps
-        .iter()
-        .map(|j| rterm_config::JumpHost {
-            auth: rekey_auth(&j.auth, &cfg.id, old_vault, new_vault),
-            ..j.clone()
-        })
-        .collect();
-    SessionConfig {
-        auth: rekey_auth(&cfg.auth, &cfg.id, old_vault, new_vault),
-        jumps,
-        ..cfg.clone()
-    }
-}
-
-/// 用新保险库重新加密单个 [`AuthMethod`] 的凭据信封；解密失败时凭证置空并记日志。
-fn rekey_auth(
-    auth: &AuthMethod,
-    session_id: &str,
-    old_vault: &Vault,
-    new_vault: &Vault,
-) -> AuthMethod {
-    let reencrypt = |env: &rterm_crypto::Envelope| match old_vault.decrypt(env) {
-        Ok(plain) => Some(new_vault.encrypt(plain.as_str())),
-        Err(e) => {
-            warn!("Failed to reencrypt credential (session {session_id}): {e}");
-            None
-        }
-    };
-    match auth {
-        AuthMethod::Password { password } => AuthMethod::Password {
-            password: password.as_ref().and_then(reencrypt),
-        },
-        AuthMethod::PublicKey {
-            key_path,
-            passphrase,
-        } => AuthMethod::PublicKey {
-            key_path: key_path.clone(),
-            passphrase: passphrase.as_ref().and_then(reencrypt),
-        },
-        AuthMethod::Agent => AuthMethod::Agent,
-    }
 }
 
 #[cfg(test)]

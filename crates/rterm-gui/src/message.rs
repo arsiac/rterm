@@ -10,6 +10,7 @@ use crate::app::panes;
 use crate::app::paste;
 use crate::app::search;
 use crate::app::session;
+use crate::app::session_io;
 use crate::app::settings;
 use crate::app::sftp;
 use crate::app::shortcuts;
@@ -41,6 +42,12 @@ pub enum Message {
     Session(session::Message),
     /// 会话管理模块上行事件，由父层收到后修改父状态（开标签连接 / 关会话标签 / 状态栏 / toast）。
     SessionEvent(session::Event),
+    // ===== 会话文件导入 / 导出（路由）=====
+    /// 会话文件模块内部消息：导出 / 导入的文件对话框、导出口令弹窗的输入与提交、模块自处理的
+    /// 异步结果，由父层经此变体路由进 `app::session_io` 模块。
+    SessionIo(session_io::Message),
+    /// 会话文件模块上行事件（导入合并后的会话列表 / toast / 自回路），由父层落地。
+    SessionIoEvent(session_io::Event),
     // ===== 主机密钥确认弹窗（路由）=====
     /// 主机密钥确认模块内部消息：入队请求 / 用户决定 / Esc 取消，由父层经此变体路由进模块。
     HostKey(hostkey::Message),

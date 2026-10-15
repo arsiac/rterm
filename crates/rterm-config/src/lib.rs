@@ -29,4 +29,8 @@ pub use app_config::{
 pub use error::ConfigError;
 pub use keybindings::{Chord, ChordKey, Keybindings, Keymap};
 pub use session::{AuthMethod, JumpHost, SessionConfig, new_id};
-pub use store::{SessionStore, export_sessions, import_sessions};
+pub use store::{
+    EXPORT_FORMAT, SessionStore, SessionsFileMeta, SessionsFileProblem, SessionsFileState,
+    export_sessions, export_sessions_with_credentials, import_credential_export, import_sessions,
+    inspect_sessions_file,
+};

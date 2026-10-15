@@ -11,6 +11,7 @@ use crate::App;
 use crate::app::session::{EditorDraft, JumpDraft, Message, SessionField};
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
 use crate::ui::menu_entry;
+use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
 use iced::widget::{
@@ -131,19 +132,19 @@ fn list_view(app: &App) -> Element<'_, Message> {
     );
     // dropdown 面板与右键菜单样式相同。
     let more_menu = crate::ui::menu_container(
-        column![
+        MeasuredColumn::with_children(vec![
             menu_entry(t!("session.import"), Message::ImportSessions),
             menu_entry(t!("session.export"), Message::ExportSessions),
-        ]
-        .spacing(2)
-        .into(),
+        ])
+        .spacing(2),
     );
     let more_dropdown = iced_aw::widget::drop_down::DropDown::new(
         more_button,
         more_menu,
         app.session.show_more_menu,
     )
-    .width(Length::Fixed(crate::ui::MENU_WIDTH))
+    // 面板宽度自适应最长条目：DropDown 未指定宽度时退化为触发按钮宽度，故须显式给 Shrink。
+    .width(Length::Shrink)
     .alignment(iced_aw::core::alignment::Alignment::BottomEnd)
     .on_dismiss(Message::ToggleMoreMenu);
 
@@ -277,13 +278,13 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
     // 含“新建会话”与连接 / 编辑 / 复制 / 删除，已连接再追加“打开文件管理”。
     let id = s.id.clone();
     let menu_overlay = move || {
-        let mut actions = column![
+        let mut actions = MeasuredColumn::with_children(vec![
             menu_entry(t!("session.new"), Message::NewSession),
             menu_entry(t!("session.connect"), Message::ConnectSession(id.clone())),
             menu_entry(t!("session.edit"), Message::EditSession(id.clone())),
             menu_entry(t!("session.copy"), Message::DuplicateSession(id.clone())),
             menu_entry(t!("session.delete"), Message::DeleteSession(id.clone())),
-        ]
+        ])
         .spacing(2);
         if status == ConnectionStatus::Connected {
             actions = actions.push(menu_entry(
@@ -291,7 +292,7 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
                 Message::OpenFiles(id.clone()),
             ));
         }
-        crate::ui::menu_container(actions.into())
+        crate::ui::menu_container(actions)
     };
 
     ContextMenu::new(item, menu_overlay).into()

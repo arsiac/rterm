@@ -233,7 +233,7 @@ impl State {
                         tab.client = None;
                         Task::done(Event::Toast(
                             ToastKind::Error,
-                            format!("{}: {e}", t!("sftp.list_failed")),
+                            format!("{}: {e}", t!("app.list_failed")),
                         ))
                     }
                 }
@@ -283,7 +283,7 @@ impl State {
                 match err {
                     Some(e) => Task::done(Event::Toast(
                         ToastKind::Error,
-                        format!("{}: {e}", t!("sftp.list_failed")),
+                        format!("{}: {e}", t!("app.list_failed")),
                     )),
                     None => Task::none(),
                 }

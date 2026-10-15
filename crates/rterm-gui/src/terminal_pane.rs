@@ -12,6 +12,7 @@ use crate::app::tabs;
 use crate::icons::Icon;
 use crate::message::Message;
 use crate::state::TerminalTab;
+use crate::widget::measured_column::MeasuredColumn;
 use crate::widget::term::{Event as TerminalEvent, TerminalView};
 use iced::alignment::Horizontal;
 use iced::widget::tooltip::Position;
@@ -404,16 +405,15 @@ fn terminal_context_menu(
             crate::ui::menu_entry_disabled(t!("terminal.menu_copy"))
         };
         crate::ui::menu_container(
-            column![
+            MeasuredColumn::with_children(vec![
                 crate::ui::menu_entry(
                     t!("terminal.menu_search"),
-                    Message::Search(search::Message::Open { tab_id })
+                    Message::Search(search::Message::Open { tab_id }),
                 ),
                 copy,
                 crate::ui::menu_entry(t!("terminal.menu_paste"), Message::TerminalPaste),
-            ]
-            .spacing(2)
-            .into(),
+            ])
+            .spacing(2),
         )
     };
     ContextMenu::new(terminal, overlay).into()

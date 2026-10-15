@@ -26,7 +26,38 @@ pub enum ConfigError {
     #[error("配置存储错误: {0}")]
     Store(String),
 
+    /// 会话文件位置上的内容是**导出件**（携带 [`EXPORT_FORMAT`](crate::store::EXPORT_FORMAT) 标记），
+    /// 不能作为本机 `sessions.toml` 加载——它由导出口令保护，用主密码永远解不开。
+    #[error("该文件是会话导出文件，不能作为本机会话配置加载")]
+    ExportFileInPlace,
+
+    /// 凭据加解密错误（导出口令 / 主密码不正确、密文损坏、KDF 参数越界等）。上层用
+    /// `matches!(err, ConfigError::Crypto(rterm_crypto::CryptoError::Verify))` 区分
+    /// 「口令错」与「文件坏」两类反馈。
+    #[error("凭据处理失败: {0}")]
+    Crypto(#[from] rterm_crypto::CryptoError),
+
     /// 找不到合适的配置 / 数据目录。
     #[error("配置目录不可用: {0}")]
     ConfigDir(String),
+}
+
+impl From<crate::store::SessionsFileProblem> for ConfigError {
+    /// 把会话文件的「不可用原因」收敛为统一错误类型（启动三态判定用 [`crate::store::SessionStore::startup_state`]
+    /// 拿原始原因，普通读写路径经此转换）。
+    fn from(problem: crate::store::SessionsFileProblem) -> Self {
+        use crate::store::SessionsFileProblem;
+        match problem {
+            SessionsFileProblem::Unreadable(e) => {
+                ConfigError::Store(format!("读取会话文件失败: {e}"))
+            }
+            SessionsFileProblem::Unparsable(e) => {
+                ConfigError::Store(format!("解析会话文件失败: {e}"))
+            }
+            SessionsFileProblem::ExportFile => ConfigError::ExportFileInPlace,
+            SessionsFileProblem::MissingCryptoHeader => {
+                ConfigError::Store("会话文件不含加密头（可能为仅连接配置的导出文件）".into())
+            }
+        }
+    }
 }

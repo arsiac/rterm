@@ -7,8 +7,10 @@
 //!   在任意设备派生出相同的 DEK，因此**密文 blob 可安全同步**而无需同步密钥。
 //!
 //! 两种模式由 [`CryptoHeader::master_password_set`] 区分，模式可互相转换（设置 / 关闭 /
-//! 更改主口令，由 GUI 层的 `rekey_session` 完成）。每个敏感字段独立随机 nonce 加密，密文以
-//! base64 形式随 `serde` 持久化。
+//! 更改主口令）。每个敏感字段独立随机 nonce 加密，密文以 base64 形式随 `serde` 持久化。
+//!
+//! 还有一条**一次性**的用法：[`Vault::for_export`] 为带凭据导出派生临时保险库，形状同模式 1，
+//! 但 KDF 参数按「文件将离开本机、面对离线爆破」加硬；参数随头落盘，导入端按头内的值派生。
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -29,8 +31,33 @@ const KDF_OPS: u32 = 3;
 /// 并行度上限：派生时在「可用核心数」与上限之间取较小值，多核机器上可缩短派生耗时，
 /// 但 Argon2 派生结果依赖该值，故必须随头持久化（见 [`CryptoHeader::parallel`]）。
 const KDF_PARALLELISM_MAX: u32 = 4;
-/// Argon2 内存开销以 KiB 计：64 MiB = 65536 KiB。
-const KDF_MEMORY_KIB: u32 = KDF_MEMORY_MIB * 1024;
+/// 带凭据导出所用的一次性保险库参数：内存开销（MiB）。导出文件会离开本机、面对**离线爆破**，
+/// 故比本机主口令更硬；参数随导出头落盘，导入端按头内值派生，无需两端一致。
+/// `debug` 构建下该派生慢约 25 倍（release 约 0.7 s），口令流程的测试宜加 `--release` 跑。
+const EXPORT_KDF_MEMORY_MIB: u32 = 256;
+/// 带凭据导出所用的一次性保险库参数：迭代轮数。
+const EXPORT_KDF_OPS: u32 = 6;
+
+/// KDF 算法标识，写入 [`CryptoHeader::kdf`]；解锁时须逐字匹配。
+const KDF_ALGORITHM: &str = "argon2id";
+/// 创建保险库时生成的 salt 长度（字节）。
+const SALT_LEN: usize = 16;
+/// salt 长度合法下界（Argon2 自身要求 ≥ 8）。
+const SALT_MIN_LEN: usize = 8;
+/// salt 长度合法上界：宽于自产的 16 字节，只为挡住文件来源的滥用。
+const SALT_MAX_LEN: usize = 64;
+/// 迭代轮数合法下界。
+const OPS_MIN: u32 = 1;
+/// 迭代轮数合法上界。
+const OPS_MAX: u32 = 64;
+/// 内存开销（MiB）合法下界。
+const MEM_MIN_MIB: u32 = 8;
+/// 内存开销（MiB）合法上界：限制**单次派生**能吃掉的内存，宽于任何自产文件（64 / 256）。
+const MEM_MAX_MIB: u32 = 1024;
+/// 并行度合法下界。
+const PARALLEL_MIN: u32 = 1;
+/// 并行度合法上界。
+const PARALLEL_MAX: u32 = 8;
 
 /// 创建保险库时选取的 Argon2 并行度：取「可用核心数」与 [`KDF_PARALLELISM_MAX`] 的较小值，
 /// 在合法范围内尽量利用多核加速派生（并行度不降低总内存硬度，只把工作分到多核）。
@@ -51,9 +78,7 @@ const VERIFIER_PLAINTEXT: &str = "rterm-vault-v1";
 pub enum CryptoError {
     /// Argon2 参数非法或派生失败。
     ///
-    /// 注意：当前**没有构造点**——`derive_dek` 在参数非法 / 派生失败时直接 `expect` panic
-    /// （参数与口令长度都是编译期或调用前约束好的，视为不可能发生）。保留该变体以免
-    /// 将来把派生改为可恢复错误时改动公开 API。
+    /// 构造点在 [`Vault::unlock`]：头里的 KDF 参数是外部输入，越界须可恢复地拒绝而非 panic。
     #[error("密钥派生失败")]
     Kdf,
     /// AEAD 加解密失败（密文被篡改或密钥不匹配）。
@@ -176,20 +201,27 @@ pub struct Vault {
 impl Vault {
     /// 用新主密码创建保险库（模式 1）：生成随机盐，派生 DEK，并写入校验哨兵。
     ///
-    /// 用于「设置主密码」（由模式 0 升级，见 GUI 层 `rekey_session`）。返回值中的
+    /// 用于「设置主密码」（由模式 0 升级，凭据经整机重加密落盘）。返回值中的
     /// [`CryptoHeader`] 需由调用方持久化（含 `master_password_set = true`）。
     pub fn new(passphrase: &str) -> Vault {
-        let salt: [u8; 16] = rand::random();
+        Self::with_kdf(passphrase, KDF_MEMORY_MIB, KDF_OPS)
+    }
+
+    /// 为「带凭据导出」创建一次性保险库：结构同模式 1（随机盐 + 哨兵），但 KDF 参数加硬。
+    /// 导出文件面对离线爆破，故用比本机主口令更高的内存与轮数（见 [`EXPORT_KDF_MEMORY_MIB`]）；
+    /// 所用参数写进返回的头，导入端按头里的值派生，两端无需约定任何常量。
+    pub fn for_export(passphrase: &str) -> Vault {
+        Self::with_kdf(passphrase, EXPORT_KDF_MEMORY_MIB, EXPORT_KDF_OPS)
+    }
+
+    /// 以指定 KDF 参数从口令派生保险库。参数只来自本模块常量（[`Vault::new`] / [`Vault::for_export`]），
+    /// 都在 [`Vault::unlock`] 的校验界内，故派生失败属不可能的内部错误，直接 panic 而非伪装成用户错误。
+    fn with_kdf(passphrase: &str, mem_mib: u32, ops: u32) -> Vault {
+        let salt: [u8; SALT_LEN] = rand::random();
         let mut dek = [0u8; DEK_LEN];
         let parallel = derive_parallelism();
-        derive_dek(
-            passphrase,
-            &salt,
-            KDF_OPS,
-            KDF_MEMORY_KIB,
-            parallel,
-            &mut dek,
-        );
+        derive_dek(passphrase, &salt, ops, mem_mib, parallel, &mut dek)
+            .expect("built-in KDF parameters are valid");
 
         let dek_box = SecretBox::new(Box::new(dek));
         let verifier = seal(&dek_box, VERIFIER_PLAINTEXT.as_bytes());
@@ -199,10 +231,10 @@ impl Vault {
             header: CryptoHeader {
                 version: 1,
                 master_password_set: true,
-                kdf: "argon2id".to_string(),
+                kdf: KDF_ALGORITHM.to_string(),
                 salt: base64::engine::general_purpose::STANDARD.encode(salt),
-                ops: KDF_OPS,
-                mem_mib: KDF_MEMORY_MIB,
+                ops,
+                mem_mib,
                 parallel,
                 verifier: Some(verifier),
             },
@@ -231,27 +263,25 @@ impl Vault {
         }
     }
 
-    /// 用主密码解锁已有保险库（仅模式 1）：读取文件头中的 salt / 参数派生 DEK，
-    /// 解密 `verifier` 校验口令正确性。口令错误返回 [`CryptoError::Verify`]。
-    ///
-    /// 模式 0（随机密钥）无主密码，调用本函数返回 [`CryptoError::Verify`]。
+    /// 用主密码解锁已有保险库（仅模式 1）：读取文件头中的 salt / 参数派生 DEK，解密 `verifier`
+    /// 校验口令正确性；口令错误或模式 0（无主密码）返回 [`CryptoError::Verify`]。头里的 KDF 参数
+    /// 先过 [`decode_kdf_salt`] 边界校验：它可能来自别的机器发来的导出件，非法参数返回
+    /// [`CryptoError::Kdf`] 而不是崩溃。
     pub fn unlock(passphrase: &str, header: &CryptoHeader) -> Result<Vault, CryptoError> {
         if !header.master_password_set {
             // 模式 0 不存在主密码，不应走口令解锁流程。
             return Err(CryptoError::Verify);
         }
-        let salt = base64::engine::general_purpose::STANDARD
-            .decode(&header.salt)
-            .map_err(|_| CryptoError::BadEnvelope)?;
+        let salt = decode_kdf_salt(header)?;
         let mut dek = [0u8; DEK_LEN];
         derive_dek(
             passphrase,
             &salt,
             header.ops,
-            header.mem_mib * 1024,
+            header.mem_mib,
             header.parallel,
             &mut dek,
-        );
+        )?;
         let dek_box = SecretBox::new(Box::new(dek));
 
         // 校验口令：解密哨兵必须与已知明文一致。
@@ -313,21 +343,46 @@ impl Vault {
     }
 }
 
-/// 以 Argon2id 从口令 + 盐派生定长主密钥。
+/// 以 Argon2id 从口令 + 盐派生定长主密钥；参数非法或派生失败返回 [`CryptoError::Kdf`]，绝不 panic。
+/// 内存开销以 **MiB** 传入并在此换成 KiB：`mem_mib` 可能是文件字段，`* 1024` 回绕会得到弱得多的
+/// 参数，故用 `checked_mul` 拒绝而非静默算错——派生崩溃不该是「读一个别人发来的文件」的后果。
 fn derive_dek(
     passphrase: &str,
     salt: &[u8],
     ops: u32,
-    mem_kib: u32,
+    mem_mib: u32,
     parallel: u32,
     out: &mut [u8],
-) {
-    let params = Params::new(mem_kib, ops, parallel, None).expect("invalid Argon2 parameters");
+) -> Result<(), CryptoError> {
+    let mem_kib = mem_mib.checked_mul(1024).ok_or(CryptoError::Kdf)?;
+    let params = Params::new(mem_kib, ops, parallel, None).map_err(|_| CryptoError::Kdf)?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
     // `hash_password_into` 直接把原始密钥写入 `out`，不走 PHC 字符串编码。
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, out)
-        .expect("Argon2 key derivation failed");
+        .map_err(|_| CryptoError::Kdf)
+}
+
+/// 校验并解出文件来源加密头的 KDF 参数（salt）。参数字段在带凭据导入后来自**别的机器发来的文件**：
+/// 零值会让 Argon2 判参数非法、超大 `mem_mib` 能吃满内存，故逐项卡界，越界统一返回
+/// [`CryptoError::Kdf`]，让调用方拿得到可显示的失败。
+fn decode_kdf_salt(header: &CryptoHeader) -> Result<Vec<u8>, CryptoError> {
+    if header.kdf != KDF_ALGORITHM {
+        return Err(CryptoError::Kdf);
+    }
+    let salt = base64::engine::general_purpose::STANDARD
+        .decode(&header.salt)
+        .map_err(|_| CryptoError::Kdf)?;
+    if !(SALT_MIN_LEN..=SALT_MAX_LEN).contains(&salt.len()) {
+        return Err(CryptoError::Kdf);
+    }
+    if !(OPS_MIN..=OPS_MAX).contains(&header.ops)
+        || !(MEM_MIN_MIB..=MEM_MAX_MIB).contains(&header.mem_mib)
+        || !(PARALLEL_MIN..=PARALLEL_MAX).contains(&header.parallel)
+    {
+        return Err(CryptoError::Kdf);
+    }
+    Ok(salt)
 }
 
 /// AES-256-GCM 密封：随机 nonce + 明文 → 密文（含 tag）。
@@ -474,5 +529,99 @@ mod tests {
         let json = r#"{"version":1,"master_password_set":true,"kdf":"argon2id","salt":"AAAAAAAAAAAAAAAAAAAAAA==","ops":3,"mem_mib":64,"verifier":null}"#;
         let header: CryptoHeader = serde_json::from_str(json).expect("旧格式头应可反序列化");
         assert_eq!(header.parallel, 1);
+    }
+
+    /// 一个字段合法的模式 1 头，供越界测试逐字段替换。
+    fn valid_header() -> CryptoHeader {
+        Vault::new("pw").header().clone()
+    }
+
+    /// 逐字段篡改合法头的用例：（标签，篡改动作）。
+    type TamperCase = (&'static str, fn(&mut CryptoHeader));
+
+    /// base64 编码任意长度字节，用作 salt。
+    fn salt_of(len: usize) -> String {
+        base64::engine::general_purpose::STANDARD.encode(vec![0x42u8; len])
+    }
+
+    /// 文件来源的 KDF 参数越界必须**可恢复地拒绝**：带凭据导入后 `CryptoHeader` 不再只来自本机
+    /// 文件，而 Argon2 对这些取值只返回错误——旧实现的 `expect` 会把「打开别人发来的文件」变成崩溃。
+    #[test]
+    fn unlock_rejects_out_of_bounds_kdf_params_without_panicking() {
+        let cases: Vec<TamperCase> = vec![
+            ("parallel = 0", |h| h.parallel = 0),
+            ("parallel 超上界", |h| h.parallel = 1_000_000),
+            ("ops = 0", |h| h.ops = 0),
+            ("ops 超上界", |h| h.ops = 1000),
+            ("mem_mib = 0", |h| h.mem_mib = 0),
+            ("mem_mib 超上界", |h| h.mem_mib = 4_000_000),
+            // 换 KiB 时会回绕的量：回绕后是个弱得多的参数，必须拒绝而非静默派生。
+            ("mem_mib 令 KiB 溢出", |h| h.mem_mib = u32::MAX),
+            ("kdf 算法未知", |h| h.kdf = "argon2i".into()),
+            ("salt 非 base64", |h| h.salt = "!!!".into()),
+            ("salt 过短", |h| h.salt = salt_of(4)),
+            ("salt 过长", |h| h.salt = salt_of(4096)),
+        ];
+        for (label, tamper) in cases {
+            let mut header = valid_header();
+            tamper(&mut header);
+            assert!(
+                matches!(Vault::unlock("pw", &header), Err(CryptoError::Kdf)),
+                "{label} 应返回 Kdf 而非 panic / 其它错误"
+            );
+        }
+    }
+
+    /// 参数在界内但取值不同（如存量文件的 `parallel` 回退 1）应走**口令校验**失败，而非被判越界。
+    #[test]
+    fn in_bounds_but_mismatched_params_reports_verify_not_kdf() {
+        let mut header = valid_header();
+        header.parallel = 1;
+        assert!(
+            matches!(Vault::unlock("pw", &header), Err(CryptoError::Verify)),
+            "界内参数应抵达哨兵校验"
+        );
+    }
+
+    /// `Vault::for_export` 用加硬参数派生，并把所用值写进头——导入端按头里的值还原同一 DEK。
+    #[test]
+    fn for_export_uses_hardened_params_and_round_trips() {
+        let vault = Vault::for_export("export-pw");
+        let header = vault.header();
+        assert!(
+            header.master_password_set,
+            "导出头仍是口令派生的模式 1 形状"
+        );
+        assert_eq!(header.ops, EXPORT_KDF_OPS);
+        assert_eq!(header.mem_mib, EXPORT_KDF_MEMORY_MIB);
+        assert_eq!(header.kdf, KDF_ALGORITHM);
+
+        let env = vault.encrypt("shared-secret");
+        let reopened = Vault::unlock("export-pw", header).expect("头内参数应足以还原同一 DEK");
+        assert_eq!(reopened.decrypt(&env).unwrap().as_str(), "shared-secret");
+        assert!(
+            matches!(
+                Vault::unlock("wrong-export-pw", header),
+                Err(CryptoError::Verify)
+            ),
+            "导出口令错误应判为口令不正确"
+        );
+    }
+
+    /// 本机主口令的派生参数不得因导出通道加硬而改变（那会让每次启动解锁变慢）。
+    #[test]
+    fn vault_new_keeps_local_kdf_params() {
+        let header = Vault::new("pw").header().clone();
+        assert_eq!(header.ops, KDF_OPS);
+        assert_eq!(header.mem_mib, KDF_MEMORY_MIB);
+        assert!(
+            (PARALLEL_MIN..=KDF_PARALLELISM_MAX).contains(&header.parallel),
+            "并行度应在 {PARALLEL_MIN}..={KDF_PARALLELISM_MAX}，实际 {}",
+            header.parallel
+        );
+        let salt = base64::engine::general_purpose::STANDARD
+            .decode(&header.salt)
+            .expect("salt 应为 base64");
+        assert_eq!(salt.len(), SALT_LEN);
     }
 }

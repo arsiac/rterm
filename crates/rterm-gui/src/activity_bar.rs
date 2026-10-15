@@ -13,6 +13,7 @@ use crate::message::Message;
 use crate::state::CenterView;
 use crate::theme;
 use crate::ui::menu_entry;
+use crate::widget::measured_column::MeasuredColumn;
 use iced::mouse::Interaction;
 use iced::widget::space::vertical;
 use iced::widget::tooltip;
@@ -120,21 +121,21 @@ fn settings_menu(active: bool, menu_open: bool) -> Element<'static, Message> {
         .width(Length::Fill)
         .style(move |theme, status| theme::icon_button_style(theme, status, active));
     let menu = crate::ui::menu_container(
-        column![
+        MeasuredColumn::with_children(vec![
             menu_entry(
                 t!("settings.title"),
-                Message::Settings(crate::app::settings::Message::Toggle)
+                Message::Settings(crate::app::settings::Message::Toggle),
             ),
             menu_entry(
                 t!("activity.shortcuts"),
-                Message::Shortcuts(crate::app::shortcuts::Message::Toggle)
+                Message::Shortcuts(crate::app::shortcuts::Message::Toggle),
             ),
-        ]
-        .spacing(2)
-        .into(),
+        ])
+        .spacing(2),
     );
     let dropdown = iced_aw::widget::drop_down::DropDown::new(trigger, menu, menu_open)
-        .width(Length::Fixed(crate::ui::MENU_WIDTH))
+        // 面板宽度自适应最长条目：DropDown 未指定宽度时退化为触发按钮宽度，故须显式给 Shrink。
+        .width(Length::Shrink)
         .alignment(iced_aw::core::alignment::Alignment::TopEnd)
         .on_dismiss(Message::ToggleSettingsMenu);
     tooltip(dropdown, text(t!("activity.settings")), Position::Right)

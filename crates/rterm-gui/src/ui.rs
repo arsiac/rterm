@@ -6,6 +6,7 @@
 use crate::icons::Icon;
 use crate::t;
 use crate::theme;
+use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::button;
 use iced::widget::container;
 use iced::widget::svg;
@@ -16,8 +17,8 @@ use iced::widget::tooltip;
 use iced::widget::tooltip::Position;
 use iced::{Background, Border, Color, Element, Length, Theme};
 
-/// 右键上下文菜单宽度（像素）。
-pub const MENU_WIDTH: f32 = 140.0;
+/// 右键上下文菜单的宽度上限（像素）：菜单按最长条目自适应，超出此宽度才折行。
+pub const MENU_MAX_WIDTH: f32 = 320.0;
 
 /// 弹窗标题字号（像素）：所有弹窗的标题栏是同一套骨架，字号必须一致。
 pub const DIALOG_TITLE_SIZE: f32 = 16.0;
@@ -295,11 +296,10 @@ pub fn inline_action_button<'a, M: Clone + 'a>(
         .padding(padding)
 }
 
-/// 右键菜单中的单条可点击项：文字铺满行宽，悬停 / 按下以主题 `hover` 色反馈。
-///
-/// 不捕获任何环境，可在任意面板间复用。
+/// 右键菜单中的单条可点击项：文字不折行，悬停 / 按下以主题 `hover` 色反馈并铺满整行
+/// （行宽由 [`MeasuredColumn`] 经 [`menu_container`] 给出）。不捕获任何环境，可在任意面板间复用。
 pub fn menu_entry<'a, M: Clone + 'a>(label: impl Into<String>, msg: M) -> Element<'a, M> {
-    button(text(label.into()).width(Length::Fill))
+    button(text(label.into()))
         .on_press(msg)
         .style(|theme, st| {
             let hbg = theme::custom_palette(theme).hover;
@@ -330,7 +330,7 @@ pub fn menu_entry<'a, M: Clone + 'a>(label: impl Into<String>, msg: M) -> Elemen
 ///
 /// 与 [`menu_entry`] 同形（同内边距、同铺满行宽），便于与可用项混排时保持对齐。
 pub fn menu_entry_disabled<'a, M: Clone + 'a>(label: impl Into<String>) -> Element<'a, M> {
-    button(text(label.into()).width(Length::Fill))
+    button(text(label.into()))
         .style(|theme, _st| button::Style {
             background: None,
             border: Border::default().width(0),
@@ -342,10 +342,12 @@ pub fn menu_entry_disabled<'a, M: Clone + 'a>(label: impl Into<String>) -> Eleme
         .into()
 }
 
-/// 右键菜单容器：固定宽度、内边距与抬升边框，承载 [`menu_entry`] 列表，各面板共用此一份样式。
-pub fn menu_container<'a, M: Clone + 'a>(content: Element<'a, M>) -> Element<'a, M> {
-    container(content)
-        .width(Length::Fixed(MENU_WIDTH))
+/// 右键菜单容器：承载 [`MeasuredColumn`] 条目列表，另加上限宽度、内边距与抬升边框。
+/// 行宽自适应与条目铺满由 [`MeasuredColumn`] 的两趟布局给出；`MENU_MAX_WIDTH` 是宽度上限，
+/// 超出者按词折行。各面板共用此一份样式。
+pub fn menu_container<'a, M: Clone + 'a>(items: MeasuredColumn<'a, M>) -> Element<'a, M> {
+    container(items.max_width(MENU_MAX_WIDTH))
+        .width(Length::Shrink)
         .padding(4)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
@@ -361,10 +363,9 @@ pub fn menu_container<'a, M: Clone + 'a>(content: Element<'a, M>) -> Element<'a,
         .into()
 }
 
-/// 右键菜单中的分组分割线：一行低对比度细线，用于把菜单项按功能分类。
-///
-/// 与 [`menu_entry`] / [`menu_container`] 同属右键菜单构件，泛型 `M` 仅用于推断菜单消息类型。
-/// 线本身复用 [`hairline`]，与弹窗内的分隔线同一取色来源。
+/// 右键菜单中的分组分割线：一行低对比度细线，用于把菜单项按功能分类；线复用 [`hairline`]。
+/// 取 `Length::Fill`：[`MeasuredColumn`](crate::widget::measured_column::MeasuredColumn) 的
+/// 第二趟布局以第一趟量出的最宽条目为行宽，故分割线始终铺满菜单。
 pub fn menu_separator<'a, M: Clone + 'a>() -> Element<'a, M> {
     let line: Element<'a, M> = hairline();
     container(line).padding([2, 4]).width(Length::Fill).into()

@@ -5,7 +5,7 @@ use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
 use crate::app::{
-    masterpw, paste, search, session, settings, sftp, tabs, transfer, updates, window,
+    masterpw, paste, search, session, session_io, settings, sftp, tabs, transfer, updates, window,
 };
 use crate::message::Message;
 use crate::vault_keyring;
@@ -52,6 +52,34 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
         session::Event::Emit(m) => {
             let ctx = contexts::session_ctx(app);
             app.session.update(*m, &ctx).map(Message::SessionEvent)
+        }
+        // 会话文件操作意图：转成交给会话文件模块的入口消息（面板视图发不了该模块的类型）。
+        session::Event::SessionFile(flow) => {
+            let msg = match flow {
+                session::FileFlow::Import => session_io::Message::BeginImport,
+                session::FileFlow::Export => session_io::Message::BeginExport,
+            };
+            Task::done(Message::SessionIo(msg))
+        }
+    }
+}
+
+/// 落地 `session_io::Event`：导入合并后的会话列表写回会话模块状态，其余交父层通用动作。
+pub(crate) fn apply_session_io_event(app: &mut App, e: session_io::Event) -> Task<Message> {
+    match e {
+        // 模块已自行落盘（用本机保险库的头），这里只同步内存视图。
+        session_io::Event::SetSessions(sessions) => {
+            app.session.sessions = sessions;
+            Task::none()
+        }
+        session_io::Event::Toast(kind, msg) => {
+            contexts::set_toast(app, kind, msg);
+            Task::none()
+        }
+        // 自回路：系统文件对话框完成、或口令流程的阻塞阶段结束，都由此派发回模块推进下一步。
+        session_io::Event::Emit(m) => {
+            let ctx = contexts::session_io_ctx(app);
+            app.session_io.update(*m, &ctx).map(Message::SessionIoEvent)
         }
     }
 }

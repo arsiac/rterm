@@ -11,6 +11,7 @@ pub(crate) mod paste;
 pub(crate) mod routing;
 pub(crate) mod search;
 pub(crate) mod session;
+pub(crate) mod session_io;
 pub(crate) mod settings;
 pub(crate) mod sftp;
 pub(crate) mod shortcuts;
@@ -54,6 +55,11 @@ pub struct App {
     /// `hovered_session` / `collapsed_groups` / `editor` 收归此处）。模块经 `Message::Session`
     /// 接收意图、经 `Message::SessionEvent` 回写父状态，自身绝不修改 `App`。
     pub session: session::State,
+    /// 会话文件导入 / 导出模块状态：两条口令弹窗的输入、目标路径与进度。
+    ///
+    /// 模块经 `Message::SessionIo` 接收意图、经 `Message::SessionIoEvent` 回写父状态（导入合并后的
+    /// 会话列表），自身绝不修改 `App`。会话面板的菜单只发意图，文件对话框与加解密落盘全归本模块。
+    pub session_io: session_io::State,
     /// 中心面板当前展示的内容。
     pub center: CenterView,
     /// 终端标签页模块状态：标签列表与标签栏导航态（原散落在 `App` 上的 `tabs` / `active_tab` /
@@ -111,6 +117,10 @@ pub struct App {
     /// 凭据保险库（解密所需的 DEK 就绪后持有）。启动自动解锁成功后立即填充，故默认情况
     /// （模式 0 钥匙串 / 模式 1 记住主口令）下主密码弹窗不会出现。
     pub vault: Option<Arc<Vault>>,
+    /// 会话文件「存在但不可用」的原因（`None` 表示可用或首启动）。
+    /// 置值时保险库缺席、会话列表为空、**禁止任何写盘**（当首启动处理会覆盖用户文件）；
+    /// 主密码解锁弹窗须抑制（无有效头可解），改由状态栏 / toast 提示修复文件。
+    pub sessions_file_problem: Option<rterm_config::SessionsFileProblem>,
     /// 主密码模块状态：设置 / 解锁 / 更改流程的全部 UI 字段（含 `MpwStage`、各弹窗输入等）。
     /// 模块经 `Message::MasterPw` 接收意图、经 `Message::MasterPwEvent` 回写父状态，
     /// 自身绝不修改 `App` 的 `vault` / `sessions` / `config`。

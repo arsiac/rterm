@@ -5,12 +5,9 @@ use crate::t;
 
 use iced::Task;
 use log::error;
-use rterm_config::{
-    AuthMethod, JumpHost, SessionConfig, SessionStore, export_sessions, import_sessions, new_id,
-};
+use rterm_config::{AuthMethod, JumpHost, SessionConfig, SessionStore, new_id};
 use rterm_crypto::Vault;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -472,16 +469,23 @@ pub enum Message {
     ToggleMoreMenu,
     /// 会话列表过滤词变更（携带输入框最新文本）。
     FilterChanged(String),
-    /// 打开系统文件选择器以指定导出目标文件（结果经 `Event::Emit` 自回路流入
-    /// [`Message::ExportSessionsToFile]`）。
+    /// 「更多」菜单：导出会话。收起菜单后经 `Event::SessionFile` 交父层转给
+    /// [`super::session_io`]——是否携带凭据由该模块的弹窗开关决定，落盘也不在本模块。
     ExportSessions,
-    /// 导出到所选文件（携带路径，`None` 表示用户取消对话框）。
-    ExportSessionsToFile(Option<PathBuf>),
-    /// 打开系统文件选择器以选取导入文件（结果经 `Event::Emit` 自回路流入
-    /// [`Message::ImportSessionsFromFile`]。
+    /// 「更多」菜单：导入会话（同上；文件是否带凭据由 `session_io` 读文件标记后判定）。
     ImportSessions,
-    /// 从所选文件导入会话（携带路径，`None` 表示用户取消对话框）。
-    ImportSessionsFromFile(Option<PathBuf>),
+}
+
+/// 「更多」菜单里的会话文件操作意图。
+///
+/// 会话面板的视图只能生产 [`Message`]（`layout` 统一 `.map(Message::Session)`），故菜单项在此
+/// 收口为一条上行事件，由父层翻译成 [`super::session_io`] 的消息——模块间不互相直接派发消息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFlow {
+    /// 导入会话。
+    Import,
+    /// 导出会话（是否携带凭据由导出弹窗的开关决定）。
+    Export,
 }
 
 /// 上行事件：仅通知父层，由父层 `Message::SessionEvent` 分支修改父状态并落地。
@@ -499,6 +503,8 @@ pub enum Event {
     Status(Option<String>),
     /// 弹 toast 通知（携带类型与文案，如导入 / 导出结果）。
     Toast(ToastKind, String),
+    /// 会话文件操作意图：父层据此转交 [`super::session_io`]（文件对话框、口令弹窗、加解密与落盘）。
+    SessionFile(FileFlow),
     /// 自回路：把内部消息派发回本模块自身，形成「文件对话框完成 → 回填字段 / 导入导出」闭环。
     Emit(Box<Message>),
 }
@@ -713,77 +719,11 @@ impl State {
             }
             Message::ExportSessions => {
                 self.show_more_menu = false;
-                Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .set_title(t!("session.export"))
-                            .set_file_name("rterm-sessions.toml")
-                            .add_filter("TOML", &["toml"])
-                            .save_file()
-                            .await
-                            .map(|f| f.path().to_path_buf())
-                    },
-                    |path| Event::Emit(Box::new(Message::ExportSessionsToFile(path))),
-                )
-            }
-            Message::ExportSessionsToFile(path) => {
-                if let Some(p) = path {
-                    // 导出仅含连接配置、不含凭证，无需保险库，故不要求 vault 就绪。
-                    match export_sessions(&p, &self.sessions) {
-                        Ok(()) => Task::done(Event::Toast(
-                            ToastKind::Success,
-                            t!("app.exported", count => self.sessions.len(), path => p.display()),
-                        )),
-                        Err(e) => Task::done(Event::Toast(
-                            ToastKind::Error,
-                            t!("app.export_failed", err => e),
-                        )),
-                    }
-                } else {
-                    Task::none()
-                }
+                Task::done(Event::SessionFile(FileFlow::Export))
             }
             Message::ImportSessions => {
                 self.show_more_menu = false;
-                Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .set_title(t!("session.import"))
-                            .add_filter("TOML", &["toml"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_path_buf())
-                    },
-                    |path| Event::Emit(Box::new(Message::ImportSessionsFromFile(path))),
-                )
-            }
-            Message::ImportSessionsFromFile(path) => {
-                if let Some(p) = path {
-                    match import_sessions(&p) {
-                        Ok(imported) => {
-                            let mut count = 0usize;
-                            for mut s in imported {
-                                // 与现有 id 冲突则重分配新 id，避免覆盖原会话。
-                                if self.sessions.iter().any(|e| e.id == s.id) {
-                                    s.id = new_id();
-                                }
-                                self.sessions.push(s);
-                                count += 1;
-                            }
-                            self.save(ctx);
-                            Task::done(Event::Toast(
-                                ToastKind::Success,
-                                t!("app.imported", count => count),
-                            ))
-                        }
-                        Err(e) => Task::done(Event::Toast(
-                            ToastKind::Error,
-                            t!("app.import_failed", err => e),
-                        )),
-                    }
-                } else {
-                    Task::none()
-                }
+                Task::done(Event::SessionFile(FileFlow::Import))
             }
         }
     }

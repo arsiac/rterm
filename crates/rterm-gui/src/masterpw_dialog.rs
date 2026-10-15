@@ -29,10 +29,14 @@ const PANEL_WIDTH: f32 = 440.0;
 /// 2. 保险库尚未就绪（`vault` 为 `None`）——即模式 1 且关闭「本机记住」时，
 ///    启动后需输入主密码解锁。
 ///
-/// 模式 0（随机密钥、已存钥匙串）与模式 1 且开启「本机记住」时，`vault` 已就绪、
-/// `masterpw.setup` 为 `false`，故不弹窗、自动解锁。
+/// 模式 0（随机密钥、已存钥匙串）与模式 1 且开启「本机记住」时，`vault` 已就绪，故不弹窗、自动解锁。
+/// 会话文件**不可用**时解锁分支同样不弹：没有可解的加密头，弹窗只会诱导用户重建保险库覆盖文件；
+/// 用户主动发起的设置流程（`setup` 为 `true`）不受此限，其重建动作由主密码模块自行拒绝。
 pub fn view(app: &App) -> Option<Element<'_, Message>> {
-    if !app.masterpw.setup && app.vault.is_some() {
+    if app.masterpw.setup {
+        return Some(overlay_wrap(panel(app)));
+    }
+    if app.vault.is_some() || app.sessions_file_problem.is_some() {
         return None;
     }
     Some(overlay_wrap(panel(app)))

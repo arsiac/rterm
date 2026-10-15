@@ -105,7 +105,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::shortcuts_dialog::view(app) {
         layers.push(dialog);
     }
-    // 会话编辑器弹窗叠加在最上层（列表在遮罩下仍可见）。
+    // 会话编辑器弹窗（列表在遮罩下仍可见）。
     if let Some(dialog) = crate::session_panel::editor_overlay(app) {
         layers.push(dialog.map(Message::Session));
     }
@@ -125,6 +125,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // 「关闭主密码」二次确认：同样从设置面板进入，与更改弹窗同级。
     if let Some(dialog) = crate::masterpw_dialog::confirm_disable_overlay(app) {
         layers.push(dialog.map(Message::MasterPw));
+    }
+    // 会话凭据导出 / 导入的口令弹窗：压在全部主密码弹窗之上，仍在主机密钥弹窗之下。
+    if let Some(dialog) = crate::session_io_dialog::export_overlay(app) {
+        layers.push(dialog.map(Message::SessionIo));
+    }
+    if let Some(dialog) = crate::session_io_dialog::import_overlay(app) {
+        layers.push(dialog.map(Message::SessionIo));
     }
     // 主机密钥确认弹窗永远最顶层：安全决策必须压过其他一切弹窗。
     if let Some(dialog) = crate::host_key_dialog::view(app) {

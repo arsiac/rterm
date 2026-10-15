@@ -171,6 +171,7 @@ masterpw:
   not_memorized: 请确认已牢记主密码
   write_failed: "写入加密文件失败: %{err}"
   no_store: 会话存储不可用
+  sessions_file_unusable: 会话文件当前无法读取，请先修复该文件后再设置主密码，以免覆盖现有内容
   read_failed: "读取加密文件失败: %{err}"
   wrong: 主密码不正确
   deriving: 正在派生密钥...
@@ -195,8 +196,30 @@ masterpw:
   disable_confirm_note: 此操作不可撤销。关闭后本机将自动解锁、无需输入口令，且不再支持跨设备同步，除非重新设置主密码。
   setup_hint: 设置主密码后，凭据改由主密码加密，可在多设备间同步共享；设置时本机会用新口令重新加密全部凭据，期间需输入一次主密码。
   disabled: 已关闭主密码，凭据改回本机随机密钥加密（同步不可用）
-  enable_sync_required: 请先设置主密码，才能开启同步
   keyring_lost: 本机钥匙串中未找到随机密钥，已生成本机新密钥；此前保存的凭据可能无法解密，请重新输入
+cred:
+  export_title: 导出会话
+  export_body_plain: 只导出连接配置：主机、端口、用户名与跳板路径，不含任何口令或密钥凭据。
+  export_body: 设置一个导出口令：它会为这份文件单独派生一把密钥，把全部凭据重新加密后写入；忘记这个口令，这份导出件将无法恢复。
+  export_submit: 导出
+  include_credentials: 包含凭据
+  toggle_locked: 凭据库未解锁，本次只能导出连接配置
+  import_title: 导入带凭据的会话
+  import_body: 这份导出件由导出口令保护。输入口令后，凭据会被解开并重新加密为本机密钥，之后不再需要该口令。
+  import_submit: 导入
+  password: 导出口令
+  confirm: 再次输入口令
+  working: 正在派生密钥并处理凭据…
+  empty: 请输入导出口令
+  mismatch: 两次输入的口令不一致
+  notice_same_password: 导入这份文件时必须输入同一个口令，否则凭据无法解开。
+  notice_import_password: 请输入生成这份导出件时设置的那个口令。
+  notice_master_password: 本机主密码与系统钥匙串都不参与：两端主密码不同照样能导入，相同也解不开这份文件。
+  wrong_pass: 导出口令不正确（注意：不是本机的主密码）
+  not_export_file: 这不是会话导出文件（看起来是另一台机器的 sessions.toml）。请在来源机器的「导出会话」弹窗里打开「包含凭据」后重新生成。
+  exported: "已导出 %{count} 个会话（含凭据）到 %{path}"
+  exported_dropped: "已导出 %{count} 个会话到 %{path}，其中 %{dropped} 条凭据无法解密已被略过"
+  imported_dropped: "已导入 %{count} 个会话，其中 %{dropped} 条凭据无法解密已被略过"
 sftp:
   open_hint: 尚未打开文件管理。请先在会话中“连接”，再点击左侧“文件”图标打开。
   up_dir: 返回上级
@@ -226,9 +249,6 @@ sftp:
   mkdir_failed: 创建目录失败
   delete_failed: 删除失败
   rename_failed: 重命名失败
-  upload_failed: 上传失败
-  download_failed: 下载失败
-  transfer_lost: 传输任务异常终止
   upload_title: 选择要上传的文件
   upload_folder_title: 选择要上传的文件夹
   download_title: 选择下载目录
@@ -289,7 +309,6 @@ terminal:
   reconnecting: 正在重新连接…
   reconnected_notice: 会话已重新开始，之前的进程未恢复
   reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}，可用 cd 返回
-  ready: 终端已就绪
   menu_copy: 复制
   menu_paste: 粘贴
   paste_warn_title: 粘贴确认
@@ -330,13 +349,8 @@ app:
   reconnected: "已重新连接: %{id}"
   disconnected: "连接已断开: %{id}"
   session_ended: "远端会话已结束: %{id}"
-  sftp_open_failed: "打开 SFTP 失败: %{err}"
-  list_failed: "列举目录失败: %{err}"
-  transfer_partial: 部分传输失败
-  transfer_done: 传输完成
+  list_failed: 列举目录失败
   canceled: 已取消
-  op_success: 操作成功
-  op_failed: "操作失败: %{err}"
   exported: 已导出 %{count} 个会话到 %{path}
   export_failed: "导出失败: %{err}"
   imported: 已导入 %{count} 个会话
@@ -346,6 +360,11 @@ app:
   save_failed: "保存失败: %{err}"
   decrypt_failed: 凭据解密失败（主密码可能已变更）
   vault_locked: 凭据库未解锁
+  sessions_file_unusable: "会话文件不可用（%{path}）：%{reason}"
+  sessions_file_unreadable: "无法读取（%{err}）"
+  sessions_file_unparsable: "格式无法解析（%{err}）"
+  sessions_file_is_export: 这是一份会话导出文件，不能当作本机配置加载，请改用「导入会话」
+  sessions_file_no_crypto: 文件缺少加密头，可能被手工改动过
   no_password: 会话缺少登录密码，请在编辑中填写后重试
   session_missing: 会话已不存在
   terminal_ready: 终端已就绪
@@ -355,8 +374,6 @@ app:
   config_save_failed: "配置保存失败: %{err}"
   open_terminal_first: 请先打开该会话的终端
   connect_session_first: 请先连接会话
-  sftp_not_ready: SFTP 未就绪
-  transfer_error: "传输任务异常: %{err}"
   connect_task_error: "连接任务异常退出: %{err}"
   connect_timeout: 连接超时
 errors:

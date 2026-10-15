@@ -2,7 +2,8 @@
 //!
 //! 这些类型既用于内存中的状态管理，也通过 [`serde`] 持久化到 `sessions.toml`。
 
-use rterm_crypto::Envelope;
+use log::warn;
+use rterm_crypto::{Envelope, Vault};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -93,8 +94,78 @@ impl SessionConfig {
             ..self.clone()
         }
     }
+    /// 用新保险库重新加密本会话的全部凭据（含每一跳），旧保险库用于先解密。
+    /// `None` 信封与 `Agent` 认证原样保留；返回 `(重加密后的会话, 被略过的凭据条数)`——
+    /// 解不开的信封置 `None` 并记 `warn`，调用方**须把条数报给用户**，静默丢弃会产出看似完整的备份。
+    pub fn rekeyed(&self, old: &Vault, new: &Vault) -> (SessionConfig, usize) {
+        let mut dropped = 0usize;
+        let jumps = self
+            .jumps
+            .iter()
+            .map(|j| {
+                let (auth, d) = rekey_auth(&j.auth, &self.id, old, new);
+                dropped += d;
+                JumpHost { auth, ..j.clone() }
+            })
+            .collect();
+        let (auth, d) = rekey_auth(&self.auth, &self.id, old, new);
+        dropped += d;
+        (
+            SessionConfig {
+                auth,
+                jumps,
+                ..self.clone()
+            },
+            dropped,
+        )
+    }
 }
 
+/// 用新保险库重新加密单个 [`AuthMethod`] 的凭据信封；返回替换后的值与被略过的条数（`0` 或 `1`）。
+///
+/// 解密失败（密钥已换 / 信封损坏）时该凭据置 `None` 并记 `warn`，认证方式与私钥路径保留。
+fn rekey_auth(
+    auth: &AuthMethod,
+    session_id: &str,
+    old: &Vault,
+    new: &Vault,
+) -> (AuthMethod, usize) {
+    let reencrypt = |env: &Envelope| -> (Option<Envelope>, usize) {
+        match old.decrypt(env) {
+            Ok(plain) => (Some(new.encrypt(plain.as_str())), 0),
+            Err(e) => {
+                warn!("Failed to reencrypt credential (session {session_id}): {e}");
+                (None, 1)
+            }
+        }
+    };
+    match auth {
+        AuthMethod::Password { password } => match password.as_ref().map(reencrypt) {
+            Some((password, d)) => (AuthMethod::Password { password }, d),
+            None => (AuthMethod::Password { password: None }, 0),
+        },
+        AuthMethod::PublicKey {
+            key_path,
+            passphrase,
+        } => match passphrase.as_ref().map(reencrypt) {
+            Some((passphrase, d)) => (
+                AuthMethod::PublicKey {
+                    key_path: key_path.clone(),
+                    passphrase,
+                },
+                d,
+            ),
+            None => (
+                AuthMethod::PublicKey {
+                    key_path: key_path.clone(),
+                    passphrase: None,
+                },
+                0,
+            ),
+        },
+        AuthMethod::Agent => (AuthMethod::Agent, 0),
+    }
+}
 /// 剥离 [`AuthMethod`] 中的凭据信封：密码与私钥口令置为 `None`，认证方式与路径保留。
 fn strip_credentials(auth: &AuthMethod) -> AuthMethod {
     match auth {
@@ -228,5 +299,90 @@ mod tests {
         // 连接信息原样保留。
         assert_eq!(stripped.jumps[0].host, "bastion-a");
         assert_eq!(stripped.jumps[1].username, "jumpuser");
+    }
+
+    /// `rekeyed`：目标 + 每一跳的凭据都换到新 DEK，明文不变。
+    #[test]
+    fn rekeyed_moves_every_credential_to_the_new_vault() {
+        let old = Vault::new("old-master");
+        let new = Vault::new("new-master");
+        let cfg = session_with_jumps(&old);
+
+        let (rekeyed, dropped) = cfg.rekeyed(&old, &new);
+        assert_eq!(dropped, 0, "同一 DEK 加密的信封都应可解");
+        assert_eq!(rekeyed.id, cfg.id, "重加密不应改动任何连接信息");
+        assert_eq!(rekeyed.jumps.len(), 2);
+
+        // 新 DEK 解得开，旧 DEK 解不开——证明确实换了密钥而非原样复制。
+        let env = match &rekeyed.auth {
+            AuthMethod::Password { password } => password.as_ref().expect("目标凭据应在"),
+            other => panic!("认证方式不应改变，实际 {other:?}"),
+        };
+        assert_eq!(new.decrypt(env).unwrap().as_str(), "target-secret");
+        assert!(old.decrypt(env).is_err(), "旧 DEK 不应再解得开");
+        for jump in &rekeyed.jumps {
+            match &jump.auth {
+                AuthMethod::Password { password } => {
+                    let env = password.as_ref().expect("跳板凭据应在");
+                    assert_eq!(new.decrypt(env).unwrap().as_str(), "jump-secret");
+                }
+                other => panic!("跳板认证方式不应改变，实际 {other:?}"),
+            }
+        }
+    }
+
+    /// `rekeyed`：解不开的旧信封**逐条计入 `dropped`**（含跳板机），会话本身仍带出。
+    /// 这是导出 / 导入回报「略过了几条口令」的依据——静默丢弃比直接失败更危险。
+    #[test]
+    fn rekeyed_counts_every_credential_it_cannot_decrypt() {
+        let foreign = Vault::new("someone-elses-dek");
+        let local = Vault::new("local");
+        // 三条凭据（目标 + 两跳）全部由外来 DEK 加密，本机一条都解不开。
+        let cfg = session_with_jumps(&foreign);
+
+        let (rekeyed, dropped) = cfg.rekeyed(&local, &local);
+        assert_eq!(dropped, 3, "目标与每一跳各计一条");
+        match &rekeyed.auth {
+            AuthMethod::Password { password } => {
+                assert!(password.is_none(), "解不开的凭据须置空，不得留下死密文")
+            }
+            other => panic!("认证方式不应改变，实际 {other:?}"),
+        }
+        assert!(
+            rekeyed.jumps.iter().all(
+                |j| matches!(&j.auth, AuthMethod::Password { password } if password.is_none())
+            ),
+            "跳板机解不开的凭据同样置空"
+        );
+        assert_eq!(rekeyed.jumps.len(), 2, "会话与跳板链本身仍须完整带出");
+    }
+
+    /// `rekeyed`：`None` 凭据与 `Agent` 认证不计入略过数（它们本就没有凭据）。
+    #[test]
+    fn rekeyed_ignores_credentialless_auth_methods() {
+        let vault = Vault::new("m");
+        let cfg = SessionConfig {
+            id: "sess-none".into(),
+            name: "n".into(),
+            host: "h".into(),
+            port: 22,
+            username: "u".into(),
+            auth: AuthMethod::Password { password: None },
+            group: None,
+            jumps: vec![JumpHost {
+                host: "j".into(),
+                port: 22,
+                username: "ju".into(),
+                auth: AuthMethod::Agent,
+            }],
+        };
+
+        let (rekeyed, dropped) = cfg.rekeyed(&vault, &vault);
+        assert_eq!(dropped, 0, "无凭据不该被算成丢弃");
+        match &rekeyed.auth {
+            AuthMethod::Password { password } => assert!(password.is_none()),
+            other => panic!("认证方式不应改变，实际 {other:?}"),
+        }
+        assert!(matches!(rekeyed.jumps[0].auth, AuthMethod::Agent));
     }
 }
