@@ -17,6 +17,8 @@ use iced::widget::tooltip;
 use iced::widget::tooltip::Position;
 use iced::{Background, Border, Color, Element, Length, Theme};
 
+/// 右键上下文菜单的宽度下限（像素）：条目都短时按此值铺底，菜单不至于太窄。
+pub const MENU_MIN_WIDTH: f32 = 150.0;
 /// 右键上下文菜单的宽度上限（像素）：菜单按最长条目自适应，超出此宽度才折行。
 pub const MENU_MAX_WIDTH: f32 = 320.0;
 
@@ -322,7 +324,7 @@ pub fn menu_entry<'a, M: Clone + 'a>(label: impl Into<String>, msg: M) -> Elemen
             }
         })
         .width(Length::Fill)
-        .padding([4, 8])
+        .padding([4, 12])
         .into()
 }
 
@@ -338,15 +340,14 @@ pub fn menu_entry_disabled<'a, M: Clone + 'a>(label: impl Into<String>) -> Eleme
             ..Default::default()
         })
         .width(Length::Fill)
-        .padding([4, 8])
+        .padding([4, 12])
         .into()
 }
 
-/// 右键菜单容器：承载 [`MeasuredColumn`] 条目列表，另加上限宽度、内边距与抬升边框。
-/// 行宽自适应与条目铺满由 [`MeasuredColumn`] 的两趟布局给出；`MENU_MAX_WIDTH` 是宽度上限，
-/// 超出者按词折行。各面板共用此一份样式。
+/// 右键菜单容器：承载 [`MeasuredColumn`] 条目列表，宽度夹在 `MENU_MIN_WIDTH` 与 `MENU_MAX_WIDTH`
+/// 之间按最长条目自适应，`Fill` 子项铺满整行。各面板（含 dropdown 菜单）共用此一份样式。
 pub fn menu_container<'a, M: Clone + 'a>(items: MeasuredColumn<'a, M>) -> Element<'a, M> {
-    container(items.max_width(MENU_MAX_WIDTH))
+    container(items.min_width(MENU_MIN_WIDTH).max_width(MENU_MAX_WIDTH))
         .width(Length::Shrink)
         .padding(4)
         .style(|theme: &Theme| container::Style {
@@ -368,7 +369,7 @@ pub fn menu_container<'a, M: Clone + 'a>(items: MeasuredColumn<'a, M>) -> Elemen
 /// 第二趟布局以第一趟量出的最宽条目为行宽，故分割线始终铺满菜单。
 pub fn menu_separator<'a, M: Clone + 'a>() -> Element<'a, M> {
     let line: Element<'a, M> = hairline();
-    container(line).padding([2, 4]).width(Length::Fill).into()
+    container(line).padding([2, 8]).width(Length::Fill).into()
 }
 
 /// 文本框 / 组合框输入区样式：跟随主题底色，圆角边框（名称 / 主机 / 路径等复用）。

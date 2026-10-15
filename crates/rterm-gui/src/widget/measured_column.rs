@@ -18,6 +18,7 @@ use iced_core::{
 #[allow(missing_debug_implementations)]
 pub struct MeasuredColumn<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> {
     spacing: f32,
+    min_width: f32,
     max_width: f32,
     align: Alignment,
     children: Vec<Element<'a, Message, Theme, Renderer>>,
@@ -28,6 +29,7 @@ impl<'a, Message, Theme, Renderer> MeasuredColumn<'a, Message, Theme, Renderer> 
     pub fn new() -> Self {
         Self {
             spacing: 0.0,
+            min_width: 0.0,
             max_width: f32::INFINITY,
             align: Alignment::Start,
             children: Vec::new(),
@@ -51,6 +53,12 @@ impl<'a, Message, Theme, Renderer> MeasuredColumn<'a, Message, Theme, Renderer> 
     /// 设置子项间距（像素）。
     pub fn spacing(mut self, amount: impl Into<Pixels>) -> Self {
         self.spacing = amount.into().0;
+        self
+    }
+
+    /// 设置宽度下限（像素）：最宽子项不足时按此值铺底，短条目菜单不至于太窄。
+    pub fn min_width(mut self, limit: impl Into<Pixels>) -> Self {
+        self.min_width = limit.into().0;
         self
     }
 
@@ -93,7 +101,7 @@ where
         )
         .width(Length::Shrink)
         .height(Length::Shrink);
-        let mut widest: f32 = 0.0;
+        let mut widest: f32 = self.min_width;
         for (child, state) in self.children.iter_mut().zip(&mut tree.children) {
             let size = child.as_widget_mut().layout(state, renderer, &probe).size();
             widest = widest.max(size.width);
