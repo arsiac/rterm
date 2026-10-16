@@ -6,7 +6,7 @@ use crate::t;
 
 use crate::App;
 use crate::app::snippets::Message;
-use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon};
+use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
 use crate::ui::{menu_entry, menu_entry_disabled, menu_separator};
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
@@ -48,7 +48,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .into()
     };
 
-    let mut content = column![toolbar(can_edit)].spacing(8).padding(10);
+    let mut content = column![toolbar(app, can_edit)].spacing(8).padding(10);
     if let Some(problem) = &state.load_problem {
         content = content.push(problem_banner(problem));
     }
@@ -65,8 +65,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
     content.push(body).into()
 }
 
-/// 顶部工具栏：右对齐的「新建」图标按钮（文件不可用时禁用）。
-fn toolbar(can_edit: bool) -> Element<'static, Message> {
+/// 顶部工具栏：右对齐的「快速命令唤起」与「新建」图标按钮（新建在文件不可用时禁用）。
+fn toolbar(app: &App, can_edit: bool) -> Element<'static, Message> {
+    // tooltip 顺带展示当前绑定（键位可重绑，不写死默认值）。
+    let palette_tip = match app
+        .shortcuts
+        .chord_for(crate::app::shortcuts::Command::OpenSnippets)
+    {
+        Some(chord) => t!("snippet.palette_tooltip", chord => chord.to_string()),
+        None => t!("snippet.open_palette"),
+    };
+    let palette = icon_button(
+        Icon::Flash,
+        ACTION_ICON_SIZE,
+        palette_tip,
+        Message::TogglePalette,
+        Position::Bottom,
+    );
     let add = button(Icon::Add.svg(ACTION_ICON_SIZE))
         .on_press_maybe(can_edit.then_some(Message::NewSnippet))
         .padding(ICON_BUTTON_DEFAULT_PADDING)
@@ -76,10 +91,14 @@ fn toolbar(can_edit: bool) -> Element<'static, Message> {
     } else {
         add.into()
     };
-    container(row![add].align_y(iced::alignment::Vertical::Center))
-        .width(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Right)
-        .into()
+    container(
+        row![palette, add]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .width(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Right)
+    .into()
 }
 
 /// 片段文件不可用（读不出 / 解析不了）的常驻提示：明说原因并要求用户先修文件。

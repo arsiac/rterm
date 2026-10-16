@@ -196,6 +196,10 @@ pub(crate) fn handle_app_key(
     if is_plain_escape(chord) {
         return handle_escape(app);
     }
+    // 弹窗打开分支必须早于 `Captured` 丢弃：模态遮罩会把按键标为已捕获，而弹窗正需要这些键。
+    if app.snippets.palette.open {
+        return palette_nav(app, chord);
+    }
     if app.search.is_open() {
         return search_nav(app, chord);
     }
@@ -222,13 +226,33 @@ fn search_nav(app: &mut App, chord: &Chord) -> Task<Message> {
     app.search.update(message).map(Message::SearchEvent)
 }
 
+/// 快速命令弹窗打开态的上下文键：Enter 发送、↑ / ↓ 移动高亮、弹窗唤起键 toggle 关闭，
+/// 其余不派发（同 `search_nav` 的取舍——输入框只收字符，方向键与回车由全局分支就地接管）。
+fn palette_nav(app: &mut App, chord: &Chord) -> Task<Message> {
+    let message = if app.shortcuts.command_for(chord) == Some(shortcuts::Command::OpenSnippets) {
+        // 与终端保留集同源查表，用户改键后关闭键随之变化，不写死默认值。
+        snippets::Message::TogglePalette
+    } else {
+        match chord.key {
+            ChordKey::Enter => snippets::Message::PaletteSend,
+            ChordKey::ArrowDown => snippets::Message::PaletteNext,
+            ChordKey::ArrowUp => snippets::Message::PalettePrevious,
+            _ => return Task::none(),
+        }
+    };
+    let ctx = contexts::snippets_ctx(app);
+    app.snippets
+        .update(message, &ctx)
+        .map(Message::SnippetsEvent)
+}
+
 /// 是否为不带任何修饰键的 Esc（上下文键判据）。
 fn is_plain_escape(chord: &Chord) -> bool {
     !chord.ctrl && !chord.shift && !chord.alt && !chord.logo && chord.key == ChordKey::Escape
 }
 
 /// 把键位表命中的命令派发为对应模块的既有消息（与菜单 / 按钮入口行为一致）。
-fn dispatch_command(app: &mut App, command: shortcuts::Command) -> Task<Message> {
+pub(crate) fn dispatch_command(app: &mut App, command: shortcuts::Command) -> Task<Message> {
     match command {
         shortcuts::Command::OpenSettings => {
             Task::done(Message::Settings(settings::Message::Toggle))
@@ -247,6 +271,9 @@ fn dispatch_command(app: &mut App, command: shortcuts::Command) -> Task<Message>
             Some(tab_id) => Task::done(Message::Search(search::Message::Open { tab_id })),
             None => Task::none(),
         },
+        shortcuts::Command::OpenSnippets => {
+            Task::done(Message::Snippets(snippets::Message::TogglePalette))
+        }
         shortcuts::Command::SftpRename => {
             Task::done(Message::Sftp(sftp::Message::SftpRenameShortcut))
         }
@@ -293,6 +320,12 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.shortcuts
             .update(shortcuts::Message::Toggle)
             .map(Message::ShortcutsEvent)
+    } else if app.snippets.palette.open {
+        // 快速命令弹窗：Esc 关闭并把键盘焦点交还终端（模态层级：设置 / 快捷键之下、搜索条之上）。
+        let ctx = contexts::snippets_ctx(app);
+        app.snippets
+            .update(snippets::Message::ClosePalette, &ctx)
+            .map(Message::SnippetsEvent)
     } else if app.search.is_open() {
         // 搜索条是内联输入态：弹窗（含设置）全部让位后优先于会话编辑器 / SFTP 对话框关闭。
         app.search

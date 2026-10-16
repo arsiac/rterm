@@ -21,18 +21,21 @@ pub enum Command {
     NewSession,
     /// 终端内搜索。
     OpenSearch,
+    /// 常用命令快速弹窗。
+    OpenSnippets,
     /// 重命名选中的文件条目。
     SftpRename,
 }
 
 impl Command {
     /// 全部命令（按 [`CommandGroup`] 的展示顺序排列）。
-    pub const ALL: [Command; 6] = [
+    pub const ALL: [Command; 7] = [
         Command::OpenSettings,
         Command::OpenShortcuts,
         Command::ToggleSidebar,
         Command::NewSession,
         Command::OpenSearch,
+        Command::OpenSnippets,
         Command::SftpRename,
     ];
 
@@ -44,6 +47,7 @@ impl Command {
             Command::ToggleSidebar => "toggle_sidebar",
             Command::NewSession => "new_session",
             Command::OpenSearch => "open_search",
+            Command::OpenSnippets => "open_snippets",
             Command::SftpRename => "sftp_rename",
         }
     }
@@ -65,6 +69,13 @@ impl Command {
                 logo: false,
                 key: ChordKey::Char('F'),
             }),
+            Command::OpenSnippets => Some(Chord {
+                ctrl: true,
+                shift: true,
+                alt: false,
+                logo: false,
+                key: ChordKey::Char('P'),
+            }),
             Command::SftpRename => Some(Chord {
                 ctrl: false,
                 shift: false,
@@ -83,10 +94,11 @@ impl Command {
 
     /// 终端聚焦时是否应由终端拦下该命令的和弦（不写入远端）。
     ///
-    /// 仅 [`Command::OpenSearch`]：其组合键已被客户端占用，写入远端只会干扰远端程序。
+    /// 仅 [`Command::OpenSearch`] 与 [`Command::OpenSnippets`]：组合键已被客户端占用，
+    /// 写入远端只会干扰远端程序（`Ctrl+Shift+P` 不拦会当 `\x10` 写出）。
     /// 其余命令沿用终端既有的功能键透传（如 `F2` 仍写 `\x1bOQ`），故不拦截。
     pub fn terminal_intercepts(self) -> bool {
-        matches!(self, Command::OpenSearch)
+        matches!(self, Command::OpenSearch | Command::OpenSnippets)
     }
 
     /// 所属分组。
@@ -96,7 +108,7 @@ impl Command {
                 CommandGroup::General
             }
             Command::NewSession => CommandGroup::Session,
-            Command::OpenSearch => CommandGroup::Terminal,
+            Command::OpenSearch | Command::OpenSnippets => CommandGroup::Terminal,
             Command::SftpRename => CommandGroup::Files,
         }
     }

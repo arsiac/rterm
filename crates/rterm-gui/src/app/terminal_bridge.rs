@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::app::contexts;
 use crate::app::paste;
-use crate::app::search;
+use crate::app::routing;
 use crate::app::tabs;
 use crate::app::tasks::open_terminal_task;
 use crate::font;
@@ -345,10 +345,11 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
                 .update(paste::Message::Request { tab_id, text }, &ctx)
                 .map(Message::PasteEvent)
         }
-        // Ctrl+Shift+F（终端聚焦时部件已拦下、未写 PTY）：打开该标签的搜索条。
-        TermEvent::SearchRequested(id) => {
-            Task::done(Message::Search(search::Message::Open { tab_id: id }))
-        }
+        // 终端保留和弦（终端聚焦时部件已拦下、未写 PTY）：按键位表派发对应命令（如 Ctrl+Shift+F 开搜索条）。
+        TermEvent::ReservedChord { chord } => match app.shortcuts.command_for(&chord) {
+            Some(command) => routing::dispatch_command(app, command),
+            None => Task::none(),
+        },
         TermEvent::BackendCall(id, backend_cmd) => {
             // 点击 / 选择 / 滚轮 / 键入等「用户与终端的交互」都以非 Resize 的 BackendCall 形式到达；
             // 一旦出现即说明键盘焦点已落回终端，恢复聚焦态（修正「点回终端边框仍显未聚焦」）。

@@ -848,7 +848,7 @@ pub(super) fn update(
                     && let Some(chord) = crate::keymap::chord_from_key(key, *modifiers)
                     && crate::keymap::is_terminal_reserved(&chord, view.shortcuts)
                 {
-                    shell.publish(Event::SearchRequested(view.term.id));
+                    shell.publish(Event::ReservedChord { chord });
                     shell.capture_event();
                     return;
                 }

@@ -96,6 +96,10 @@ snippet:
   empty: No snippets yet
   empty_hint: Click + in the top-right to add one, then right-click a row to send it.
   filter_no_match: No matching snippets.
+  palette_placeholder: Type to filter snippets…
+  palette_no_match: No matching snippets.
+  open_palette: Quick commands
+  palette_tooltip: Quick commands (%{chord})
   new: New snippet
   edit: Edit snippet
   send_current: Send (current session)
@@ -147,6 +151,7 @@ shortcuts:
   cmd_toggle_sidebar: Toggle sidebar
   cmd_new_session: New session
   cmd_open_search: Search in terminal
+  cmd_open_snippets: Quick command palette
   cmd_sftp_rename: Rename file
 session:
   new: New session
@@ -359,6 +364,7 @@ terminal:
   paste_confirm: Paste
   paste_suppress: Don't warn again in this session
   menu_search: Find
+  menu_palette: Quick commands
   search:
     placeholder: Find
     no_results: No results

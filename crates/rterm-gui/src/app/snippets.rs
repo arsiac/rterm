@@ -112,6 +112,24 @@ pub struct State {
     pub selected: Option<usize>,
     /// 编辑弹窗草稿（无则未编辑）。
     pub editor: Option<EditorDraft>,
+    /// 快速命令弹窗（Ctrl+Shift+P）的交互态。
+    pub palette: Palette,
+}
+
+/// 快速命令弹窗的交互态：过滤词与命中集内的高亮位置。
+pub struct Palette {
+    /// 弹窗是否打开。
+    pub open: bool,
+    /// 过滤词：对名称与文本做大小写不敏感子串匹配，空串即全量。
+    pub query: String,
+    /// 高亮位置（过滤命中集内的下标，非清单下标）；`None` 表示无命中。
+    pub highlight: Option<usize>,
+    /// 过滤输入框部件 id（打开时父层据此抢键盘焦点）。
+    pub input_id: iced::widget::Id,
+    /// 命中列表滚动部件 id（键盘移动高亮时据此编程式滚动）。
+    pub list_id: iced::widget::Id,
+    /// 命中列表当前滚动 y 的镜像（on_scroll 回写，键盘滚动时自行同步）。
+    pub scroll_y: f32,
 }
 
 impl State {
@@ -125,6 +143,14 @@ impl State {
             hovered: None,
             selected: None,
             editor: None,
+            palette: Palette {
+                open: false,
+                query: String::new(),
+                highlight: None,
+                input_id: iced::widget::Id::unique(),
+                list_id: iced::widget::Id::unique(),
+                scroll_y: 0.0,
+            },
         };
         match Snippets::new() {
             Ok(mut store) => {
@@ -264,6 +290,41 @@ impl State {
             }
             Message::SendCurrent(idx) => self.send_current(idx, ctx),
             Message::SendAll(idx) => self.send_all(idx, ctx),
+            Message::TogglePalette => {
+                if self.palette.open {
+                    self.close_palette()
+                } else {
+                    self.open_palette()
+                }
+            }
+            Message::ClosePalette => self.close_palette(),
+            Message::PaletteQuery(query) => {
+                self.palette.query = query;
+                self.palette.highlight = self.first_hit();
+                self.scroll_palette_to(0.0)
+            }
+            Message::PaletteNext => {
+                self.move_palette_highlight(1);
+                self.keep_highlight_visible()
+            }
+            Message::PalettePrevious => {
+                self.move_palette_highlight(-1);
+                self.keep_highlight_visible()
+            }
+            Message::PaletteScrolled(y) => {
+                self.palette.scroll_y = y;
+                Task::none()
+            }
+            Message::PalettePick(pos) => {
+                // 单击命中行：先对齐高亮再发送，与键盘回车同一落点。
+                if pos < self.palette_hits().len() {
+                    self.palette.highlight = Some(pos);
+                    self.palette_send(ctx)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::PaletteSend => self.palette_send(ctx),
         }
     }
 
@@ -278,6 +339,102 @@ impl State {
         }
         match ctx.active {
             Some(tab_id) => Task::done(Event::Send { tab_id, bytes }),
+            None => Task::done(Event::Toast(ToastKind::Error, t!("snippet.no_target"))),
+        }
+    }
+
+    /// 当前过滤词下的命中下标（清单原始下标，顺序即展示顺序）。
+    fn palette_hits(&self) -> Vec<usize> {
+        filtered_snippets(&self.items, &self.palette.query)
+    }
+
+    /// 命中集中的首个高亮位置；无命中为 `None`。
+    fn first_hit(&self) -> Option<usize> {
+        (!self.palette_hits().is_empty()).then_some(0)
+    }
+
+    /// 在命中集内移动高亮（夹紧不环绕）；无命中无操作。
+    fn move_palette_highlight(&mut self, delta: isize) {
+        let Some(current) = self.palette.highlight else {
+            return;
+        };
+        let count = self.palette_hits().len();
+        if count == 0 {
+            return;
+        }
+        let next = (current as isize + delta).clamp(0, count as isize - 1);
+        self.palette.highlight = Some(next as usize);
+    }
+
+    /// 编程式滚动命中列表到绝对 y（只动纵向），镜像同步写入以兜住 on_scroll 不回触的情况。
+    fn scroll_palette_to(&mut self, y: f32) -> Task<Event> {
+        self.palette.scroll_y = y;
+        iced::widget::operation::scroll_to(
+            self.palette.list_id.clone(),
+            iced::widget::scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        )
+    }
+
+    /// 键盘移动高亮后把该行滚回视口：越上缘贴顶、越下缘贴底，视口内不动。
+    fn keep_highlight_visible(&mut self) -> Task<Event> {
+        let Some(pos) = self.palette.highlight else {
+            return Task::none();
+        };
+        let Some(y) = crate::snippet_palette::scroll_target(
+            self.palette.scroll_y,
+            pos,
+            self.palette_hits().len(),
+        ) else {
+            return Task::none();
+        };
+        self.scroll_palette_to(y)
+    }
+
+    /// 打开弹窗：清空过滤与高亮，收走终端焦点并把键盘交给过滤框。
+    fn open_palette(&mut self) -> Task<Event> {
+        self.palette.open = true;
+        self.palette.query.clear();
+        self.palette.highlight = self.first_hit();
+        // 视图重建后 scrollable 从 0 起滚，镜像随之归零即可。
+        self.palette.scroll_y = 0.0;
+        Task::batch([
+            Task::done(Event::SetTerminalFocused(false)),
+            Task::done(Event::FocusPaletteInput),
+        ])
+    }
+
+    /// 关闭弹窗并复位交互态；焦点交还终端（父层自会处理「窗口失焦不写」的守卫）。
+    fn close_palette(&mut self) -> Task<Event> {
+        self.palette.open = false;
+        self.palette.query.clear();
+        self.palette.highlight = None;
+        self.palette.scroll_y = 0.0;
+        Task::done(Event::SetTerminalFocused(true))
+    }
+
+    /// 发送高亮命中项到当前会话（活动标签）：成功即关闭弹窗；无活动标签只提示、保持打开。
+    fn palette_send(&mut self, ctx: &Ctx) -> Task<Event> {
+        let Some(pos) = self.palette.highlight else {
+            return Task::none();
+        };
+        let Some(&idx) = self.palette_hits().get(pos) else {
+            return Task::none();
+        };
+        let Some(snippet) = self.items.get(idx) else {
+            return Task::none();
+        };
+        let bytes = compose_send_bytes(&snippet.text, snippet.submit);
+        if bytes.is_empty() {
+            return Task::none();
+        }
+        match ctx.active {
+            Some(tab_id) => Task::batch([
+                Task::done(Event::Send { tab_id, bytes }),
+                self.close_palette(),
+            ]),
             None => Task::done(Event::Toast(ToastKind::Error, t!("snippet.no_target"))),
         }
     }
@@ -539,6 +696,22 @@ pub enum Message {
     SendCurrent(usize),
     /// 发送到所有打开的会话（携带清单下标）。
     SendAll(usize),
+    /// 切换快速命令弹窗（开则关、关则开）。
+    TogglePalette,
+    /// 关闭快速命令弹窗（丢弃过滤与高亮）。
+    ClosePalette,
+    /// 弹窗过滤词变更（携带输入框最新文本）。
+    PaletteQuery(String),
+    /// 弹窗高亮移到下一个命中项（夹紧不环绕）。
+    PaletteNext,
+    /// 弹窗高亮移到上一个命中项（夹紧不环绕）。
+    PalettePrevious,
+    /// 弹窗命中列表滚动位置上报（携带滚动 y），维持镜像供键盘滚动判界。
+    PaletteScrolled(f32),
+    /// 单击弹窗命中行（携带命中集下标）：对齐高亮并发送。
+    PalettePick(usize),
+    /// 发送弹窗高亮项到当前会话（键盘回车入口）。
+    PaletteSend,
 }
 
 /// 上行事件：由父层落地到终端写入通道、toast 与状态栏。
@@ -558,6 +731,10 @@ pub enum Event {
         /// 落盘后的片段条数。
         count: usize,
     },
+    /// 请求把键盘焦点交给弹窗过滤输入框（打开时）。
+    FocusPaletteInput,
+    /// 请求写回「终端是否持有键盘焦点」（弹窗开关时的焦点交接，父层带窗口失焦守卫落地）。
+    SetTerminalFocused(bool),
 }
 
 /// 父层只读上下文：发送目标快照。
@@ -903,5 +1080,83 @@ mod tests {
         assert_eq!(slot, None);
         shift_index(&mut None, 0);
         assert_eq!(slot, None);
+    }
+
+    #[test]
+    fn palette_open_query_highlight_and_reset() {
+        let (tmp, _guard) = temp_state("palette");
+        let ctx = no_ctx();
+        let mut s = State::new();
+        s.items = vec![
+            snippet("deploy", "kubectl apply"),
+            snippet("logs", "journalctl"),
+        ];
+
+        // 打开：清空过滤、高亮首个命中。
+        let _ = s.update(Message::TogglePalette, &ctx);
+        assert!(s.palette.open);
+        assert!(s.palette.query.is_empty());
+        assert_eq!(s.palette.highlight, Some(0));
+
+        // 过滤后高亮回到首个命中；无命中为 None，回车无操作且弹窗保持打开。
+        let _ = s.update(Message::PaletteQuery("log".into()), &ctx);
+        assert_eq!(s.palette.highlight, Some(0));
+        let _ = s.update(Message::PaletteQuery("zzz".into()), &ctx);
+        assert_eq!(s.palette.highlight, None);
+        let _ = s.update(Message::PaletteSend, &ctx);
+        assert!(s.palette.open, "无命中回车无操作");
+
+        // ↑ / ↓ 在命中集内夹紧不环绕。
+        let _ = s.update(Message::PaletteQuery(String::new()), &ctx);
+        assert_eq!(s.palette.highlight, Some(0));
+        let _ = s.update(Message::PaletteNext, &ctx);
+        let _ = s.update(Message::PaletteNext, &ctx);
+        assert_eq!(s.palette.highlight, Some(1), "末行下移夹紧");
+        let _ = s.update(Message::PalettePrevious, &ctx);
+        let _ = s.update(Message::PalettePrevious, &ctx);
+        let _ = s.update(Message::PalettePrevious, &ctx);
+        assert_eq!(s.palette.highlight, Some(0), "首行上移夹紧");
+
+        // toggle 关闭与显式关闭都复位交互态。
+        let _ = s.update(Message::TogglePalette, &ctx);
+        assert!(!s.palette.open);
+        assert!(s.palette.query.is_empty());
+        assert_eq!(s.palette.highlight, None);
+        let _ = s.update(Message::TogglePalette, &ctx);
+        let _ = s.update(Message::ClosePalette, &ctx);
+        assert!(!s.palette.open);
+
+        done(&tmp);
+    }
+
+    #[test]
+    fn palette_send_closes_on_success_and_stays_open_without_target() {
+        let (tmp, _guard) = temp_state("palette_send");
+        let mut s = State::new();
+        s.items = vec![snippet("go", "make test")];
+        let _ = s.update(Message::TogglePalette, &no_ctx());
+
+        // 无活动标签：只提示、保持打开。
+        let _ = s.update(Message::PaletteSend, &no_ctx());
+        assert!(s.palette.open);
+
+        // 有活动标签：回车发送成功即关闭并复位。
+        let ctx = Ctx {
+            active: Some(7),
+            sessions: vec![7],
+            total_sessions: 1,
+        };
+        let _ = s.update(Message::PaletteSend, &ctx);
+        assert!(!s.palette.open);
+
+        // 单击命中行同样发送并关闭；越界下标无操作。
+        let _ = s.update(Message::TogglePalette, &no_ctx());
+        let _ = s.update(Message::PalettePick(0), &ctx);
+        assert!(!s.palette.open);
+        let _ = s.update(Message::TogglePalette, &no_ctx());
+        let _ = s.update(Message::PalettePick(9), &ctx);
+        assert!(s.palette.open, "越界下标不改状态");
+
+        done(&tmp);
     }
 }

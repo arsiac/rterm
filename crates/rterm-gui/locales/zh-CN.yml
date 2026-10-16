@@ -96,6 +96,10 @@ snippet:
   empty: 还没有常用命令
   empty_hint: 点右上角 + 新建，然后在常用命令行上右键即可发送。
   filter_no_match: 没有匹配的常用命令。
+  palette_placeholder: 输入以过滤常用命令…
+  palette_no_match: 没有匹配的常用命令。
+  open_palette: 快速命令
+  palette_tooltip: 快速命令（%{chord}）
   new: 新建常用命令
   edit: 编辑常用命令
   send_current: 发送（当前会话）
@@ -147,6 +151,7 @@ shortcuts:
   cmd_toggle_sidebar: 收起 / 展开侧边栏
   cmd_new_session: 新建会话
   cmd_open_search: 终端内搜索
+  cmd_open_snippets: 快速命令弹窗
   cmd_sftp_rename: 重命名文件
 session:
   new: 新建会话
@@ -359,6 +364,7 @@ terminal:
   paste_confirm: 粘贴
   paste_suppress: 本次会话不再提醒
   menu_search: 查找
+  menu_palette: 快速命令
   search:
     placeholder: 查找
     no_results: 无命中

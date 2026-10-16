@@ -2,7 +2,16 @@
 
 use crate::app::shortcuts::Command;
 use crate::keymap::{chord_from_key, is_terminal_reserved};
-use iced_core::keyboard::{Key, Modifiers, key::Named};
+use crate::widget::term::settings::Settings;
+use crate::widget::term::terminal::{Event, Terminal};
+use crate::widget::term::view::input::update;
+use crate::widget::term::view::{TerminalView, TerminalViewState};
+use iced::{Point, Size};
+use iced_core::Shell;
+use iced_core::clipboard::Null;
+use iced_core::keyboard::{Key, Location, Modifiers, key::Code, key::Named, key::Physical};
+use iced_core::layout::{Layout, Node};
+use iced_core::mouse::Cursor;
 use rterm_config::keybindings::{Chord, Keymap};
 use std::collections::BTreeMap;
 
@@ -58,4 +67,64 @@ fn terminal_reserves_only_the_search_binding() {
         &chord(&Key::Named(Named::F2), Modifiers::empty()),
         &keymap
     ));
+}
+
+#[test]
+fn reserved_chord_is_published_and_captured() {
+    let terminal = Terminal::new(1, Settings::default()).expect("离线构造终端");
+    let keymap = default_keymap();
+    let mut view = TerminalView::show(&terminal, true, &keymap);
+    let mut state = TerminalViewState::new();
+    let size = Size {
+        width: 800.0,
+        height: 600.0,
+    };
+    // 预置与布局一致的视口尺寸，避免 handle_resize 先发一条 BackendCall 干扰断言。
+    state.size = size;
+    let node = Node::new(size);
+    let layout = Layout::new(&node);
+    let cursor = Cursor::Available(Point { x: 10.0, y: 10.0 });
+    let mut clipboard = Null;
+
+    // 终端保留集里的两个默认和弦各驱动一次：搜索条（F）与常用命令弹窗（P）。
+    for c in ["F", "P"] {
+        let mut messages = Vec::new();
+        let code = match c {
+            "F" => Code::KeyF,
+            _ => Code::KeyP,
+        };
+        let event = iced_core::Event::Keyboard(iced_core::keyboard::Event::KeyPressed {
+            key: Key::Character(c.into()),
+            modified_key: Key::Character(c.into()),
+            physical_key: Physical::Code(code),
+            location: Location::Standard,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+            text: Some(c.into()),
+            repeat: false,
+        });
+        let captured = {
+            let mut shell = Shell::new(&mut messages);
+            update(
+                &mut view,
+                &mut state,
+                &event,
+                layout,
+                cursor,
+                &mut clipboard,
+                &mut shell,
+            );
+            shell.is_event_captured()
+        };
+
+        let expected = chord(
+            &Key::Character(c.into()),
+            Modifiers::CTRL | Modifiers::SHIFT,
+        );
+        assert_eq!(messages.len(), 1, "key={c}");
+        assert!(
+            matches!(&messages[0], Event::ReservedChord { chord } if *chord == expected),
+            "key={c}"
+        );
+        assert!(captured, "key={c}");
+    }
 }

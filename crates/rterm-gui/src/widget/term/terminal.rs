@@ -12,6 +12,7 @@ use iced::Subscription;
 use iced::futures::stream::BoxStream;
 use iced::futures::{SinkExt, StreamExt};
 use iced::widget::canvas::Cache;
+use rterm_config::keybindings::Chord;
 use std::hash::{Hash, Hasher};
 use std::io::Result;
 use std::sync::Arc;
@@ -39,10 +40,14 @@ pub enum Event {
         /// 待粘贴的剪贴板文本。
         text: String,
     },
-    /// 搜索快捷键（Ctrl+Shift+F）按下：请求宿主打开终端内搜索条。
+    /// 终端保留命令的和弦按下：请求宿主按键位表派发对应客户端动作。
     ///
-    /// 拦截发生在按键绑定查表之前，故远端程序收不到该组合的任何字节。
-    SearchRequested(u64),
+    /// 拦截发生在按键绑定查表之前，故远端程序收不到该组合的任何字节；
+    /// 具体动作由宿主经快捷键命令表解析（如 Ctrl+Shift+F 打开搜索条）。
+    ReservedChord {
+        /// 命中的保留和弦。
+        chord: Chord,
+    },
 }
 
 #[derive(Debug, Clone)]

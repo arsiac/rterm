@@ -105,6 +105,8 @@ pub enum Icon {
     ArrowDown,
     /// 命令行（提示符 + 光标）
     CommandLine,
+    /// 闪电
+    Flash,
 }
 
 impl Icon {
@@ -146,6 +148,7 @@ impl Icon {
             Icon::ArrowUp => svg_bytes!("arrow-up-16-filled"),
             Icon::ArrowDown => svg_bytes!("arrow-down-16-filled"),
             Icon::CommandLine => svg_bytes!("command-line-20-solid"),
+            Icon::Flash => svg_bytes!("flash-16-filled"),
         }
     }
 

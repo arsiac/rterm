@@ -391,7 +391,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// 终端右键菜单：包住终端画布，提供「查找 / 复制 / 粘贴」。`copy_enabled` 为否时复制项以禁用态呈现。
+/// 终端右键菜单：包住终端画布，提供「查找 / 快速命令 / 复制 / 粘贴」。`copy_enabled` 为否时复制项以禁用态呈现。
 /// 「查找」恒可用（不依赖选区），打开携带本标签 id 的搜索条。
 fn terminal_context_menu(
     terminal: Element<'_, Message>,
@@ -409,6 +409,10 @@ fn terminal_context_menu(
                 crate::ui::menu_entry(
                     t!("terminal.menu_search"),
                     Message::Search(search::Message::Open { tab_id }),
+                ),
+                crate::ui::menu_entry(
+                    t!("terminal.menu_palette"),
+                    Message::Snippets(crate::app::snippets::Message::TogglePalette),
                 ),
                 copy,
                 crate::ui::menu_entry(t!("terminal.menu_paste"), Message::TerminalPaste),

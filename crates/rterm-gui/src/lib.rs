@@ -24,6 +24,7 @@ pub mod sftp_dialogs;
 pub mod sftp_panel;
 pub mod shortcuts_dialog;
 pub mod snippet_dialog;
+pub mod snippet_palette;
 pub mod snippet_panel;
 pub mod state;
 pub mod terminal_pane;

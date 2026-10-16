@@ -99,7 +99,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// 默认键位表：终端搜索绑 `Ctrl+Shift+F`，SFTP 重命名绑 `F2`。
+    /// 默认键位表：终端搜索绑 `Ctrl+Shift+F`、常用命令弹窗绑 `Ctrl+Shift+P`，SFTP 重命名绑 `F2`。
     fn keymap() -> Keymap {
         Keymap::build(
             &[
@@ -111,6 +111,16 @@ mod tests {
                         alt: false,
                         logo: false,
                         key: ChordKey::Char('F'),
+                    }),
+                ),
+                (
+                    "open_snippets",
+                    Some(Chord {
+                        ctrl: true,
+                        shift: true,
+                        alt: false,
+                        logo: false,
+                        key: ChordKey::Char('P'),
                     }),
                 ),
                 (
@@ -191,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_reserves_search_chord_only() {
+    fn terminal_reserves_intercepted_chords_only() {
         let keymap = keymap();
         let search = Chord {
             ctrl: true,
@@ -201,6 +211,14 @@ mod tests {
             key: ChordKey::Char('F'),
         };
         assert!(is_terminal_reserved(&search, &keymap));
+        // 常用命令弹窗的 Ctrl+Shift+P 同属终端保留集（不拦会当 `\x10` 写进远端）。
+        assert!(is_terminal_reserved(
+            &Chord {
+                key: ChordKey::Char('P'),
+                ..search
+            },
+            &keymap
+        ));
         // 裸 Ctrl+F 未绑定，不拦（仍透传 `\x06`）。
         assert!(!is_terminal_reserved(
             &Chord {
