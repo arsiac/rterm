@@ -1,6 +1,6 @@
 //! 快速命令弹窗（Ctrl+Shift+P）。
 //!
-//! 与其余模态框共用遮罩（[`crate::modal::overlay_wrap`]），顶部对齐、宽度随窗口自适应；
+//! 与其余模态框共用遮罩（[`crate::modal::overlay_wrap_dismissable`]，单击遮罩空白关闭），顶部对齐、宽度随窗口自适应；
 //! 只有过滤输入框与命中列表，无按钮行。键盘路由见 [`crate::app::routing`]：Enter / ↑ / ↓ /
 //! toggle 由全局分支就地接管，输入框只收字符。
 
@@ -58,7 +58,10 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
         .center_x(Length::Fill)
         .into()
     });
-    Some(crate::modal::overlay_wrap(panel.into()))
+    Some(crate::modal::overlay_wrap_dismissable(
+        panel.into(),
+        Message::ClosePalette,
+    ))
 }
 
 /// 弹窗主体：过滤输入框 + 命中列表（单行：名称与文本预览，单击即发送），样式对齐会话列表。

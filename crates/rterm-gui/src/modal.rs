@@ -1,10 +1,11 @@
 //! 窗口级模态遮罩：全屏半透明背景 + 拦截穿透事件。
 //!
-//! 各模态弹窗（设置 / 主密钥 / 主机密钥 / 会话编辑器 / 粘贴确认 / SFTP）统一经
-//! [`overlay_wrap`] 包装后，由 [`crate::layout`] 用 `stack` 叠加到窗口最顶层。
+//! 各模态弹窗（设置 / 主密钥 / 主机密钥 / 会话编辑器 / 粘贴确认 / SFTP）经
+//! [`overlay_wrap`] 或 [`overlay_wrap_dismissable`]（单击遮罩空白关闭）包装后，
+//! 由 [`crate::layout`] 用 `stack` 叠加到窗口最顶层。
 
 use iced::widget::container;
-use iced::{Color, Element, Length, Theme};
+use iced::{Color, Element, Length, Point, Theme};
 use iced_core::layout::{Layout, Limits, Node};
 use iced_core::mouse::{self, Cursor, Interaction};
 use iced_core::widget::operation;
@@ -17,6 +18,18 @@ use iced_core::{overlay, renderer};
 /// 与消息类型无关（遮罩层只做布局 / 事件拦截），故对消息类型 `M` 泛型，
 /// 既可用于 SFTP 模块消息，也可用于主密钥 / 主机密钥等顶层消息对话框。
 pub fn overlay_wrap<'a, M: Clone + 'a>(child: Element<'a, M>) -> Element<'a, M> {
+    wrap(child, None)
+}
+
+/// 同 [`overlay_wrap`]，但单击面板之外的半透明遮罩时发布 `close` 消息。
+pub fn overlay_wrap_dismissable<'a, M: Clone + 'a>(
+    child: Element<'a, M>,
+    close: M,
+) -> Element<'a, M> {
+    wrap(child, Some(close))
+}
+
+fn wrap<'a, M: Clone + 'a>(child: Element<'a, M>, on_backdrop: Option<M>) -> Element<'a, M> {
     let overlay = container(child)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -28,7 +41,7 @@ pub fn overlay_wrap<'a, M: Clone + 'a>(child: Element<'a, M>) -> Element<'a, M> 
         })
         .center_x(Length::Fill)
         .center_y(Length::Fill);
-    modal(overlay.into())
+    modal(overlay.into(), on_backdrop)
 }
 
 /// 包装模态遮罩内容：在子元素处理事件之后捕获鼠标按下与键盘事件，阻止穿透到下层。
@@ -36,22 +49,28 @@ pub fn overlay_wrap<'a, M: Clone + 'a>(child: Element<'a, M>) -> Element<'a, M> 
 /// iced 内建 `opaque` 只捕获鼠标按下，键盘事件仍会下探到下层组件（如终端持有键盘焦点时
 /// 照常把按键写入 PTY），故此处对键盘一并捕获。捕获发生在内层处理之后，故弹窗自身控件
 /// 仍能收到按键，仅阻断向窗口其余部分的传播。
-fn modal<'a, M, T, R>(content: Element<'a, M, T, R>) -> Element<'a, M, T, R>
+fn modal<'a, M, T, R>(content: Element<'a, M, T, R>, on_backdrop: Option<M>) -> Element<'a, M, T, R>
 where
-    M: 'a,
+    M: 'a + Clone,
     T: 'a,
     R: iced_core::Renderer + 'a,
 {
-    Element::new(Modal { content })
+    Element::new(Modal {
+        content,
+        on_backdrop,
+    })
 }
 
 /// [`modal`] 的包装组件；仅拦截穿透事件，布局与绘制全部转发给子元素。
 struct Modal<'a, M, T, R> {
     content: Element<'a, M, T, R>,
+    /// 单击遮罩空白处时发布的消息；`None` 表示不响应遮罩单击。
+    on_backdrop: Option<M>,
 }
 
 impl<M, T, R> iced_core::Widget<M, T, R> for Modal<'_, M, T, R>
 where
+    M: Clone,
     R: iced_core::Renderer,
 {
     fn tag(&self) -> tree::Tag {
@@ -121,14 +140,21 @@ where
         viewport: &Rectangle,
     ) {
         // 鼠标按下仅在命中遮罩范围内拦截；键盘与位置无关，一律拦截。
-        let block = matches!(
-            event,
-            Event::Mouse(mouse::Event::ButtonPressed(_)) | Event::Keyboard(_)
-        );
+        let pressed = matches!(event, Event::Mouse(mouse::Event::ButtonPressed(_)));
+        let block = pressed || matches!(event, Event::Keyboard(_));
+        let backdrop_close = pressed
+            && cursor.is_over(layout.bounds())
+            && cursor
+                .position()
+                .is_some_and(|pos| hits_backdrop(layout, pos));
 
         self.content.as_widget_mut().update(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
         );
+
+        if backdrop_close && let Some(close) = self.on_backdrop.clone() {
+            shell.publish(close);
+        }
 
         if block && (matches!(event, Event::Keyboard(_)) || cursor.is_over(layout.bounds())) {
             shell.capture_event();
@@ -167,4 +193,17 @@ where
             .as_widget_mut()
             .overlay(tree, layout, renderer, viewport, translation)
     }
+}
+
+/// 判定按点是否落在遮罩空白处：沿布局树下探到包含该点的最深节点，
+/// 该节点若仍与遮罩同大（未收拢进面板区域），即为空白。
+fn hits_backdrop(layout: Layout<'_>, pos: Point) -> bool {
+    let full = layout.bounds();
+    let mut deepest = full;
+    let mut node = layout;
+    while let Some(child) = node.children().find(|c| c.bounds().contains(pos)) {
+        deepest = child.bounds();
+        node = child;
+    }
+    (deepest.width - full.width).abs() < 0.5 && (deepest.height - full.height).abs() < 0.5
 }

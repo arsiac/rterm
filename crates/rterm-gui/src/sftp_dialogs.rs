@@ -1,10 +1,10 @@
 //! SFTP 文件管理面板的模态对话框。
 //!
 //! 面板内统一为“标题 / 分隔线 / 正文 / 确认·取消按钮”结构，经
-//! [`crate::modal::overlay_wrap`] 叠加为窗口级模态。所有对话框经 [`view`] 分发，
+//! [`crate::modal::overlay_wrap_dismissable`] 叠加为窗口级模态。所有对话框经 [`view`] 分发，
 //! 由 [`App`] 的 `sftp.dialog` 状态驱动。
 
-use crate::modal::overlay_wrap;
+use crate::modal::overlay_wrap_dismissable;
 use crate::t;
 
 use crate::App;
@@ -26,7 +26,12 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
         SftpDialog::OverwriteDownload { name, .. } => overwrite_dialog(name),
         SftpDialog::Properties { entry, path } => properties_dialog(entry, path),
     };
-    Some(overlay_wrap(content))
+    // 属性框无取消动作，遮罩单击对齐其「关闭」按钮；确认框对齐「取消」。
+    let close = match dialog {
+        SftpDialog::Properties { .. } => Message::SftpDialogConfirm,
+        _ => Message::SftpCancelDialog,
+    };
+    Some(overlay_wrap_dismissable(content, close))
 }
 
 /// 删除确认弹窗：按条目类型展示「删除文件 / 目录」警告与确认按钮。

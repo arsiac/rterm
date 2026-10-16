@@ -48,7 +48,10 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
         .center_y(Length::Fill)
         .into()
     });
-    Some(modal::overlay_wrap(panel.into()))
+    Some(modal::overlay_wrap_dismissable(
+        panel.into(),
+        Message::Shortcuts(shortcuts::Message::Toggle),
+    ))
 }
 
 /// 弹窗主体：标题栏（含强调条与关闭按钮）+ 分隔线 + 分组快捷键列表 + 页脚。

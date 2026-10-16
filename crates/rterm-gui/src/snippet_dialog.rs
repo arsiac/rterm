@@ -1,6 +1,6 @@
 //! 常用命令的新建 / 编辑弹窗。
 //!
-//! 与其余模态框共用遮罩（[`crate::modal::overlay_wrap`]），由 [`crate::layout`] 叠到最上层；命令输入按 bash 词法着色（见 [`crate::bash_highlight`]），校验原因落在页脚、保存按钮保持可用。
+//! 与其余模态框共用遮罩（[`crate::modal::overlay_wrap_dismissable`]，单击遮罩空白关闭），由 [`crate::layout`] 叠到最上层；命令输入按 bash 词法着色（见 [`crate::bash_highlight`]），校验原因落在页脚、保存按钮保持可用。
 
 use crate::t;
 
@@ -24,7 +24,10 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
         .width(DIALOG_W)
         .style(crate::ui::dialog_panel_style(None))
         .padding(0);
-    Some(crate::modal::overlay_wrap(panel.into()))
+    Some(crate::modal::overlay_wrap_dismissable(
+        panel.into(),
+        Message::CancelEdit,
+    ))
 }
 
 /// 弹窗主体：标题栏 + 表单 + 固定页脚（校验提示与按钮）。

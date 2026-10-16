@@ -5,7 +5,7 @@
 //! 与主机密钥指纹变更的强调反转同理。面板随窗口等比例缩放（见 [`view`]）。
 
 use crate::app::paste::{self, PendingPaste};
-use crate::modal::overlay_wrap;
+use crate::modal::overlay_wrap_dismissable;
 use crate::t;
 use crate::ui::{DANGER, WARNING};
 use iced::widget::text::Wrapping;
@@ -43,7 +43,10 @@ pub fn view(app: &crate::App) -> Option<Element<'_, paste::Message>> {
             .center_y(Length::Fill)
             .into()
     });
-    Some(overlay_wrap(panel.into()))
+    Some(overlay_wrap_dismissable(
+        panel.into(),
+        paste::Message::Cancel,
+    ))
 }
 
 /// 组装确认弹窗面板；`size` 为窗口尺寸，用于等比缩放面板宽度与预览高度。
