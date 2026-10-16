@@ -867,6 +867,7 @@ mod tests {
             },
             group: None,
             jumps: Vec::new(),
+            startup_command: None,
         };
         app.session.sessions.push(session);
 

@@ -53,8 +53,10 @@ settings:
   language_en: English
   cwd_bootstrap: 自动追踪终端目录
   cwd_bootstrap_hint: 开启后控制台将自动执行脚本以获取当前工作目录，方便 SFTP 面板「进入终端目录」。
-  suppress_bootstrap_echo: 注入脚本时抑制终端回显
-  suppress_bootstrap_echo_hint: 开启后注入脚本时会通过 PTY 设置关闭回显，避免脚本文本显示在屏幕上。关闭后脚本将正常回显。
+  suppress_bootstrap_echo: 注入脚本与启动作业时抑制终端回显
+  suppress_bootstrap_echo_hint: 开启后在注入目录上报脚本与启动作业时会通过 PTY 设置关闭回显，避免注入文本显示在屏幕上。关闭后将正常回显。
+  run_startup_command: 连接后运行启动作业
+  run_startup_command_hint: 开启后会在连接就绪时把会话的启动作业下发到远端 shell。
   trim_trailing_whitespace: 复制时去除行尾空格
   trim_trailing_whitespace_hint: 开启后每次复制多行文本时自动去除每行末尾的多余空白字符。
   bell: 响铃视觉提示（闪烁标签）
@@ -135,6 +137,8 @@ session:
   host: 主机
   port: 端口
   username: 用户名
+  startup_command: 启动作业(选填)
+  startup_command_hint: 连接就绪后下发给远端 shell；留空则不执行；明文保存。
   auth: 认证方式
   auth_password: 密码
   auth_publickey: 公钥
@@ -309,6 +313,7 @@ terminal:
   reconnecting: 正在重新连接…
   reconnected_notice: 会话已重新开始，之前的进程未恢复
   reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}，可用 cd 返回
+  startup_command_notice: 启动作业：%{cmd}
   menu_copy: 复制
   menu_paste: 粘贴
   paste_warn_title: 粘贴确认

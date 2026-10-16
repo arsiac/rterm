@@ -74,6 +74,10 @@ pub struct SessionConfig {
     /// 跳板机链（由外到内，`jumps[0]` 最先连接）；空表示直连目标主机。
     #[serde(default)]
     pub jumps: Vec<JumpHost>,
+    /// 连接成功后自动下发到远端 shell 的启动作业（明文，非凭据）；`None` 或纯空白表示不执行，
+    /// 是否真正下发还取决于 [`TerminalConfig::run_startup_command`](crate::TerminalConfig::run_startup_command)。
+    #[serde(default)]
+    pub startup_command: Option<String>,
 }
 
 impl SessionConfig {
@@ -220,6 +224,7 @@ mod tests {
             },
             group: None,
             jumps: vec![jump("bastion-a"), jump("bastion-b")],
+            startup_command: None,
         }
     }
 
@@ -254,6 +259,45 @@ mod tests {
         let cfg: SessionConfig = toml::from_str(&legacy).expect("legacy config must still load");
         assert!(cfg.jumps.is_empty(), "缺省 jumps 必须为空链（直连）");
         assert_eq!(cfg.host, "10.0.0.9");
+    }
+
+    /// 启动作业随 serde 往返；旧文件（删掉该键）读出为 `None`；剥凭据与重加密后仍在。
+    #[test]
+    fn startup_command_round_trips_and_survives_transforms() {
+        let vault = Vault::new("test-master");
+        let cfg = SessionConfig {
+            startup_command: Some("cd /srv && tmux attach".into()),
+            ..session_with_jumps(&vault)
+        };
+
+        let toml = toml::to_string(&cfg).expect("serialize");
+        let back: SessionConfig = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(
+            back.startup_command.as_deref(),
+            Some("cd /srv && tmux attach")
+        );
+
+        // 旧文件不含该键：读出为 None（无需迁移）。
+        let mut value: toml::Value = toml::from_str(&toml).expect("parse back");
+        value
+            .as_table_mut()
+            .expect("session is a table")
+            .remove("startup_command");
+        let legacy = toml::to_string(&value).expect("re-serialize legacy file");
+        let legacy_cfg: SessionConfig =
+            toml::from_str(&legacy).expect("legacy config must still load");
+        assert!(legacy_cfg.startup_command.is_none());
+
+        // 明文配置：剥凭据与重加密都原样携带。
+        assert_eq!(
+            cfg.without_secrets().startup_command.as_deref(),
+            Some("cd /srv && tmux attach")
+        );
+        let (rekeyed, _) = cfg.rekeyed(&vault, &Vault::new("new"));
+        assert_eq!(
+            rekeyed.startup_command.as_deref(),
+            Some("cd /srv && tmux attach")
+        );
     }
 
     /// 跳板机的 `port` 缺省为 22。
@@ -375,6 +419,7 @@ mod tests {
                 username: "ju".into(),
                 auth: AuthMethod::Agent,
             }],
+            startup_command: None,
         };
 
         let (rekeyed, dropped) = cfg.rekeyed(&vault, &vault);

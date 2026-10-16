@@ -57,11 +57,6 @@ const DIALOG_MARGIN: f32 = 16.0;
 /// 左侧分类导航栏宽度（像素）。
 const NAV_W: f32 = 160.0;
 
-/// 细滚动条方向：轨道与滑块同为 6px
-fn thin_scrollbar() -> scrollable::Direction {
-    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6.0).scroller_width(6.0))
-}
-
 /// 根据当前是否显示设置弹窗返回遮罩层元素；未显示时返回 `None`。
 ///
 /// 面板宽 / 高按窗口占比取值，并以「窗口尺寸 - 留白」封顶，避免贴边或溢出窗口。
@@ -252,7 +247,7 @@ fn content_pane(app: &App) -> Element<'_, Message> {
         scrollable(body)
             .width(Length::Fill)
             .height(Length::Fill)
-            .direction(thin_scrollbar()),
+            .direction(crate::ui::thin_scrollbar_direction()),
     ]
     .width(Length::Fill)
     .height(Length::Fill)
@@ -433,6 +428,11 @@ fn terminal_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::SuppressBootstrapEcho(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.suppress_bootstrap_echo_hint")),
+        checkbox(app.config.terminal.run_startup_command)
+            .label(t!("settings.run_startup_command"))
+            .on_toggle(|v| Message::Settings(settings::Message::RunStartupCommand(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.run_startup_command_hint")),
         checkbox(app.config.terminal.trim_trailing_whitespace)
             .label(t!("settings.trim_trailing_whitespace"))
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))
@@ -677,7 +677,7 @@ fn security_pane(app: &App) -> Element<'_, Message> {
                     scrollable(rows)
                         .width(Length::Fill)
                         .height(Length::Shrink)
-                        .direction(thin_scrollbar()),
+                        .direction(crate::ui::thin_scrollbar_direction()),
                 )
                 .width(Length::Fill)
                 .max_height(KNOWN_HOSTS_LIST_MAX_H),

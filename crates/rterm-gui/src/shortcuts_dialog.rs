@@ -24,11 +24,6 @@ const CHORD_FIELD_W: f32 = 160.0;
 /// 「恢复默认」图标尺寸（像素）。
 const RESET_ICON_SIZE: f32 = 14.0;
 
-/// 细滚动条方向：轨道与滑块同为 6px
-fn thin_scrollbar() -> scrollable::Direction {
-    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6.0).scroller_width(6.0))
-}
-
 /// 根据当前是否显示快捷键弹窗返回遮罩层元素；未显示时返回 `None`。
 pub fn view(app: &App) -> Option<Element<'_, Message>> {
     if !app.shortcuts.show_shortcuts {
@@ -118,7 +113,7 @@ fn content(app: &App) -> Element<'_, Message> {
         scrollable(column(items).spacing(4))
             .width(Length::Fill)
             .height(Length::Fill)
-            .direction(thin_scrollbar())
+            .direction(crate::ui::thin_scrollbar_direction())
             .into()
     };
 

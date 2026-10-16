@@ -30,6 +30,22 @@ use tokio::sync::{mpsc, watch};
 /// 此时 pump 跳过 OSC 7 扫描且不向 shell 注入任何内容。
 pub type CwdTracker = Option<Arc<Mutex<Option<String>>>>;
 
+/// 终端网格尺寸（列数 × 行数），建桥时按这对数字请求远端 PTY 的首帧。
+#[derive(Debug, Clone, Copy)]
+pub struct PtySize {
+    /// 终端列数。
+    pub cols: u32,
+    /// 终端行数。
+    pub rows: u32,
+}
+
+impl PtySize {
+    /// 以列数与行数构造尺寸。
+    pub fn new(cols: u32, rows: u32) -> Self {
+        Self { cols, rows }
+    }
+}
+
 /// 桥接 pump 的退出原因：回答「为什么这条终端通道结束了」，供 GUI 区分
 /// 「远端会话已结束」与「连接已断开」——两者的后续动作不同（前者是用户 `exit`
 /// 了，后者是网络问题），文案也不同。
@@ -156,6 +172,65 @@ const CWD_BOOTSTRAP: &[u8] = b"\
     esac; \
     :\n";
 
+/// 建桥时要向远端 shell 写入的首段输入配置。
+///
+/// 目录钩子与启动作业合成一段字节下发，回显开关决定这段输入是否可见。
+pub struct BridgeInput {
+    /// 终端 cwd 共享容器；`None` 表示不追踪目录（也必然不注入钩子）。
+    pub cwd: CwdTracker,
+    /// 是否注入目录上报钩子（OSC 7 序列）。
+    pub cwd_bootstrap: bool,
+    /// 启动作业文本；`None` 或纯空白表示不执行。
+    pub startup_command: Option<String>,
+    /// 是否隐藏注入的输入（建 PTY 时 `ECHO=0`，写入后以 `stty echo` 恢复）。
+    pub hide_injected: bool,
+}
+
+/// 首段注入输入的合成结果。
+pub struct InitialInput {
+    /// 是否在建 PTY 时关闭远端回显（`ECHO=0`）；只有确实要写入字节时才为真。
+    pub echo_off: bool,
+    /// 要写入 shell 的字节；`None` 表示无任何字节可写（既无钩子也无作业）。
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// 规整启动作业文本：`\r\n` 归一为 `\n` 并去除首尾空白；结果为空视同无作业。
+fn normalize_job(job: &str) -> Option<String> {
+    let job = job.replace("\r\n", "\n");
+    let job = job.trim();
+    (!job.is_empty()).then(|| job.to_string())
+}
+
+/// 由目录钩子开关、隐藏开关与启动作业合成首段注入输入。
+///
+/// 首行为钩子与回显恢复（无钩子时以 `:` / `stty echo` 占位），次行为作业；`echo_off` 与
+/// 字节同源派生，避免「关了回显却没人恢复」；`stty echo` 排在作业前且独立成行。
+pub fn compose_initial_input(hook: bool, hide: bool, job: Option<&str>) -> InitialInput {
+    let job = job.and_then(normalize_job);
+    let write = hook || job.is_some();
+    let echo_off = hide && write;
+    if !write {
+        return InitialInput {
+            echo_off,
+            bytes: None,
+        };
+    }
+    let mut out = Vec::new();
+    if hook {
+        // 去掉常数末尾的 `:` 与换行，该行改由下面的回显分支决定如何收尾。
+        out.extend_from_slice(&CWD_BOOTSTRAP[..CWD_BOOTSTRAP.len() - 2]);
+    }
+    out.extend_from_slice(if echo_off { b"stty echo\n" } else { b":\n" });
+    if let Some(job) = job {
+        out.extend_from_slice(job.as_bytes());
+        out.push(b'\n');
+    }
+    InitialInput {
+        echo_off,
+        bytes: Some(out),
+    }
+}
+
 /// 创建终端桥接所需的一切，返回供 GUI 直接消费的对象。
 ///
 /// 该函数会：
@@ -167,7 +242,8 @@ const CWD_BOOTSTRAP: &[u8] = b"\
 /// - `conn`：已建立的 SSH 连接（内部句柄可被并发共享）。pump 在通道结束时用它探测
 ///   传输层是否还活着（见 [`SshConnection::is_closed`]），故按 `Arc` 接收以随桥接任务
 ///   一同存活。
-/// - `cols` / `rows`：初始终端列数与行数，用于首帧 PTY 尺寸。
+/// - `size`：初始终端网格尺寸，用于首帧 PTY。
+/// - `input`：首段注入输入的配置（目录钩子 / 启动作业 / 回显开关），见 [`BridgeInput`]。
 /// - `inject_out`：pump 启动前原样写入 OUT 管道（远端→本地方向）的字节，因而必定先于
 ///   任何远端输出到达 GUI 读端（重连提示行等）；`None` 表示不注入。
 ///
@@ -180,11 +256,8 @@ const CWD_BOOTSTRAP: &[u8] = b"\
 ///   shell 通道 EOF（或本模块的 pump 退出）才结束，并置位 `disconnect`。
 pub async fn spawn_terminal_bridge(
     conn: Arc<SshConnection>,
-    cols: u32,
-    rows: u32,
-    cwd: CwdTracker,
-    cwd_bootstrap: bool,
-    suppress_bootstrap_echo: bool,
+    size: PtySize,
+    input: BridgeInput,
     inject_out: Option<&[u8]>,
 ) -> Result<(File, File, Arc<BridgeState>, mpsc::Sender<(u32, u32)>), CoreError> {
     // 进程内管道：拆成 OUT（远端→本地输出）与 IN（本地→远端输入）两条独立管道。
@@ -193,25 +266,25 @@ pub async fn spawn_terminal_bridge(
 
     let state = Arc::new(BridgeState::new());
 
-    // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
-    let channel = conn
-        .open_shell_channel(cols, rows, cwd_bootstrap, suppress_bootstrap_echo)
-        .await?;
+    let BridgeInput {
+        cwd,
+        cwd_bootstrap,
+        startup_command,
+        hide_injected,
+    } = input;
+    // 只在需要追踪 cwd 时才注入钩子；启动作业与钩子合成为一段输入，回显开关一并派生。
+    let hook = cwd.is_some() && cwd_bootstrap;
+    let initial = compose_initial_input(hook, hide_injected, startup_command.as_deref());
 
-    // 仅在需要追踪 cwd 且开启了 CWD_BOOTSTRAP 时，向 shell 注入 prompt 钩子，使其持续上报 OSC 7。
-    // 钩子在 shell 读就绪后自动执行，无需等待 pump 启动。
-    // 若同时启用了 suppress_bootstrap_echo，在脚本末尾拼接 stty echo 以恢复回显。
-    if cwd.is_some() && cwd_bootstrap {
+    // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
+    // `echo_off` 在建 PTY 时即生效，故它与首段输入必须同源派生（见 `compose_initial_input`）。
+    let channel = conn.open_shell_channel(size, initial.echo_off).await?;
+
+    // 首段输入（钩子 + 启动作业）在 shell 读就绪后按行执行，无需等待 pump 启动。
+    if let Some(bytes) = &initial.bytes {
         let mut writer = channel.make_writer();
-        let cmd = if suppress_bootstrap_echo {
-            let mut buf = CWD_BOOTSTRAP[..CWD_BOOTSTRAP.len() - 2].to_vec();
-            buf.extend_from_slice(b"stty echo\n");
-            buf
-        } else {
-            CWD_BOOTSTRAP.to_vec()
-        };
-        if let Err(e) = writer.write_all(&cmd).await {
-            log::debug!("Failed to inject cwd bootstrap: {e}");
+        if let Err(e) = writer.write_all(bytes).await {
+            log::debug!("Failed to inject initial input: {e}");
         }
     }
 
@@ -428,7 +501,7 @@ fn scan_osc7_cwd(carry: &mut Vec<u8>, chunk: &[u8], cwd: &Arc<Mutex<Option<Strin
         // （空载荷也在此判掉）。带 host 的形式（`file://host/path`、`file://host:/path`，
         // iTerm2 一系约定）整条忽略而不剥离：`cwd` 只有一个路径槽位，剥离后「终端已跳到
         // 第三台机」的信号消失，SFTP 会静默跳到目标机上的同名目录。识别 host 需先给 cwd
-        // 加主机归属并与会话主机比对，见路线图 M3-5。
+        // 加主机归属并与会话主机比对。
         if let Some(rest) = payload.strip_prefix(b"file://")
             && rest.starts_with(b"/")
         {
@@ -739,5 +812,74 @@ mod tests {
         scan_osc7_cwd(&mut carry, &chunk, &cwd);
 
         assert_eq!(cwd.lock().unwrap().as_deref(), Some("/srv/app"));
+    }
+
+    /// 无作业时的首段输入（回归锁）：不隐藏即钩子原文，隐藏则以 `stty echo` 收尾。
+    #[test]
+    fn a_jobless_bootstrap_stays_byte_identical() {
+        let visible = compose_initial_input(true, false, None);
+        assert!(!visible.echo_off);
+        assert_eq!(visible.bytes.as_deref(), Some(CWD_BOOTSTRAP));
+
+        let hidden = compose_initial_input(true, true, None);
+        assert!(hidden.echo_off);
+        let mut expected = CWD_BOOTSTRAP[..CWD_BOOTSTRAP.len() - 2].to_vec();
+        expected.extend_from_slice(b"stty echo\n");
+        assert_eq!(hidden.bytes.as_deref(), Some(&expected[..]));
+    }
+
+    /// 首段输入的排版：作业恒在第 2 行，`stty echo` 与钩子同行且先于作业，整段以单个换行收尾。
+    #[test]
+    fn compose_initial_input_lays_out_hook_and_job() {
+        // 无钩子无作业：不写任何字节（纯空白作业亦视同无作业）。
+        let none = compose_initial_input(false, true, None);
+        assert!(!none.echo_off);
+        assert!(none.bytes.is_none());
+        assert!(
+            compose_initial_input(false, false, Some("   "))
+                .bytes
+                .is_none()
+        );
+
+        // 仅作业 + 隐藏：第 1 行 `stty echo`、第 2 行作业。
+        let only_job = compose_initial_input(false, true, Some("cd /srv && tmux attach"));
+        assert!(only_job.echo_off, "有作业且要求隐藏即应关回显");
+        assert_eq!(
+            String::from_utf8(only_job.bytes.unwrap()).unwrap(),
+            "stty echo\ncd /srv && tmux attach\n"
+        );
+
+        // 钩子 + 作业 + 隐藏：`stty echo` 紧随钩子收尾，作业在第 2 行。
+        let both = compose_initial_input(true, true, Some("cd /srv"));
+        let text = String::from_utf8(both.bytes.unwrap()).unwrap();
+        let mut lines = text.split('\n');
+        assert!(lines.next().unwrap().ends_with("esac; stty echo"));
+        assert_eq!(lines.next(), Some("cd /srv"));
+        assert_eq!(lines.next(), Some(""), "整段以单个换行收尾");
+
+        // 不隐藏时首行以 `:` 占位（无需恢复回显）。
+        let visible = compose_initial_input(true, false, Some("cd /srv"));
+        assert!(!visible.echo_off);
+        let text = String::from_utf8(visible.bytes.unwrap()).unwrap();
+        assert!(text.contains("esac; :\ncd /srv\n"));
+    }
+
+    /// 作业的 `\r\n` 归一为 `\n`，首尾空白与多余换行被裁掉，只留单个收尾换行。
+    #[test]
+    fn a_multiline_job_is_normalized_to_lf() {
+        let out = compose_initial_input(false, false, Some("cd /srv\r\nls\r\n"));
+        assert_eq!(
+            String::from_utf8(out.bytes.unwrap()).unwrap(),
+            ":\ncd /srv\nls\n"
+        );
+    }
+
+    /// 无钩子但有作业且要求隐藏时，仍须关回显并在首行恢复：`echo_off` 与首行同源派生。
+    #[test]
+    fn hiding_a_job_only_input_still_restores_echo() {
+        let out = compose_initial_input(false, true, Some("exec tmux"));
+        assert!(out.echo_off);
+        let text = String::from_utf8(out.bytes.unwrap()).unwrap();
+        assert!(text.starts_with("stty echo\n"), "首行须恢复回显：{text:?}");
     }
 }

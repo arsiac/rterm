@@ -4,7 +4,7 @@
 #[allow(dead_code)] // 支撑模块里另含 SFTP 测试的装备，本文件只用其中一部分
 mod support;
 
-use rterm_core::spawn_terminal_bridge;
+use rterm_core::{BridgeInput, PtySize, spawn_terminal_bridge};
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -37,11 +37,13 @@ async fn injected_bytes_arrive_first_and_verbatim() {
             .to_string();
     let (mut out, _in, _state, _resize_tx) = spawn_terminal_bridge(
         Arc::clone(conn.conn()),
-        80,
-        24,
-        None,
-        false,
-        false,
+        PtySize::new(80, 24),
+        BridgeInput {
+            cwd: None,
+            cwd_bootstrap: false,
+            startup_command: None,
+            hide_injected: false,
+        },
         Some(payload.as_bytes()),
     )
     .await

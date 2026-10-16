@@ -66,7 +66,7 @@ async fn one_hop_reaches_the_target_through_the_bastion() {
 
     // 隧道另一端的 shell 必须能开：证明这条链在协议层面是完整可用的。
     conn.conn()
-        .open_shell_channel(80, 24, false, false)
+        .open_shell_channel(rterm_core::PtySize::new(80, 24), false)
         .await
         .expect("经隧道应能打开 shell 通道");
 }
@@ -87,7 +87,7 @@ async fn two_hops_chain_through_each_bastion() {
     assert!(!conn.conn().is_closed().await);
 
     conn.conn()
-        .open_shell_channel(80, 24, false, false)
+        .open_shell_channel(rterm_core::PtySize::new(80, 24), false)
         .await
         .expect("两跳隧道上应能打开 shell 通道");
 }

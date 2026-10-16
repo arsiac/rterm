@@ -34,6 +34,8 @@ pub enum SessionField {
     Passphrase,
     /// 分组名。
     Group,
+    /// 启动作业（连接成功后自动下发的命令文本）。
+    StartupCommand,
     /// 第 n 跳跳板机的主机地址。
     JumpHost(usize),
     /// 第 n 跳跳板机的端口（字符串，保存时解析）。
@@ -127,6 +129,8 @@ pub struct EditorDraft {
     pub passphrase: String,
     /// 分组名。
     pub group: String,
+    /// 启动作业（连接成功后自动下发的命令文本，空串表示不执行）。
+    pub startup_command: String,
     /// 跳板链草稿（由外到内，与保存后的 [`SessionConfig::jumps`] 同序）。
     pub jumps: Vec<JumpDraft>,
     /// 分组字段的自动补全状态（候选池 + 当前文本），由打开编辑器时按现有会话分组填充。
@@ -155,6 +159,7 @@ impl EditorDraft {
             key_path: String::new(),
             passphrase: String::new(),
             group: String::new(),
+            startup_command: String::new(),
             jumps: Vec::new(),
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
@@ -187,6 +192,7 @@ impl EditorDraft {
             key_path,
             passphrase: String::new(),
             group: cfg.group.clone().unwrap_or_default(),
+            startup_command: cfg.startup_command.clone().unwrap_or_default(),
             jumps: cfg.jumps.iter().map(JumpDraft::from_config).collect(),
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
@@ -235,6 +241,11 @@ impl EditorDraft {
                 None
             } else {
                 Some(self.group.clone())
+            },
+            startup_command: if self.startup_command.trim().is_empty() {
+                None
+            } else {
+                Some(self.startup_command.clone())
             },
             jumps,
         })
@@ -800,6 +811,7 @@ fn apply_editor_field(draft: &mut EditorDraft, field: SessionField, value: Strin
         SessionField::KeyPath => draft.key_path = value,
         SessionField::Passphrase => draft.passphrase = value,
         SessionField::Group => draft.group = value,
+        SessionField::StartupCommand => draft.startup_command = value,
         // 跳板字段带下标：删除某跳后旧下标可能失效，故一律越界静默忽略。
         SessionField::JumpHost(i) => {
             if let Some(j) = draft.jumps.get_mut(i) {
@@ -855,6 +867,7 @@ mod tests {
             auth,
             group: Some("prod".into()),
             jumps: Vec::new(),
+            startup_command: None,
         }
     }
 
@@ -869,6 +882,7 @@ mod tests {
             auth: AuthMethod::Agent,
             group: group.map(str::to_string),
             jumps: Vec::new(),
+            startup_command: None,
         }
     }
 

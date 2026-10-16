@@ -371,6 +371,7 @@ mod tests {
             },
             group: None,
             jumps: Vec::new(),
+            startup_command: None,
         }
     }
 
@@ -554,6 +555,7 @@ mod tests {
             },
             group: None,
             jumps: vec![jump],
+            startup_command: None,
         }
     }
 
@@ -793,6 +795,7 @@ mod tests {
             auth: crate::AuthMethod::Agent,
             group: None,
             jumps: Vec::new(),
+            startup_command: None,
         };
         let dropped =
             export_sessions_with_credentials(&path, &[agent_only], &local, &Vault::for_export("e"))

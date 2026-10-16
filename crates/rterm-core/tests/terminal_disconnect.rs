@@ -8,7 +8,7 @@
 #[allow(dead_code)] // 支撑模块里另含 SFTP 测试的装备，本文件只用其中一部分
 mod support;
 
-use rterm_core::{BridgeState, DisconnectReason, spawn_terminal_bridge};
+use rterm_core::{BridgeInput, BridgeState, DisconnectReason, PtySize, spawn_terminal_bridge};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -35,10 +35,19 @@ fn init_test_root() {
 /// 不会因测试把本地管道关掉而走错分支；测试进程结束后由内核统一回收。
 async fn bridge_up(ssh: &TestSsh) -> (TestSshConnection, Arc<BridgeState>) {
     let conn = ssh.connect().await;
-    let (out, r#in, state, _resize_tx) =
-        spawn_terminal_bridge(Arc::clone(conn.conn()), 80, 24, None, false, false, None)
-            .await
-            .expect("bridge setup must succeed against the test server");
+    let (out, r#in, state, _resize_tx) = spawn_terminal_bridge(
+        Arc::clone(conn.conn()),
+        PtySize::new(80, 24),
+        BridgeInput {
+            cwd: None,
+            cwd_bootstrap: false,
+            startup_command: None,
+            hide_injected: false,
+        },
+        None,
+    )
+    .await
+    .expect("bridge setup must succeed against the test server");
     std::mem::forget(out);
     std::mem::forget(r#in);
     (conn, state)

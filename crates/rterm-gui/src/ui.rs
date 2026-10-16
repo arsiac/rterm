@@ -9,6 +9,7 @@ use crate::theme;
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::button;
 use iced::widget::container;
+use iced::widget::scrollable;
 use iced::widget::svg;
 use iced::widget::text;
 use iced::widget::text::Wrapping;
@@ -417,6 +418,11 @@ pub fn search_input_style(theme: &Theme, status: text_input::Status) -> text_inp
         value: pal.background.base.text,
         selection: pal.primary.strong.color,
     }
+}
+
+/// 细滚动条方向：轨道与滑块同为 6px
+pub fn thin_scrollbar_direction() -> scrollable::Direction {
+    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6.0).scroller_width(6.0))
 }
 
 /// 弹窗按钮的视觉样式。

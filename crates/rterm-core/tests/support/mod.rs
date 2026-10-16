@@ -261,6 +261,10 @@ pub(crate) struct TestSsh {
     accept: Option<tokio::task::JoinHandle<()>>,
     /// 最近一条连接的 shell 通道（服务端侧），供用例模拟「远端 shell 退出」。
     shell_channel: Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>,
+    /// 服务端收到的客户端输入（按到达顺序拼接），供用例校验注入字节。
+    shell_input: Arc<tokio::sync::Mutex<Vec<u8>>>,
+    /// 最近一次 PTY 请求携带的终端模式位，供用例校验 `ECHO=0`。
+    pty_modes: PtyModeLog,
     /// 经本服务端转发的 direct-tcpip 次数，供用例证明流量确实过境。
     forwards: Arc<AtomicU32>,
     /// 各条 TCP 桥泵任务的中止柄，供用例掐断隧道。
@@ -284,6 +288,8 @@ impl TestSsh {
             .expect("bind an ephemeral port");
         let addr = listener.local_addr().expect("listener address");
         let shell_channel = Arc::new(tokio::sync::Mutex::new(None));
+        let shell_input = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let pty_modes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let forwards = Arc::new(AtomicU32::new(0));
         let bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>> = Arc::new(Mutex::new(Vec::new()));
         let accept = {
@@ -291,6 +297,8 @@ impl TestSsh {
             let root = std::env::temp_dir().join(format!("rterm-ssh-{}", std::process::id()));
             std::fs::create_dir_all(&root).expect("create the ssh jail");
             let shell_channel = Arc::clone(&shell_channel);
+            let shell_input = Arc::clone(&shell_input);
+            let pty_modes = Arc::clone(&pty_modes);
             let forwards = Arc::clone(&forwards);
             let bridges = Arc::clone(&bridges);
             tokio::spawn(async move {
@@ -303,6 +311,8 @@ impl TestSsh {
                         Arc::new(Faults::default()),
                         root.clone(),
                         Arc::clone(&shell_channel),
+                        Arc::clone(&shell_input),
+                        Arc::clone(&pty_modes),
                         Arc::clone(&forwards),
                         Arc::clone(&bridges),
                     );
@@ -318,6 +328,8 @@ impl TestSsh {
             addr,
             accept: Some(accept),
             shell_channel,
+            shell_input,
+            pty_modes,
             forwards,
             bridges,
         }
@@ -331,6 +343,20 @@ impl TestSsh {
     /// 经本服务端转发的 direct-tcpip 次数。
     pub(crate) fn forwards(&self) -> u32 {
         self.forwards.load(Ordering::Relaxed)
+    }
+
+    /// 服务端已收到的客户端输入（按到达顺序拼接）。
+    pub(crate) async fn shell_input(&self) -> Vec<u8> {
+        self.shell_input.lock().await.clone()
+    }
+
+    /// 最近一次 PTY 请求是否携带 `ECHO=0`（客户端要求远端关闭回显）。
+    pub(crate) async fn echo_disabled(&self) -> bool {
+        self.pty_modes
+            .lock()
+            .await
+            .iter()
+            .any(|(mode, value)| *mode == Pty::ECHO && *value == 0)
     }
 
     /// 掐断所有经本机转发的 TCP 桥（模拟跳板机侧隧道断裂）。
@@ -377,6 +403,7 @@ impl TestSsh {
             auth: rterm_config::AuthMethod::Password { password: None },
             group: None,
             jumps: Vec::new(),
+            startup_command: None,
         }
     }
 
@@ -465,6 +492,9 @@ impl TestSshConnection {
     }
 }
 
+/// 服务端与用例共享的 PTY 模式记录槽。
+type PtyModeLog = Arc<tokio::sync::Mutex<Vec<(Pty, u32)>>>;
+
 /// SSH 服务端 handler：只认密码认证，把 `sftp` 子系统接到 [`SftpBackend`]，
 /// 并为 direct-tcpip 请求架一条到目标主机的 TCP 桥（跳板机语义）。
 struct SshSession {
@@ -473,6 +503,10 @@ struct SshSession {
     channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
     /// 服务端侧最近一条 shell 通道的存放位（仅供 [`TestSsh::close_shell`] 使用）。
     shell_slot: Option<Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>>,
+    /// 客户端输入记录位（仅供 [`TestSsh::shell_input`] 读取）。
+    shell_input: Option<Arc<tokio::sync::Mutex<Vec<u8>>>>,
+    /// PTY 模式记录位（仅供 [`TestSsh::echo_disabled`] 读取）。
+    pty_modes: Option<PtyModeLog>,
     /// 已接受的 direct-tcpip 次数（供用例证明流量确实经过了本机）。
     forwards: Arc<AtomicU32>,
     /// 各条 TCP 桥泵任务的中止柄（仅供 [`TestSsh::kill_bridges`] 掐断隧道）。
@@ -485,27 +519,41 @@ impl SshSession {
             faults,
             root,
             None,
+            None,
+            None,
             Arc::new(AtomicU32::new(0)),
             Arc::new(Mutex::new(Vec::new())),
         )
     }
 
-    /// 同 [`SshSession::new`]，但把 shell 通道与转发计数 / 桥柄寄存到宿主的共享槽位。
+    /// 同 [`SshSession::new`]，但把 shell 通道、输入记录位与转发计数 / 桥柄寄存到宿主的共享槽位。
     #[allow(dead_code)] // 仅终端桥接与跳板机测试走这条构造
     fn with_shell_slot(
         faults: Arc<Faults>,
         root: PathBuf,
         shell_slot: Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>,
+        shell_input: Arc<tokio::sync::Mutex<Vec<u8>>>,
+        pty_modes: PtyModeLog,
         forwards: Arc<AtomicU32>,
         bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
     ) -> Self {
-        Self::build(faults, root, Some(shell_slot), forwards, bridges)
+        Self::build(
+            faults,
+            root,
+            Some(shell_slot),
+            Some(shell_input),
+            Some(pty_modes),
+            forwards,
+            bridges,
+        )
     }
 
     fn build(
         faults: Arc<Faults>,
         root: PathBuf,
         shell_slot: Option<Arc<tokio::sync::Mutex<Option<Channel<Msg>>>>>,
+        shell_input: Option<Arc<tokio::sync::Mutex<Vec<u8>>>>,
+        pty_modes: Option<PtyModeLog>,
         forwards: Arc<AtomicU32>,
         bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
     ) -> Self {
@@ -514,6 +562,8 @@ impl SshSession {
             root,
             channels: Arc::default(),
             shell_slot,
+            shell_input,
+            pty_modes,
             forwards,
             bridges,
         }
@@ -545,7 +595,7 @@ impl russh::server::Handler for SshSession {
         Ok(())
     }
 
-    /// 接受任何 PTY 请求：测试不关心终端参数，只要客户端侧 `request_pty` 成功。
+    /// 接受任何 PTY 请求：测试不关心终端参数，但记下模式位供用例校验 `ECHO=0`。
     async fn pty_request(
         &mut self,
         channel_id: ChannelId,
@@ -554,10 +604,26 @@ impl russh::server::Handler for SshSession {
         _row_height: u32,
         _pix_width: u32,
         _pix_height: u32,
-        _modes: &[(Pty, u32)],
+        modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if let Some(record) = &self.pty_modes {
+            *record.lock().await = modes.to_vec();
+        }
         session.channel_success(channel_id)?;
+        Ok(())
+    }
+
+    /// 记录客户端发来的数据（隧道 / SFTP 流量也走这里，但仅桥接用例读它）。
+    async fn data(
+        &mut self,
+        _channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(record) = &self.shell_input {
+            record.lock().await.extend_from_slice(data);
+        }
         Ok(())
     }
 

@@ -107,35 +107,16 @@ pub(crate) fn connect_deadline(timeout: u64) -> Pin<Box<dyn Future<Output = ()> 
     }
 }
 
-/// 终端桥接建立参数：初始终端尺寸与注入 OUT 管道的字节。
+/// 创建终端桥接（进程内 OUT/IN 双管道 + 打开 shell 通道），返回管道两端、桥接结束状态与尺寸发送端。
 ///
-/// 重连必须用**当前网格**的实际行列数（重连不会再触发 resize，默认值会让新 shell 按
-/// 错尺寸运行）；首次连接用默认值即可，就绪后由布局 resize 校正。
-///
-/// `inject_out` 在 pump 启动前写入 OUT 管道、先于远端任何输出到达读端；首次连接为 `None`。
-pub(crate) struct BridgeOptions {
-    /// 初始终端列数。
-    pub cols: u32,
-    /// 初始终端行数。
-    pub rows: u32,
-    /// 注入 OUT 管道的字节；`None` 表示不注入。
-    pub inject_out: Option<Vec<u8>>,
-}
-
-/// 创建终端桥接（进程内 OUT/IN 双管道 + 打开 shell 通道），返回 conout 读端、conin 写端、
-/// 桥接结束状态与尺寸发送端。
-///
-/// 桥接结束时核心层置位 `state.finished` 并写下退出原因；此处另起一个轻量 watcher
-/// 轮询该状态，一旦结束即经 `disconnect_tx` 按标签通知 GUI
-/// （`Message::TerminalDisconnected`），最终由 `tabs::State::terminal_disconnected`
-/// 把该标签状态置为 `Error`。
+/// `size` / `input` / `inject_out` 依次为初始终端尺寸、首段注入输入与 pump 启动前写入 OUT 管道的
+/// 显示字节；桥接结束时置位 `state.finished` 并经 `disconnect_tx` 按标签通知 GUI 置 `Error`。
 pub(crate) async fn open_terminal_task(
     conn: Arc<SshConnection>,
-    opts: BridgeOptions,
+    size: rterm_core::PtySize,
+    input: rterm_core::BridgeInput,
+    inject_out: Option<Vec<u8>>,
     disconnect_tx: mpsc::Sender<rterm_core::DisconnectReason>,
-    cwd: crate::state::TerminalTabCwd,
-    cwd_bootstrap: bool,
-    suppress_bootstrap_echo: bool,
 ) -> Result<
     (
         std::sync::Arc<std::fs::File>,
@@ -145,16 +126,8 @@ pub(crate) async fn open_terminal_task(
     ),
     CoreError,
 > {
-    let (conout, conin, state, resize_tx) = rterm_core::spawn_terminal_bridge(
-        conn,
-        opts.cols,
-        opts.rows,
-        cwd,
-        cwd_bootstrap,
-        suppress_bootstrap_echo,
-        opts.inject_out.as_deref(),
-    )
-    .await?;
+    let (conout, conin, state, resize_tx) =
+        rterm_core::spawn_terminal_bridge(conn, size, input, inject_out.as_deref()).await?;
 
     let polled = state.clone();
     let watcher_tx = disconnect_tx;

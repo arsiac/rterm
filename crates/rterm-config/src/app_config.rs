@@ -245,12 +245,16 @@ pub struct TerminalConfig {
     /// 按钮使用。关闭后不注入钩子，SFTP 面板中该按钮也将隐藏。默认开启。
     #[serde(default = "default_true")]
     pub cwd_bootstrap: bool,
-    /// 注入 CWD 钩子时是否通过 `request_pty` 关闭远端回显（ECHO=0）。
+    /// 注入首段输入（目录钩子 / 启动作业）时是否通过 `request_pty` 关闭远端回显（ECHO=0）。
     ///
-    /// 开启后 `request_pty` 会传 `ECHO=0`，避免远端 PTY 回显钩子脚本文本。
-    /// 仅在 `cwd_bootstrap` 开启时生效。默认开启。
+    /// 默认开启；写入完成后由首段输入自身的 `stty echo` 恢复回显。
     #[serde(default = "default_true")]
     pub suppress_bootstrap_echo: bool,
+    /// 是否在连接成功后下发会话的启动作业（`SessionConfig::startup_command`）。
+    ///
+    /// 关闭即一律不下发；作业文本是否为空由各会话决定。默认开启。
+    #[serde(default = "default_true")]
+    pub run_startup_command: bool,
     /// 是否在复制时将选中区域各行的尾部空格去除，默认开启。
     #[serde(default = "default_true")]
     pub trim_trailing_whitespace: bool,
@@ -284,6 +288,7 @@ impl Default for TerminalConfig {
             scrollback: default_scrollback(),
             cwd_bootstrap: default_true(),
             suppress_bootstrap_echo: default_true(),
+            run_startup_command: default_true(),
             trim_trailing_whitespace: default_true(),
             bell: default_true(),
             show_scrollbar: default_true(),
@@ -702,6 +707,8 @@ impl From<LegacyAppConfig> for AppConfig {
                 scrollback: l.scrollback,
                 cwd_bootstrap: l.cwd_bootstrap,
                 suppress_bootstrap_echo: l.suppress_bootstrap_echo,
+                // 旧版没有启动作业开关：取默认（开启）。
+                run_startup_command: default_true(),
                 trim_trailing_whitespace: l.trim_trailing_whitespace,
                 // 旧版没有响铃开关：取默认（开启）。
                 bell: default_true(),
@@ -997,6 +1004,8 @@ window_height = 720.0
         assert_eq!(config.terminal.scrollback, 5000);
         assert!(!config.terminal.cwd_bootstrap);
         assert!(!config.terminal.suppress_bootstrap_echo);
+        // 旧格式无启动作业开关：迁移后取默认（开启）。
+        assert!(config.terminal.run_startup_command);
         assert!(!config.terminal.trim_trailing_whitespace);
         // 旧格式无响铃开关：迁移后取默认（开启）。
         assert!(config.terminal.bell);
@@ -1044,6 +1053,8 @@ theme = "Light"
         assert_eq!(config.terminal.scrollback, 10_000);
         // `[terminal]` 段内未给出 `show_scrollbar`：回退默认（开启）。
         assert!(config.terminal.show_scrollbar);
+        // `[terminal]` 段内未给出 `run_startup_command`：回退默认（开启）。
+        assert!(config.terminal.run_startup_command);
         assert_eq!(config.appearance.language, Language::System);
     }
 

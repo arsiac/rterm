@@ -4,6 +4,7 @@
 //! 打开多个通道：交互式 shell 通道（供终端标签页桥接）与 sftp 子系统通道
 //! （供文件管理面板使用）。
 
+use crate::terminal_bridge::PtySize;
 use crate::{CoreError, CoreErrorKind, host_key};
 use log::debug;
 use rterm_config::{AuthMethod, JumpHost, SessionConfig};
@@ -494,27 +495,30 @@ impl SshConnection {
 
     /// 打开一个带 PTY 的交互式 shell 通道（供终端标签页桥接）。
     ///
-    /// 返回的通道由核心层桥接到进程内管道，再交给 GUI 的终端渲染层呈现。
+    /// `echo_off` 为真时在建 PTY 时即下发 `ECHO=0`，以隐藏紧随其后注入的输入；回显由
+    /// 字节**到达驱动时**的标志决定，故只能在此处设定。
     pub async fn open_shell_channel(
         &self,
-        cols: u32,
-        rows: u32,
-        cwd_bootstrap: bool,
-        suppress_bootstrap_echo: bool,
+        size: PtySize,
+        echo_off: bool,
     ) -> Result<russh::Channel<client::Msg>, CoreError> {
-        debug!("打开 shell 通道 ({}x{})", cols, rows);
+        debug!("打开 shell 通道 ({}x{})", size.cols, size.rows);
         let handle = self.handle.lock().await;
         let channel = handle
             .channel_open_session()
             .await
             .map_err(|e| CoreError::ssh(CoreErrorKind::ChannelOpen, e))?;
-        let terminal_modes: &[(Pty, u32)] = if cwd_bootstrap && suppress_bootstrap_echo {
-            &[(Pty::ECHO, 0)]
-        } else {
-            &[]
-        };
+        let terminal_modes: &[(Pty, u32)] = if echo_off { &[(Pty::ECHO, 0)] } else { &[] };
         channel
-            .request_pty(true, "xterm-256color", cols, rows, 0, 0, terminal_modes)
+            .request_pty(
+                true,
+                "xterm-256color",
+                size.cols,
+                size.rows,
+                0,
+                0,
+                terminal_modes,
+            )
             .await
             .map_err(|e| CoreError::ssh(CoreErrorKind::RequestPty, e))?;
         channel

@@ -436,6 +436,18 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
                     false,
                     Length::Fill,
                 ),
+                column![
+                    labeled_input(
+                        crate::ui::field_label(t!("session.startup_command")),
+                        &draft.startup_command,
+                        "",
+                        SessionField::StartupCommand,
+                        false,
+                        Length::Fill,
+                    ),
+                    crate::ui::hint_text(t!("session.startup_command_hint")),
+                ]
+                .spacing(4),
             ]
             .spacing(12),
         ),
@@ -522,7 +534,9 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
     column![
         header,
         crate::ui::hairline(),
-        scrollable(form).height(Length::Fill),
+        scrollable(form)
+            .height(Length::Fill)
+            .direction(crate::ui::thin_scrollbar_direction()),
         crate::ui::hairline(),
         footer,
     ]

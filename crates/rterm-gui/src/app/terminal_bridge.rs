@@ -5,7 +5,7 @@ use crate::app::contexts;
 use crate::app::paste;
 use crate::app::search;
 use crate::app::tabs;
-use crate::app::tasks::{BridgeOptions, open_terminal_task};
+use crate::app::tasks::open_terminal_task;
 use crate::font;
 use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
@@ -20,7 +20,7 @@ use crate::widget::term::{
     BackendCommand, Command as TermCommand, Event as TermEvent, RusshPty, Terminal,
 };
 use iced::Task;
-use rterm_core::ConnectionStatus;
+use rterm_core::{BridgeInput, ConnectionStatus, PtySize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -57,8 +57,9 @@ pub(crate) fn apply_terminal_theme(tabs: &mut tabs::State, theme: &str) {
 
 /// 为已存在的（连接中）标签挂载连接并发起桥接任务。
 ///
-/// 尚无终端（首次连接）用默认行列数、不注入字节；已有终端（原地重连）按当前网格尺寸
-/// 开局并注入复位 + 清屏 + 提示行——重连不会再触发 resize，尺寸只能在建桥时给定。
+/// 尚无终端（首次连接）用默认行列数、只注入启动作业标记行；已有终端（原地重连）按当前
+/// 网格尺寸开局并注入复位 + 清屏 + 提示行——重连不会再触发 resize，尺寸只能在建桥时给定。
+/// 启动作业是否真正下发由 `terminal.run_startup_command` 决定，作业文本取自本标签所属会话。
 pub(crate) fn open_terminal_bridge(
     app: &mut App,
     tab_id: u64,
@@ -70,46 +71,51 @@ pub(crate) fn open_terminal_bridge(
     // 桥接结束（断线）时经 `disconnect_rx` 回发 `TerminalDisconnected(tab_id, reason)`，
     // 按标签（而非按会话）把状态置为 `Error` 并携带退出原因（会话结束 / 连接断开）。
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<rterm_core::DisconnectReason>(1);
+    let tab = app.tabs.list().iter().find(|t| t.id == tab_id);
     // 取出本标签的 cwd 共享容器，随桥接传给核心层（pump 扫描 OSC 7 写入）。
-    let cwd = app
-        .tabs
-        .list()
-        .iter()
-        .find(|t| t.id == tab_id)
-        .map(|t| t.cwd.clone());
-    let opts = match app
-        .tabs
-        .list()
-        .iter()
-        .find(|t| t.id == tab_id)
-        .and_then(|t| t.terminal.as_ref().map(|term| (term, t)))
-    {
+    let cwd = tab.map(|t| t.cwd.clone());
+    // 启动作业只在开关打开时下发；文本取自本标签所属会话。回落自 `None` / 纯空白。
+    let startup_command = app
+        .config
+        .terminal
+        .run_startup_command
+        .then(|| {
+            tab.and_then(|t| {
+                app.session
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == t.session_id)
+                    .and_then(|s| s.startup_command.clone())
+            })
+        })
+        .flatten()
+        // 纯空白视同未配置（与 core 的规整规则一致），否则会只显示标记行却不下发作业。
+        .filter(|cmd| !cmd.trim().is_empty());
+    // 标记行只渲染不执行：告诉用户在远端 shell 上跑过什么。
+    let marker = startup_command.as_deref().map(startup_notice_bytes);
+    let (size, inject_out) = match tab.and_then(|t| t.terminal.as_ref().map(|term| (term, t))) {
         Some((term, tab)) => {
             // 已有终端 ⇒ 原地重连：按当前网格尺寸开局（不会再触发 resize），注入提示行。
             let (cols, rows) = term.grid_size();
             let old_cwd = tab.cwd.lock().ok().and_then(|g| g.clone());
-            BridgeOptions {
-                cols,
-                rows,
-                inject_out: Some(reconnect_inject_bytes(old_cwd.as_deref())),
-            }
+            let mut bytes = reconnect_inject_bytes(old_cwd.as_deref());
+            bytes.extend(marker.unwrap_or_default());
+            (PtySize::new(cols, rows), Some(bytes))
         }
-        // 尚无终端 ⇒ 首次连接：沿用默认尺寸（终端就绪后由布局 resize 校正），不注入。
-        None => BridgeOptions {
-            cols: super::DEFAULT_COLS,
-            rows: super::DEFAULT_ROWS,
-            inject_out: None,
-        },
+        // 尚无终端 ⇒ 首次连接：沿用默认尺寸（终端就绪后由布局 resize 校正）。
+        None => (
+            PtySize::new(super::DEFAULT_COLS, super::DEFAULT_ROWS),
+            marker,
+        ),
+    };
+    let input = BridgeInput {
+        cwd,
+        cwd_bootstrap: app.config.terminal.cwd_bootstrap,
+        startup_command,
+        hide_injected: app.config.terminal.suppress_bootstrap_echo,
     };
     let bridge = Task::perform(
-        open_terminal_task(
-            conn,
-            opts,
-            disconnect_tx,
-            cwd,
-            app.config.terminal.cwd_bootstrap,
-            app.config.terminal.suppress_bootstrap_echo,
-        ),
+        open_terminal_task(conn, size, input, inject_out, disconnect_tx),
         move |res| {
             Message::Tabs(tabs::Message::TerminalOpened(
                 tab_id,
@@ -126,6 +132,16 @@ pub(crate) fn open_terminal_bridge(
         move |reason| Message::Tabs(tabs::Message::TerminalDisconnected(tab_id, reason)),
     );
     Task::batch([bridge, disconnect])
+}
+
+/// 启动作业的标记行：`[rterm] ...`，只渲染不执行，作为 `inject_out` 写入 OUT 管道。
+fn startup_notice_bytes(job: &str) -> Vec<u8> {
+    let body = t!("terminal.startup_command_notice", cmd => job.to_string());
+    let mut bytes = Vec::with_capacity(body.len() + 12);
+    bytes.extend_from_slice(b"[rterm] ");
+    bytes.extend_from_slice(body.as_bytes());
+    bytes.extend_from_slice(b"\r\n");
+    bytes
 }
 
 /// 重连时注入的整段字节：复位序列 + 清屏 + 一行「会话已重新开始」提示（带旧 cwd）。
@@ -508,5 +524,15 @@ mod tests {
         assert!(String::from_utf8_lossy(&plain).contains("\x1b[3J"));
         assert!(String::from_utf8_lossy(&plain).contains("[rterm] "));
         assert!(!String::from_utf8_lossy(&plain).contains("/var/log"));
+    }
+
+    /// 启动作业标记行：`[rterm] ` 前缀 + 作业文本 + CRLF 收尾，只渲染不执行。
+    #[test]
+    fn startup_notice_bytes_wraps_the_job_in_a_marker_line() {
+        let bytes = startup_notice_bytes("cd /srv && make");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.starts_with("[rterm] "), "标记行须带 [rterm] 前缀");
+        assert!(text.contains("cd /srv && make"), "作业文本原样出现");
+        assert!(bytes.ends_with(b"\r\n"));
     }
 }

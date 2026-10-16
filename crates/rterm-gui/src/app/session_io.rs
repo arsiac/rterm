@@ -663,6 +663,7 @@ mod tests {
             },
             group: None,
             jumps: Vec::new(),
+            startup_command: None,
         }
     }
 

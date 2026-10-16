@@ -53,8 +53,10 @@ settings:
   language_en: English
   cwd_bootstrap: Auto-track terminal directory
   cwd_bootstrap_hint: When enabled, a script is automatically executed in the terminal to report the current working directory for the SFTP Enter terminal directory button.
-  suppress_bootstrap_echo: Suppress terminal echo during script injection
-  suppress_bootstrap_echo_hint: When enabled, the PTY is configured with ECHO=0 during script injection to prevent the script text from appearing on screen. When disabled, the script will be echoed normally.
+  suppress_bootstrap_echo: Suppress terminal echo during script and job injection
+  suppress_bootstrap_echo_hint: When enabled, the PTY is configured with ECHO=0 while the directory bootstrap script and the startup command are injected, to prevent the injected text from appearing on screen. When disabled, they will be echoed normally.
+  run_startup_command: Run startup command on connect
+  run_startup_command_hint: When enabled, the startup command configured for the session is sent to the remote shell once the connection is ready.
   trim_trailing_whitespace: Trim trailing whitespace on copy
   trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
   bell: Visual bell (flash the tab)
@@ -135,6 +137,8 @@ session:
   host: Host
   port: Port
   username: Username
+  startup_command: Startup command (optional)
+  startup_command_hint: Sent to the remote shell once the connection is ready; leave empty to skip; stored in plaintext.
   auth: Authentication
   auth_password: Password
   auth_publickey: Public key
@@ -309,6 +313,7 @@ terminal:
   reconnecting: Reconnecting…
   reconnected_notice: Session restarted; previous processes were not resumed
   reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}; use cd to return"
+  startup_command_notice: "startup command: %{cmd}"
   menu_copy: Copy
   menu_paste: Paste
   paste_warn_title: Paste confirmation

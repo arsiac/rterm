@@ -22,4 +22,7 @@ pub use connection::{HopSpec, HostKeyPrompt, HostKeyReply, SessionSecrets, SshCo
 pub use error::{CoreError, CoreErrorKind, ErrorClass};
 pub use model::{ConnectionStatus, FileEntry};
 pub use sftp::{Fingerprint, ResumeAt, SftpClient};
-pub use terminal_bridge::{BridgeState, DisconnectReason, spawn_terminal_bridge};
+pub use terminal_bridge::{
+    BridgeInput, BridgeState, DisconnectReason, InitialInput, PtySize, compose_initial_input,
+    spawn_terminal_bridge,
+};
