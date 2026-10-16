@@ -53,7 +53,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     );
     // 传输按钮：切换到中心面板的传输队列视图（与“会话 / 文件”并列）。
     let transfer_btn = activity_button(
-        Icon::ArrowSort,
+        Icon::Transfer,
         app.center == CenterView::Transfers,
         true,
         t!("activity.transfers"),

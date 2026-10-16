@@ -75,8 +75,8 @@ pub enum Icon {
     ChevronUp,
     /// 竖向三点省略号
     MoreVertical,
-    /// 上传 + 下载双向箭头
-    ArrowSort,
+    /// 双向传输箭头
+    Transfer,
     /// 对勾
     Checkmark,
     /// 警告三角
@@ -131,7 +131,7 @@ impl Icon {
             Icon::ChevronDown => svg_bytes!("chevron-down-16-filled"),
             Icon::ChevronUp => svg_bytes!("chevron-up-16-filled"),
             Icon::MoreVertical => svg_bytes!("more-vertical-16-filled"),
-            Icon::ArrowSort => svg_bytes!("arrow-sort-16-filled"),
+            Icon::Transfer => svg_bytes!("transfer-2-fill"),
             Icon::Checkmark => svg_bytes!("checkmark-16-filled"),
             Icon::Warning => svg_bytes!("warning-16-filled"),
             Icon::PanelLeftContract => svg_bytes!("panel-left-contract-16-filled"),

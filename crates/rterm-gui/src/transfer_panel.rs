@@ -46,7 +46,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let retry_limit = app.config.transfer.retry_attempts;
 
     let header = row![
-        Icon::ArrowSort.svg(18.0),
+        Icon::Transfer.svg(18.0),
         text(t!("transfer.title", count => transfers.len()))
             .size(13)
             .style(secondary_text),
