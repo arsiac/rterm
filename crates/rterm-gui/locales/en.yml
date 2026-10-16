@@ -57,6 +57,8 @@ settings:
   suppress_bootstrap_echo_hint: When enabled, the PTY is configured with ECHO=0 while the directory bootstrap script and the startup command are injected, to prevent the injected text from appearing on screen. When disabled, they will be echoed normally.
   run_startup_command: Run startup command on connect
   run_startup_command_hint: When enabled, the startup command configured for the session is sent to the remote shell once the connection is ready.
+  restore_cwd_on_reconnect: Restore working directory on reconnect
+  restore_cwd_on_reconnect_hint: When enabled, the directory captured before the disconnect is sent to the new shell as a cd command, so the terminal returns to where it was. A directory that no longer exists is reported by the shell itself.
   trim_trailing_whitespace: Trim trailing whitespace on copy
   trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
   bell: Visual bell (flash the tab)
@@ -312,7 +314,7 @@ terminal:
   reconnect_button: Reconnect
   reconnecting: Reconnecting…
   reconnected_notice: Session restarted; previous processes were not resumed
-  reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}; use cd to return"
+  reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}"
   startup_command_notice: "startup command: %{cmd}"
   menu_copy: Copy
   menu_paste: Paste

@@ -255,6 +255,12 @@ pub struct TerminalConfig {
     /// 关闭即一律不下发；作业文本是否为空由各会话决定。默认开启。
     #[serde(default = "default_true")]
     pub run_startup_command: bool,
+    /// 是否在断线重连后把终端恢复到断开前的工作目录。
+    ///
+    /// 开启时重连会把上次捕获的目录（OSC 7 上报）以 `cd` 下发给新 shell；目录已不存在
+    /// 时由 shell 自行报错。首次连接无此目录，故不受影响。默认开启。
+    #[serde(default = "default_true")]
+    pub restore_cwd_on_reconnect: bool,
     /// 是否在复制时将选中区域各行的尾部空格去除，默认开启。
     #[serde(default = "default_true")]
     pub trim_trailing_whitespace: bool,
@@ -289,6 +295,7 @@ impl Default for TerminalConfig {
             cwd_bootstrap: default_true(),
             suppress_bootstrap_echo: default_true(),
             run_startup_command: default_true(),
+            restore_cwd_on_reconnect: default_true(),
             trim_trailing_whitespace: default_true(),
             bell: default_true(),
             show_scrollbar: default_true(),
@@ -709,6 +716,8 @@ impl From<LegacyAppConfig> for AppConfig {
                 suppress_bootstrap_echo: l.suppress_bootstrap_echo,
                 // 旧版没有启动作业开关：取默认（开启）。
                 run_startup_command: default_true(),
+                // 旧版没有恢复目录开关：取默认（开启）。
+                restore_cwd_on_reconnect: default_true(),
                 trim_trailing_whitespace: l.trim_trailing_whitespace,
                 // 旧版没有响铃开关：取默认（开启）。
                 bell: default_true(),

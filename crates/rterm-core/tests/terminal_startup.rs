@@ -61,6 +61,7 @@ async fn the_job_reaches_the_remote_shell_verbatim_with_echo_on() {
         cwd: None,
         cwd_bootstrap: false,
         startup_command: Some("cd /srv && make".to_string()),
+        resume_cwd: None,
         hide_injected: false,
     };
     bridge_up(&ssh, input).await;
@@ -82,11 +83,12 @@ async fn a_hidden_injection_disables_then_restores_echo() {
         cwd: cwd_tracker(),
         cwd_bootstrap: true,
         startup_command: Some(job.to_string()),
+        resume_cwd: None,
         hide_injected: true,
     };
     bridge_up(&ssh, input).await;
 
-    let expected = compose_initial_input(true, true, Some(job))
+    let expected = compose_initial_input(true, true, None, Some(job))
         .bytes
         .expect("钩子与作业并存时必有字节");
     let got = wait_for_input(&ssh, expected.len()).await;
@@ -114,11 +116,12 @@ async fn a_jobless_bootstrap_keeps_its_existing_bytes() {
         cwd: cwd_tracker(),
         cwd_bootstrap: true,
         startup_command: None,
+        resume_cwd: None,
         hide_injected: true,
     };
     bridge_up(&ssh, input).await;
 
-    let expected = compose_initial_input(true, true, None)
+    let expected = compose_initial_input(true, true, None, None)
         .bytes
         .expect("钩子存在时必有字节");
     let got = wait_for_input(&ssh, expected.len()).await;
@@ -137,6 +140,7 @@ async fn no_hook_and_no_job_writes_nothing() {
         cwd: None,
         cwd_bootstrap: true,
         startup_command: None,
+        resume_cwd: None,
         hide_injected: true,
     };
     bridge_up(&ssh, input).await;
@@ -148,4 +152,33 @@ async fn no_hook_and_no_job_writes_nothing() {
         "无钩子无作业时不该向远端写入任何字节"
     );
     assert!(!ssh.echo_disabled().await, "无写入时不应关闭回显");
+}
+
+/// 恢复目录随首段输入一并抵达远端 shell：`cd` 行在作业之前，引号包装逐字节不变。
+#[tokio::test]
+async fn the_resume_cd_reaches_the_remote_shell_before_the_job() {
+    init_test_root();
+
+    let ssh = TestSsh::start().await;
+    let dir = "/srv/it's here";
+    let input = BridgeInput {
+        cwd: None,
+        cwd_bootstrap: false,
+        startup_command: Some("make".to_string()),
+        resume_cwd: Some(dir.to_string()),
+        hide_injected: true,
+    };
+    bridge_up(&ssh, input).await;
+
+    let expected = compose_initial_input(false, true, Some(dir), Some("make"))
+        .bytes
+        .expect("恢复目录与作业并存时必有字节");
+    let got = wait_for_input(&ssh, expected.len()).await;
+    assert_eq!(got, expected, "恢复目录须与合成结果逐字节一致");
+    assert!(ssh.echo_disabled().await, "隐藏注入时 PTY 须以 ECHO=0 建立");
+    assert_eq!(
+        String::from_utf8_lossy(&got),
+        "stty echo\ncd -- '/srv/it'\\''s here'\nmake\n",
+        "cd 行须在作业之前且引号包装正确"
+    );
 }

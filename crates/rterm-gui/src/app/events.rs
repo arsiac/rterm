@@ -401,6 +401,11 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::RestoreCwdOnReconnect(v) => {
+            app.config.terminal.restore_cwd_on_reconnect = v;
+            contexts::save_config(app);
+            Task::none()
+        }
         settings::Event::TrimTrailingWhitespace(v) => {
             app.config.terminal.trim_trailing_whitespace = v;
             contexts::save_config(app);

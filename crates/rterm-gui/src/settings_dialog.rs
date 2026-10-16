@@ -433,6 +433,11 @@ fn terminal_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::RunStartupCommand(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.run_startup_command_hint")),
+        checkbox(app.config.terminal.restore_cwd_on_reconnect)
+            .label(t!("settings.restore_cwd_on_reconnect"))
+            .on_toggle(|v| Message::Settings(settings::Message::RestoreCwdOnReconnect(v)))
+            .spacing(8),
+        crate::ui::hint_text(t!("settings.restore_cwd_on_reconnect_hint")),
         checkbox(app.config.terminal.trim_trailing_whitespace)
             .label(t!("settings.trim_trailing_whitespace"))
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))

@@ -174,7 +174,7 @@ const CWD_BOOTSTRAP: &[u8] = b"\
 
 /// 建桥时要向远端 shell 写入的首段输入配置。
 ///
-/// 目录钩子与启动作业合成一段字节下发，回显开关决定这段输入是否可见。
+/// 目录钩子、恢复目录与启动作业合成一段字节下发，回显开关决定这段输入是否可见。
 pub struct BridgeInput {
     /// 终端 cwd 共享容器；`None` 表示不追踪目录（也必然不注入钩子）。
     pub cwd: CwdTracker,
@@ -182,6 +182,8 @@ pub struct BridgeInput {
     pub cwd_bootstrap: bool,
     /// 启动作业文本；`None` 或纯空白表示不执行。
     pub startup_command: Option<String>,
+    /// 重连时要恢复到的目录；`None` 或不可用时不下发。
+    pub resume_cwd: Option<String>,
     /// 是否隐藏注入的输入（建 PTY 时 `ECHO=0`，写入后以 `stty echo` 恢复）。
     pub hide_injected: bool,
 }
@@ -190,7 +192,7 @@ pub struct BridgeInput {
 pub struct InitialInput {
     /// 是否在建 PTY 时关闭远端回显（`ECHO=0`）；只有确实要写入字节时才为真。
     pub echo_off: bool,
-    /// 要写入 shell 的字节；`None` 表示无任何字节可写（既无钩子也无作业）。
+    /// 要写入 shell 的字节；`None` 表示无任何字节可写（无钩子、无恢复目录也无作业）。
     pub bytes: Option<Vec<u8>>,
 }
 
@@ -201,13 +203,20 @@ fn normalize_job(job: &str) -> Option<String> {
     (!job.is_empty()).then(|| job.to_string())
 }
 
-/// 由目录钩子开关、隐藏开关与启动作业合成首段注入输入。
+/// 由目录钩子开关、隐藏开关、恢复目录与启动作业合成首段注入输入。
 ///
-/// 首行为钩子与回显恢复（无钩子时以 `:` / `stty echo` 占位），次行为作业；`echo_off` 与
-/// 字节同源派生，避免「关了回显却没人恢复」；`stty echo` 排在作业前且独立成行。
-pub fn compose_initial_input(hook: bool, hide: bool, job: Option<&str>) -> InitialInput {
+/// 首行为钩子与回显恢复（无钩子时以 `:` / `stty echo` 占位），其后依次为恢复目录行与
+/// 作业行；`echo_off` 与字节同源派生，避免「关了回显却没人恢复」；`stty echo` 排在命令
+/// 前且独立成行。
+pub fn compose_initial_input(
+    hook: bool,
+    hide: bool,
+    resume_cwd: Option<&str>,
+    job: Option<&str>,
+) -> InitialInput {
+    let resume = resume_cwd.and_then(resume_cd_line);
     let job = job.and_then(normalize_job);
-    let write = hook || job.is_some();
+    let write = hook || resume.is_some() || job.is_some();
     let echo_off = hide && write;
     if !write {
         return InitialInput {
@@ -221,14 +230,34 @@ pub fn compose_initial_input(hook: bool, hide: bool, job: Option<&str>) -> Initi
         out.extend_from_slice(&CWD_BOOTSTRAP[..CWD_BOOTSTRAP.len() - 2]);
     }
     out.extend_from_slice(if echo_off { b"stty echo\n" } else { b":\n" });
-    if let Some(job) = job {
-        out.extend_from_slice(job.as_bytes());
+    for line in [resume, job].into_iter().flatten() {
+        out.extend_from_slice(line.as_bytes());
         out.push(b'\n');
     }
     InitialInput {
         echo_off,
         bytes: Some(out),
     }
+}
+
+/// 把恢复目录拼成一行 `cd`：只认绝对路径且不含控制字符，其余整条拒发，
+/// 避免把相对路径或控制序列当作 shell 输入写下去。
+fn resume_cd_line(dir: &str) -> Option<String> {
+    if !dir.starts_with('/') || dir.chars().any(char::is_control) {
+        return None;
+    }
+    // 单引号内一切字节原样保留，故只需把内嵌的 `'` 跳出再重开引号。
+    let mut line = String::with_capacity(dir.len() + 10);
+    line.push_str("cd -- '");
+    for c in dir.chars() {
+        if c == '\'' {
+            line.push_str("'\\''");
+        } else {
+            line.push(c);
+        }
+    }
+    line.push('\'');
+    Some(line)
 }
 
 /// 创建终端桥接所需的一切，返回供 GUI 直接消费的对象。
@@ -243,7 +272,7 @@ pub fn compose_initial_input(hook: bool, hide: bool, job: Option<&str>) -> Initi
 ///   传输层是否还活着（见 [`SshConnection::is_closed`]），故按 `Arc` 接收以随桥接任务
 ///   一同存活。
 /// - `size`：初始终端网格尺寸，用于首帧 PTY。
-/// - `input`：首段注入输入的配置（目录钩子 / 启动作业 / 回显开关），见 [`BridgeInput`]。
+/// - `input`：首段注入输入的配置（目录钩子 / 恢复目录 / 启动作业 / 回显开关），见 [`BridgeInput`]。
 /// - `inject_out`：pump 启动前原样写入 OUT 管道（远端→本地方向）的字节，因而必定先于
 ///   任何远端输出到达 GUI 读端（重连提示行等）；`None` 表示不注入。
 ///
@@ -270,17 +299,23 @@ pub async fn spawn_terminal_bridge(
         cwd,
         cwd_bootstrap,
         startup_command,
+        resume_cwd,
         hide_injected,
     } = input;
-    // 只在需要追踪 cwd 时才注入钩子；启动作业与钩子合成为一段输入，回显开关一并派生。
+    // 只在需要追踪 cwd 时才注入钩子；恢复目录、启动作业与钩子合成为一段输入，回显开关一并派生。
     let hook = cwd.is_some() && cwd_bootstrap;
-    let initial = compose_initial_input(hook, hide_injected, startup_command.as_deref());
+    let initial = compose_initial_input(
+        hook,
+        hide_injected,
+        resume_cwd.as_deref(),
+        startup_command.as_deref(),
+    );
 
     // 打开 shell 通道（含 PTY 与 shell 进程）；这是整条链路上唯一的远端资源获取点。
     // `echo_off` 在建 PTY 时即生效，故它与首段输入必须同源派生（见 `compose_initial_input`）。
     let channel = conn.open_shell_channel(size, initial.echo_off).await?;
 
-    // 首段输入（钩子 + 启动作业）在 shell 读就绪后按行执行，无需等待 pump 启动。
+    // 首段输入（钩子 + 恢复目录 + 启动作业）在 shell 读就绪后按行执行，无需等待 pump 启动。
     if let Some(bytes) = &initial.bytes {
         let mut writer = channel.make_writer();
         if let Err(e) = writer.write_all(bytes).await {
@@ -814,35 +849,36 @@ mod tests {
         assert_eq!(cwd.lock().unwrap().as_deref(), Some("/srv/app"));
     }
 
-    /// 无作业时的首段输入（回归锁）：不隐藏即钩子原文，隐藏则以 `stty echo` 收尾。
+    /// 无作业无恢复目录时的首段输入（回归锁）：不隐藏即钩子原文，隐藏则以 `stty echo` 收尾。
     #[test]
     fn a_jobless_bootstrap_stays_byte_identical() {
-        let visible = compose_initial_input(true, false, None);
+        let visible = compose_initial_input(true, false, None, None);
         assert!(!visible.echo_off);
         assert_eq!(visible.bytes.as_deref(), Some(CWD_BOOTSTRAP));
 
-        let hidden = compose_initial_input(true, true, None);
+        let hidden = compose_initial_input(true, true, None, None);
         assert!(hidden.echo_off);
         let mut expected = CWD_BOOTSTRAP[..CWD_BOOTSTRAP.len() - 2].to_vec();
         expected.extend_from_slice(b"stty echo\n");
         assert_eq!(hidden.bytes.as_deref(), Some(&expected[..]));
     }
 
-    /// 首段输入的排版：作业恒在第 2 行，`stty echo` 与钩子同行且先于作业，整段以单个换行收尾。
+    /// 首段输入的排版：钩子与回显恢复恒在第 1 行，其后依次是恢复目录与作业，
+    /// 整段以单个换行收尾。
     #[test]
     fn compose_initial_input_lays_out_hook_and_job() {
         // 无钩子无作业：不写任何字节（纯空白作业亦视同无作业）。
-        let none = compose_initial_input(false, true, None);
+        let none = compose_initial_input(false, true, None, None);
         assert!(!none.echo_off);
         assert!(none.bytes.is_none());
         assert!(
-            compose_initial_input(false, false, Some("   "))
+            compose_initial_input(false, false, None, Some("   "))
                 .bytes
                 .is_none()
         );
 
         // 仅作业 + 隐藏：第 1 行 `stty echo`、第 2 行作业。
-        let only_job = compose_initial_input(false, true, Some("cd /srv && tmux attach"));
+        let only_job = compose_initial_input(false, true, None, Some("cd /srv && tmux attach"));
         assert!(only_job.echo_off, "有作业且要求隐藏即应关回显");
         assert_eq!(
             String::from_utf8(only_job.bytes.unwrap()).unwrap(),
@@ -850,7 +886,7 @@ mod tests {
         );
 
         // 钩子 + 作业 + 隐藏：`stty echo` 紧随钩子收尾，作业在第 2 行。
-        let both = compose_initial_input(true, true, Some("cd /srv"));
+        let both = compose_initial_input(true, true, None, Some("cd /srv"));
         let text = String::from_utf8(both.bytes.unwrap()).unwrap();
         let mut lines = text.split('\n');
         assert!(lines.next().unwrap().ends_with("esac; stty echo"));
@@ -858,16 +894,64 @@ mod tests {
         assert_eq!(lines.next(), Some(""), "整段以单个换行收尾");
 
         // 不隐藏时首行以 `:` 占位（无需恢复回显）。
-        let visible = compose_initial_input(true, false, Some("cd /srv"));
+        let visible = compose_initial_input(true, false, None, Some("cd /srv"));
         assert!(!visible.echo_off);
         let text = String::from_utf8(visible.bytes.unwrap()).unwrap();
         assert!(text.contains("esac; :\ncd /srv\n"));
     }
 
+    /// 恢复目录排在回显恢复之后、作业之前，三者各占一行。
+    #[test]
+    fn the_resume_cd_lands_between_the_echo_restore_and_the_job() {
+        let out = compose_initial_input(false, true, Some("/srv/app"), Some("make"));
+        assert!(out.echo_off, "有内容且要求隐藏即应关回显");
+        assert_eq!(
+            String::from_utf8(out.bytes.unwrap()).unwrap(),
+            "stty echo\ncd -- '/srv/app'\nmake\n"
+        );
+    }
+
+    /// 只有恢复目录（无钩子无作业）时同样要写入字节，并据此派生关回显。
+    #[test]
+    fn a_resume_cd_alone_still_writes_and_derives_echo_off() {
+        let visible = compose_initial_input(false, false, Some("/var/log"), None);
+        assert!(!visible.echo_off);
+        assert_eq!(
+            String::from_utf8(visible.bytes.unwrap()).unwrap(),
+            ":\ncd -- '/var/log'\n"
+        );
+
+        let hidden = compose_initial_input(false, true, Some("/var/log"), None);
+        assert!(hidden.echo_off);
+        assert!(
+            String::from_utf8(hidden.bytes.unwrap())
+                .unwrap()
+                .starts_with("stty echo\n")
+        );
+    }
+
+    /// 路径内嵌的单引号按 POSIX 规则跳出重开；相对路径与含控制字符的路径整条拒发。
+    #[test]
+    fn only_quoted_absolute_paths_without_control_chars_become_a_cd() {
+        let out = compose_initial_input(false, false, Some("/tmp/it's here"), None);
+        assert_eq!(
+            String::from_utf8(out.bytes.unwrap()).unwrap(),
+            ":\ncd -- '/tmp/it'\\''s here'\n"
+        );
+        for bad in ["relative/x", "/tmp/a\nb", "/tmp/a\x1bb", ""] {
+            assert!(
+                compose_initial_input(false, false, Some(bad), None)
+                    .bytes
+                    .is_none(),
+                "不可用的恢复目录不得写入字节：{bad:?}"
+            );
+        }
+    }
+
     /// 作业的 `\r\n` 归一为 `\n`，首尾空白与多余换行被裁掉，只留单个收尾换行。
     #[test]
     fn a_multiline_job_is_normalized_to_lf() {
-        let out = compose_initial_input(false, false, Some("cd /srv\r\nls\r\n"));
+        let out = compose_initial_input(false, false, None, Some("cd /srv\r\nls\r\n"));
         assert_eq!(
             String::from_utf8(out.bytes.unwrap()).unwrap(),
             ":\ncd /srv\nls\n"
@@ -877,7 +961,7 @@ mod tests {
     /// 无钩子但有作业且要求隐藏时，仍须关回显并在首行恢复：`echo_off` 与首行同源派生。
     #[test]
     fn hiding_a_job_only_input_still_restores_echo() {
-        let out = compose_initial_input(false, true, Some("exec tmux"));
+        let out = compose_initial_input(false, true, None, Some("exec tmux"));
         assert!(out.echo_off);
         let text = String::from_utf8(out.bytes.unwrap()).unwrap();
         assert!(text.starts_with("stty echo\n"), "首行须恢复回显：{text:?}");

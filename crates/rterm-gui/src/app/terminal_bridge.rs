@@ -59,7 +59,7 @@ pub(crate) fn apply_terminal_theme(tabs: &mut tabs::State, theme: &str) {
 ///
 /// 尚无终端（首次连接）用默认行列数、只注入启动作业标记行；已有终端（原地重连）按当前
 /// 网格尺寸开局并注入复位 + 清屏 + 提示行——重连不会再触发 resize，尺寸只能在建桥时给定。
-/// 启动作业是否真正下发由 `terminal.run_startup_command` 决定，作业文本取自本标签所属会话。
+/// 启动作业与恢复目录分别由 `terminal.run_startup_command`、`terminal.restore_cwd_on_reconnect` 决定。
 pub(crate) fn open_terminal_bridge(
     app: &mut App,
     tab_id: u64,
@@ -74,6 +74,15 @@ pub(crate) fn open_terminal_bridge(
     let tab = app.tabs.list().iter().find(|t| t.id == tab_id);
     // 取出本标签的 cwd 共享容器，随桥接传给核心层（pump 扫描 OSC 7 写入）。
     let cwd = tab.map(|t| t.cwd.clone());
+    // 已有终端即原地重连：该容器仍持有断开前的目录，既用于提示行，也用于恢复目录。
+    let old_cwd = tab
+        .filter(|t| t.terminal.is_some())
+        .and_then(|t| t.cwd.lock().ok().and_then(|g| g.clone()));
+    let resume_cwd = if app.config.terminal.restore_cwd_on_reconnect {
+        old_cwd.clone()
+    } else {
+        None
+    };
     // 启动作业只在开关打开时下发；文本取自本标签所属会话。回落自 `None` / 纯空白。
     let startup_command = app
         .config
@@ -93,11 +102,10 @@ pub(crate) fn open_terminal_bridge(
         .filter(|cmd| !cmd.trim().is_empty());
     // 标记行只渲染不执行：告诉用户在远端 shell 上跑过什么。
     let marker = startup_command.as_deref().map(startup_notice_bytes);
-    let (size, inject_out) = match tab.and_then(|t| t.terminal.as_ref().map(|term| (term, t))) {
-        Some((term, tab)) => {
+    let (size, inject_out) = match tab.and_then(|t| t.terminal.as_ref()) {
+        Some(term) => {
             // 已有终端 ⇒ 原地重连：按当前网格尺寸开局（不会再触发 resize），注入提示行。
             let (cols, rows) = term.grid_size();
-            let old_cwd = tab.cwd.lock().ok().and_then(|g| g.clone());
             let mut bytes = reconnect_inject_bytes(old_cwd.as_deref());
             bytes.extend(marker.unwrap_or_default());
             (PtySize::new(cols, rows), Some(bytes))
@@ -112,6 +120,7 @@ pub(crate) fn open_terminal_bridge(
         cwd,
         cwd_bootstrap: app.config.terminal.cwd_bootstrap,
         startup_command,
+        resume_cwd,
         hide_injected: app.config.terminal.suppress_bootstrap_echo,
     };
     let bridge = Task::perform(
@@ -151,7 +160,7 @@ fn startup_notice_bytes(job: &str) -> Vec<u8> {
 /// 新 shell 的首行键入。
 /// 清屏取 xterm 系 `clear` 语义（`\x1b[H\x1b[2J\x1b[3J`：归位 + 清视口 + 清 scrollback），
 /// 避免旧残帧（半截 MOTD、旧提示符）与新输出按格混排。
-/// 提示行带旧 cwd，只读、不执行任何命令。
+/// 提示行只渲染不执行命令，路径先剥去控制字符。
 fn reconnect_inject_bytes(old_cwd: Option<&str>) -> Vec<u8> {
     /// 渲染层复位：退备用屏 → 清 SGR → 滚动区 → 光标 / 自动换行 / 方向键 →
     /// 鼠标上报与括号粘贴 / 焦点上报全关。
@@ -160,7 +169,7 @@ fn reconnect_inject_bytes(old_cwd: Option<&str>) -> Vec<u8> {
     /// 清屏：光标归位 → 清视口（ED 2）→ 清 scrollback（ED 3）。
     const CLEAR: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
     let body = match old_cwd {
-        Some(dir) => t!("terminal.reconnected_notice_cwd", cwd => dir.to_string()),
+        Some(dir) => t!("terminal.reconnected_notice_cwd", cwd => display_safe(dir)),
         None => t!("terminal.reconnected_notice"),
     };
     let mut bytes = Vec::with_capacity(RESET.len() + CLEAR.len() + body.len() + 16);
@@ -170,6 +179,11 @@ fn reconnect_inject_bytes(old_cwd: Option<&str>) -> Vec<u8> {
     bytes.extend_from_slice(body.as_bytes());
     bytes.extend_from_slice(b"\r\n");
     bytes
+}
+
+/// 剥掉字符串里的控制字符，避免路径中的换行 / ESC 顶掉或污染单行提示。
+fn display_safe(path: &str) -> String {
+    path.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// 桥接就绪后用返回的本地 OUT/IN 双管道端创建终端组件，并自动聚焦。
@@ -534,5 +548,19 @@ mod tests {
         assert!(text.starts_with("[rterm] "), "标记行须带 [rterm] 前缀");
         assert!(text.contains("cd /srv && make"), "作业文本原样出现");
         assert!(bytes.ends_with(b"\r\n"));
+    }
+
+    /// 提示行里的路径先剥控制字符：远端目录名里的换行 / ESC 不得污染提示行。
+    #[test]
+    fn the_notice_path_drops_control_characters() {
+        let bytes = reconnect_inject_bytes(Some("/tmp/a\nb\x1b[2J"));
+        let text = String::from_utf8_lossy(&bytes);
+        let notice = text.split("[rterm] ").nth(1).expect("提示行应存在");
+        assert!(notice.contains("/tmp/ab[2J"), "控制字符须剥掉：{notice:?}");
+        assert_eq!(
+            notice.matches('\n').count(),
+            1,
+            "提示行只应有自己的收尾换行：{notice:?}"
+        );
     }
 }

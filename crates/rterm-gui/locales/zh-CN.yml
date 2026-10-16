@@ -57,6 +57,8 @@ settings:
   suppress_bootstrap_echo_hint: 开启后在注入目录上报脚本与启动作业时会通过 PTY 设置关闭回显，避免注入文本显示在屏幕上。关闭后将正常回显。
   run_startup_command: 连接后运行启动作业
   run_startup_command_hint: 开启后会在连接就绪时把会话的启动作业下发到远端 shell。
+  restore_cwd_on_reconnect: 重连后恢复工作目录
+  restore_cwd_on_reconnect_hint: 开启后会把断开前捕获的目录以 cd 下发给新 shell，使终端回到原处；目录已不存在时由 shell 自行报错。
   trim_trailing_whitespace: 复制时去除行尾空格
   trim_trailing_whitespace_hint: 开启后每次复制多行文本时自动去除每行末尾的多余空白字符。
   bell: 响铃视觉提示（闪烁标签）
@@ -312,7 +314,7 @@ terminal:
   reconnect_button: 重新连接
   reconnecting: 正在重新连接…
   reconnected_notice: 会话已重新开始，之前的进程未恢复
-  reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}，可用 cd 返回
+  reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}
   startup_command_notice: 启动作业：%{cmd}
   menu_copy: 复制
   menu_paste: 粘贴

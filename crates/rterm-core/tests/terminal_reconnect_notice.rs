@@ -42,6 +42,7 @@ async fn injected_bytes_arrive_first_and_verbatim() {
             cwd: None,
             cwd_bootstrap: false,
             startup_command: None,
+            resume_cwd: None,
             hide_injected: false,
         },
         Some(payload.as_bytes()),

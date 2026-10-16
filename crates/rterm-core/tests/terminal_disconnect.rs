@@ -42,6 +42,7 @@ async fn bridge_up(ssh: &TestSsh) -> (TestSshConnection, Arc<BridgeState>) {
             cwd: None,
             cwd_bootstrap: false,
             startup_command: None,
+            resume_cwd: None,
             hide_injected: false,
         },
         None,

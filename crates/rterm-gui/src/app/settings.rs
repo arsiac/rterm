@@ -154,6 +154,8 @@ pub enum Message {
     SuppressBootstrapEcho(bool),
     /// 修改「连接后执行启动作业」设置（携带开关状态，即时持久化）。
     RunStartupCommand(bool),
+    /// 修改「重连后恢复工作目录」设置（携带开关状态，即时持久化）。
+    RestoreCwdOnReconnect(bool),
     /// 修改「复制时去除行尾空格」设置（携带开关状态，即时持久化）。
     TrimTrailingWhitespace(bool),
     /// 修改「响铃视觉提示」设置（携带开关状态，即时持久化；关闭后新响铃不再闪烁标签）。
@@ -226,6 +228,8 @@ pub enum Event {
     SuppressBootstrapEcho(bool),
     /// 写回"连接后执行启动作业"配置（携带开关状态）。
     RunStartupCommand(bool),
+    /// 写回"重连后恢复工作目录"配置（携带开关状态）。
+    RestoreCwdOnReconnect(bool),
     /// 写回"复制时去除行尾空格"配置（携带开关状态）。
     TrimTrailingWhitespace(bool),
     /// 写回"响铃视觉提示"配置（携带开关状态）。
@@ -346,6 +350,7 @@ impl State {
             Message::CwdBootstrap(v) => Task::done(Event::CwdBootstrap(v)),
             Message::SuppressBootstrapEcho(v) => Task::done(Event::SuppressBootstrapEcho(v)),
             Message::RunStartupCommand(v) => Task::done(Event::RunStartupCommand(v)),
+            Message::RestoreCwdOnReconnect(v) => Task::done(Event::RestoreCwdOnReconnect(v)),
             Message::TrimTrailingWhitespace(v) => Task::done(Event::TrimTrailingWhitespace(v)),
             Message::Bell(v) => Task::done(Event::Bell(v)),
             Message::Scrollbar(v) => Task::done(Event::Scrollbar(v)),
