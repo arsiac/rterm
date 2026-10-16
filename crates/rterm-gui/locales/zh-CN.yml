@@ -3,6 +3,8 @@ common:
   cancel: 取消
   retry: 重试
   remove: 移除
+  new: 新建
+  edit: 编辑
   open_folder: 打开所在文件夹
 settings:
   title: 设置
@@ -89,6 +91,38 @@ settings:
   found_update: 发现新版本
   check_failed: 检查失败
   update_banner: 发现新版本 v%{version}
+snippet:
+  filter_placeholder: 过滤常用命令…
+  empty: 还没有常用命令
+  empty_hint: 点右上角 + 新建，然后在常用命令行上右键即可发送。
+  filter_no_match: 没有匹配的常用命令。
+  new: 新建常用命令
+  edit: 编辑常用命令
+  send_current: 发送（当前会话）
+  send_all: 发送（所有会话）
+  copy: 复制
+  delete: 删除
+  save: 保存
+  move_up: 上移
+  move_down: 下移
+  name: 名称（不超过 %{max} 字符）
+  name_placeholder: 如 部署
+  text: 命令文本
+  submit: 发送后回车
+  submit_hint: 关闭时只把文本填到提示符上，自己改完再回车。
+  plaintext_hint: 常用命令以明文保存，不要在里面写口令或令牌。
+  no_target: 没有可发送的活动会话
+  all_no_target: 没有已连接的会话可发送
+  sent_all: 已发送到 %{sent} 个会话，跳过 %{skipped}
+  load_failed: 加载常用命令失败：%{err}
+  load_failed_path: "常用命令文件不可用（%{path}）：%{err}"
+  save_failed: 保存常用命令失败：%{err}
+  store_unavailable: 常用命令文件不可用
+  saved: 常用命令已保存（%{count} 条）
+  name_required: 名称不能为空
+  name_too_long: 名称过长（最多 %{max} 个字符）
+  empty_text: 命令文本不能为空
+  text_too_long: 命令文本过长（最多 %{max} 字节）
 shortcuts:
   title: 快捷键
   filter_placeholder: 筛选快捷键…
@@ -342,6 +376,7 @@ activity:
   sessions: 会话
   files: 文件
   transfers: 传输
+  snippets: 常用命令
   collapse_sidebar: 收起侧边栏
   expand_sidebar: 展开侧边栏
 app:

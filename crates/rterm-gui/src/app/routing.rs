@@ -5,7 +5,7 @@ use crate::app::connect;
 use crate::app::contexts;
 use crate::app::{
     events, hostkey, masterpw, panes, paste, search, session, session_io, settings, sftp,
-    shortcuts, tabs, window,
+    shortcuts, snippets, tabs, window,
 };
 use crate::message::Message;
 use crate::state::{CenterView, ToastKind};
@@ -138,6 +138,12 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
         // 终端内搜索模块：路由进模块自身 `update`，上行事件经 `Message::SearchEvent` 落地。
         Message::Search(m) => app.search.update(m).map(Message::SearchEvent),
         Message::SearchEvent(e) => events::apply_search_event(app, e),
+        // 命令片段模块：路由进模块自身 `update`，上行事件经 `Message::SnippetsEvent` 落地。
+        Message::Snippets(m) => {
+            let ctx = contexts::snippets_ctx(app);
+            app.snippets.update(m, &ctx).map(Message::SnippetsEvent)
+        }
+        Message::SnippetsEvent(e) => events::apply_snippets_event(app, e),
         // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
         Message::Settings(m) => {
             // 到达即收起活动栏菜单（点菜单项 / 按 OpenSettings 快捷键都会走到这里）。
@@ -297,6 +303,12 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.session
             .update(session::Message::CancelEdit, &ctx)
             .map(Message::SessionEvent)
+    } else if app.snippets.editor.is_some() {
+        // 片段编辑弹窗：Esc 丢弃草稿。
+        let ctx = contexts::snippets_ctx(app);
+        app.snippets
+            .update(snippets::Message::CancelEdit, &ctx)
+            .map(Message::SnippetsEvent)
     } else if let Some(tab_id) = app.tabs.active() {
         app.sftp
             .update(sftp::Message::SftpCancelDialog, tab_id)
@@ -306,9 +318,9 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
     }
 }
 
-/// 处理右键按下：把光标所在的会话 / 文件条目标记为选中，使右键菜单作用于哪一条可见。
+/// 处理右键按下：把光标所在的会话 / 文件 / 常用命令行标记为选中，使右键菜单作用于哪一条可见。
 ///
-/// 两个列表都派发（经模块自身 `update`），由模块按各自己的悬浮态决定选中谁：
+/// 三个列表都派发（经模块自身 `update`），由模块按各自悬浮态决定选中谁：
 /// 光标不在其列表项上时为空操作，故右击终端 / 空白处不会误改选中项。
 pub(crate) fn handle_right_press(app: &mut App) -> iced::Task<Message> {
     let tab_id = app.tabs.active().unwrap_or(0);
@@ -321,7 +333,12 @@ pub(crate) fn handle_right_press(app: &mut App) -> iced::Task<Message> {
         .session
         .update(session::Message::SessionSelectHovered, &ctx)
         .map(Message::SessionEvent);
-    Task::batch([sftp, session])
+    let snippet_ctx = contexts::snippets_ctx(app);
+    let snippets = app
+        .snippets
+        .update(snippets::Message::SnippetSelectHovered, &snippet_ctx)
+        .map(Message::SnippetsEvent);
+    Task::batch([sftp, session, snippets])
 }
 
 /// 终端右键菜单「复制」：把活动终端的选区文本写入系统剪贴板。

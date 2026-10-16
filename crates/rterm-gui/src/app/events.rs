@@ -5,12 +5,14 @@ use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
 use crate::app::{
-    masterpw, paste, search, session, session_io, settings, sftp, tabs, transfer, updates, window,
+    masterpw, paste, search, session, session_io, settings, sftp, snippets, tabs, transfer,
+    updates, window,
 };
 use crate::message::Message;
+use crate::t;
 use crate::vault_keyring;
 use crate::widget::term::actions::Action;
-use crate::widget::term::{BackendCommand, Command as TermCommand};
+use crate::widget::term::{BackendCommand, Command as TermCommand, Event as TermEvent};
 use iced::Task;
 use rust_i18n;
 
@@ -275,6 +277,25 @@ pub(crate) fn apply_search_event(app: &mut App, e: search::Event) -> Task<Messag
             Task::none()
         }
         search::Event::FocusInput => iced::widget::operation::focus(app.search.input_id().clone()),
+    }
+}
+
+/// 落地 `snippets::Event`：把命令片段模块上行的字节写入目标终端、弹 toast、更新状态栏。
+pub(crate) fn apply_snippets_event(app: &mut App, e: snippets::Event) -> Task<Message> {
+    match e {
+        // 片段原文直写终端（不经粘贴编码）：点击即发送要求远端直接执行。
+        snippets::Event::Send { tab_id, bytes } => terminal_bridge::handle_terminal_event(
+            app,
+            TermEvent::BackendCall(tab_id, BackendCommand::Write(bytes)),
+        ),
+        snippets::Event::Toast(kind, msg) => {
+            contexts::set_toast(app, kind, msg);
+            Task::none()
+        }
+        snippets::Event::Saved { count } => {
+            app.status = Some(t!("snippet.saved", count => count));
+            Task::none()
+        }
     }
 }
 

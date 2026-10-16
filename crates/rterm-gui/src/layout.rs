@@ -13,6 +13,7 @@ use crate::icons::Icon;
 use crate::message::Message;
 use crate::session_panel;
 use crate::sftp_panel;
+use crate::snippet_panel;
 use crate::state::CenterView;
 use crate::t;
 use crate::terminal_pane;
@@ -32,6 +33,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 CenterView::Sessions => session_panel::view(app).map(Message::Session),
                 CenterView::Files => sftp_panel::view(app).map(Message::Sftp),
                 CenterView::Transfers => transfer_panel::view(app).map(Message::Transfer),
+                CenterView::Snippets => snippet_panel::view(app).map(Message::Snippets),
             }
         } else {
             terminal_pane::view(app)
@@ -108,6 +110,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // 会话编辑器弹窗（列表在遮罩下仍可见）。
     if let Some(dialog) = crate::session_panel::editor_overlay(app) {
         layers.push(dialog.map(Message::Session));
+    }
+    // 常用命令新建 / 编辑弹窗：与会话编辑器同为列表之上的编辑层。
+    if let Some(dialog) = crate::snippet_dialog::view(app) {
+        layers.push(dialog.map(Message::Snippets));
     }
     // 大量粘贴确认弹窗：置于会话编辑器之上、主密码弹窗之下。
     if let Some(dialog) = crate::paste_dialog::view(app) {

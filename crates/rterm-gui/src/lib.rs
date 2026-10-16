@@ -5,6 +5,7 @@
 
 pub mod activity_bar;
 pub mod app;
+pub mod bash_highlight;
 pub mod font;
 pub mod host_key_dialog;
 pub mod i18n;
@@ -22,6 +23,8 @@ pub mod settings_dialog;
 pub mod sftp_dialogs;
 pub mod sftp_panel;
 pub mod shortcuts_dialog;
+pub mod snippet_dialog;
+pub mod snippet_panel;
 pub mod state;
 pub mod terminal_pane;
 pub mod terminal_theme;

@@ -8,6 +8,7 @@
 //!   （`[connection]` / `[terminal]` / `[transfer]` / …）；加载时自动迁移旧版扁平格式。
 //! - `sessions.toml`：会话连接配置（[`SessionStore`] / [`SessionConfig`]）。
 //! - `keybindings.toml`：快捷键绑定的稀疏覆盖（[`Keybindings`] / [`Keymap`]）。
+//! - `snippets.toml`：命令片段清单（[`Snippets`] / [`Snippet`]）。
 //!
 //! 以上目录经 [`paths`] 统一解析：`debug` 构建下会整体改落在工作区内的 `.dev/`，
 //! 避免开发期读写真实配置；`release` 构建不受影响。
@@ -17,6 +18,7 @@ pub mod error;
 pub mod keybindings;
 pub mod paths;
 pub mod session;
+pub mod snippets;
 pub mod store;
 
 /// SSH 默认端口（用于 [`SessionConfig::port`] 的 serde 默认值，以及新建会话编辑器端口框的预填）。
@@ -29,6 +31,7 @@ pub use app_config::{
 pub use error::ConfigError;
 pub use keybindings::{Chord, ChordKey, Keybindings, Keymap};
 pub use session::{AuthMethod, JumpHost, SessionConfig, new_id};
+pub use snippets::{MAX_NAME_CHARS, MAX_TEXT_BYTES, Snippet, SnippetIssue, Snippets};
 pub use store::{
     EXPORT_FORMAT, SessionStore, SessionsFileMeta, SessionsFileProblem, SessionsFileState,
     export_sessions, export_sessions_with_credentials, import_credential_export, import_sessions,

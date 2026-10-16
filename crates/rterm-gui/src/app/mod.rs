@@ -15,6 +15,7 @@ pub(crate) mod session_io;
 pub(crate) mod settings;
 pub(crate) mod sftp;
 pub(crate) mod shortcuts;
+pub(crate) mod snippets;
 pub(crate) mod tabs;
 pub(crate) mod tasks;
 pub(crate) mod terminal_bridge;
@@ -102,6 +103,10 @@ pub struct App {
     /// 与终端右键菜单「查找」。模块经 `Message::Search` 接收意图、经 `Message::SearchEvent`
     /// 由父层落地后端命令与焦点，自身绝不修改 `App`。
     pub search: search::State,
+    /// 命令片段模块状态：片段清单内存储（`snippets.toml`）、过滤 / 选中 / 悬浮态与编辑弹窗草稿。
+    /// 模块经 `Message::Snippets` 接收意图、经 `Message::SnippetsEvent` 回写父状态（写入终端 /
+    /// toast / 状态栏），自身绝不修改 `App`。
+    pub snippets: snippets::State,
     /// 状态栏提示。
     pub status: Option<String>,
     /// toast 通知管理器：所有全局提示（导入 / 导出结果、连接状态、SFTP 反馈等）经

@@ -3,6 +3,8 @@ common:
   cancel: Cancel
   retry: Retry
   remove: Remove
+  new: New
+  edit: Edit
   open_folder: Open containing folder
 settings:
   title: Settings
@@ -89,6 +91,38 @@ settings:
   found_update: Update available
   check_failed: Check failed
   update_banner: "Update available: v%{version}"
+snippet:
+  filter_placeholder: Filter snippets…
+  empty: No snippets yet
+  empty_hint: Click + in the top-right to add one, then right-click a row to send it.
+  filter_no_match: No matching snippets.
+  new: New snippet
+  edit: Edit snippet
+  send_current: Send (current session)
+  send_all: Send (all sessions)
+  copy: Duplicate
+  delete: Delete
+  save: Save
+  move_up: Move up
+  move_down: Move down
+  name: "Name (max %{max} characters)"
+  name_placeholder: e.g. deploy
+  text: Command text
+  submit: Press Enter after sending
+  submit_hint: When off, the text is typed at the prompt and left for you to edit before running.
+  plaintext_hint: Snippets are stored in plaintext. Do not put passwords or tokens in them.
+  no_target: No active session to send to
+  all_no_target: No connected session to send to
+  sent_all: "Sent to %{sent} session(s), skipped %{skipped}"
+  load_failed: "Failed to load snippets: %{err}"
+  load_failed_path: "Snippet file unusable (%{path}): %{err}"
+  save_failed: "Failed to save snippets: %{err}"
+  store_unavailable: snippet file unavailable
+  saved: "Snippets saved (%{count})"
+  name_required: Name cannot be empty
+  name_too_long: "Name is too long (max %{max} characters)"
+  empty_text: Command text cannot be empty
+  text_too_long: "Command text is too long (max %{max} bytes)"
 shortcuts:
   title: Keyboard Shortcuts
   filter_placeholder: Filter shortcuts…
@@ -342,6 +376,7 @@ activity:
   sessions: Sessions
   files: Files
   transfers: Transfers
+  snippets: Snippets
   collapse_sidebar: Collapse sidebar
   expand_sidebar: Expand sidebar
 app:

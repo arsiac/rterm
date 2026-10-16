@@ -14,6 +14,7 @@ use crate::app::session_io;
 use crate::app::settings;
 use crate::app::sftp;
 use crate::app::shortcuts;
+use crate::app::snippets;
 use crate::app::tabs;
 use crate::app::transfer;
 use crate::app::updates;
@@ -144,6 +145,13 @@ pub enum Message {
     /// 终端内搜索模块上行事件：后端搜索命令与焦点意图，由父层落地到目标终端。
     SearchEvent(search::Event),
 
+    // ===== 命令片段（路由）=====
+    /// 命令片段模块内部消息：片段列表与编辑弹窗的 UI 意图、发送当前 / 发送全部，
+    /// 由父层经此变体路由进 `app::snippets` 模块。
+    Snippets(snippets::Message),
+    /// 命令片段模块上行事件（写入终端 / toast / 状态栏），由父层收到后落地。
+    SnippetsEvent(snippets::Event),
+
     // ===== 更新检查（路由）=====
     /// 更新检查模块内部消息：启动自动检查 / 立即检查 / 检查结果 / 打开发布页 / 关闭横幅，
     /// 由父层经此变体路由进 `app::updates` 模块。
@@ -158,7 +166,7 @@ pub enum Message {
         /// 该事件是否已被部件捕获（模态遮罩 / 终端拦下的保留键），用于避免重复派发。
         status: Status,
     },
-    /// 鼠标右键按下：把光标所在的会话 / 文件条目标记为选中，使右键菜单作用于哪一条可见。
+    /// 鼠标右键按下：把光标所在的会话 / 文件 / 常用命令行标记为选中，使右键菜单作用于哪一条可见。
     ///
     /// 由全局监听下发（`App::subscription`）而非行内 `on_right_press`——`iced_aw::ContextMenu`
     /// 会先捕获右键事件，行内处理收不到；选中谁再由各模块按自身悬浮态判定。

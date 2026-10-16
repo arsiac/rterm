@@ -21,6 +21,8 @@ pub enum CenterView {
     Files,
     /// 传输队列视图（上传 / 下载，聚合所有标签），与 Sessions / Files 并列由活动栏切换。
     Transfers,
+    /// 命令片段管理面板（片段清单与编辑弹窗）。
+    Snippets,
 }
 
 /// 终端当前目录（cwd）共享容器别名，与 `rterm_core::terminal_bridge::CwdTracker` 同构，

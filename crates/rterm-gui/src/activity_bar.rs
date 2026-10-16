@@ -1,8 +1,6 @@
 //! 最左侧固定活动栏。
 //!
-//! 提供三个切换按钮：会话管理（[`CenterView::Sessions`]）、文件管理（[`CenterView::Files`]）
-//! 与传输（[`CenterView::Transfers`]），对应 VSCode 风格的活动栏。文件管理依附于终端标签自己的
-//! SSH 连接，故未连接任何会话时该按钮禁用，并以图标禁止符号 + 鼠标禁止光标提示。
+//! 四个切换按钮：会话 / 文件 / 传输 / 常用命令（各自对应一个 [`CenterView`]）；文件管理依附终端标签自己的 SSH 连接，未连接会话时禁用并提示。
 
 use crate::t;
 
@@ -61,6 +59,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
         t!("activity.transfers"),
         Message::SwitchCenter(CenterView::Transfers),
     );
+    // 命令片段按钮：切换到片段管理面板（与“会话 / 文件 / 传输”并列）。
+    let snippets_btn = activity_button(
+        Icon::CommandLine,
+        app.center == CenterView::Snippets,
+        true,
+        t!("activity.snippets"),
+        Message::SwitchCenter(CenterView::Snippets),
+    );
     // 设置入口固定在活动栏最底部：用可拉伸空白把上方按钮与设置入口分隔开。
     // 高亮取「设置 / 快捷键弹窗打开」或「菜单展开」，与 `session_panel` 的下拉触发按钮一致。
     let settings_btn = settings_menu(
@@ -76,6 +82,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         sessions_btn,
         files_btn,
         transfer_btn,
+        snippets_btn,
         vertical(),
         settings_btn
     ]

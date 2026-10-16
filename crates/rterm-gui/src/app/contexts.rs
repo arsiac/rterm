@@ -1,7 +1,7 @@
 //! 父状态到子模块的只读上下文适配层，以及父状态的通用写入动作。
 
 use crate::app::{
-    App, masterpw, paste, session, session_io, settings, tabs, transfer, updates, window,
+    App, masterpw, paste, session, session_io, settings, snippets, tabs, transfer, updates, window,
 };
 use crate::state::{SftpView, ToastKind};
 use crate::t;
@@ -166,6 +166,19 @@ pub(crate) fn transfer_ctx(app: &App) -> transfer::Ctx {
         clients: app.sftp.live_clients().collect(),
         max_concurrent: app.config.transfer.max_concurrent,
         retry_attempts: app.config.transfer.retry_attempts,
+    }
+}
+
+/// 组装命令片段模块所需的只读上下文（发送目标快照）。
+///
+/// 每次 `update` 前重建；仅含 owned 数据（不借用 `App`），以免与 `app.snippets` 的可变借用冲突。
+pub(crate) fn snippets_ctx(app: &App) -> snippets::Ctx {
+    let (sessions, total_sessions) =
+        snippets::broadcast_targets(app.tabs.list(), app.tabs.active());
+    snippets::Ctx {
+        active: app.tabs.active(),
+        sessions,
+        total_sessions,
     }
 }
 

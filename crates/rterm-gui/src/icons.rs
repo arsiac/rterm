@@ -103,6 +103,8 @@ pub enum Icon {
     ArrowUp,
     /// 向下箭头
     ArrowDown,
+    /// 命令行（提示符 + 光标）
+    CommandLine,
 }
 
 impl Icon {
@@ -143,6 +145,7 @@ impl Icon {
             Icon::TextPeriodAsterisk => svg_bytes!("text-period-asterisk-20-filled"),
             Icon::ArrowUp => svg_bytes!("arrow-up-16-filled"),
             Icon::ArrowDown => svg_bytes!("arrow-down-16-filled"),
+            Icon::CommandLine => svg_bytes!("command-line-20-solid"),
         }
     }
 
