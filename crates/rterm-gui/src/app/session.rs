@@ -418,7 +418,7 @@ impl State {
         if let Some(store) = self.store.as_ref() {
             store
                 .save(&self.sessions, header)
-                .map_err(|e| format!("保存失败: {e}"))?;
+                .map_err(|e| t!("app.save_failed", err => e))?;
         }
         Ok(())
     }
