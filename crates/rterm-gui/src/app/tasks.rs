@@ -8,6 +8,7 @@ use crate::t;
 use futures::SinkExt;
 use rterm_config::{ConnectOptions, SessionConfig};
 use rterm_core::{CoreError, FileEntry, HopSpec, SessionSecrets, SftpClient, SshConnection};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -347,6 +348,32 @@ pub(crate) fn new_dir_targets(path: &str, name: &str) -> Option<(String, String)
     Some((parent_path(&target), target))
 }
 
+/// 判定上传项与目标目录现有条目的同名冲突，返回 `(同名文件, 同名目录)`：不带层级的相对路径就是
+/// 本层的名字，带层级的（文件夹上传）取第一段，按远端条目自身的类型归类。只比最终名，故 `X.part`
+/// 这类暂存名与 `X` 永不相等，上一轮失败的半成品不会被当成冲突追问。
+pub(crate) fn upload_conflicts(
+    rels: &[&str],
+    existing: &HashMap<String, bool>,
+) -> (Vec<String>, Vec<String>) {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    for rel in rels {
+        // 一个文件夹会展开成成百上千条相对路径，首层同名只问一次。
+        let head = rel.split('/').next().unwrap_or(rel);
+        if head.is_empty() || seen.contains(&head) {
+            continue;
+        }
+        seen.push(head);
+        match existing.get(head) {
+            Some(true) => dirs.push(head.to_string()),
+            Some(false) => files.push(head.to_string()),
+            None => {}
+        }
+    }
+    (files, dirs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +450,35 @@ mod tests {
         for bad in ["", ".", "..", "../x", "docs/a.txt", r"a\b"] {
             assert!(!valid_rename_name(bad), "应判非法: {bad:?}");
         }
+    }
+
+    /// 同名判定只看首层：文件命中文件、层级项按第一段命中目录，未命中则一概不问。
+    #[test]
+    fn upload_conflicts_checks_first_level_names() {
+        let existing: HashMap<String, bool> = [
+            ("a.txt".to_string(), false),
+            ("docs".to_string(), true),
+            ("data.bin.part".to_string(), false),
+        ]
+        .into_iter()
+        .collect();
+        let rels = ["a.txt", "docs/1.md", "docs/sub/2.md", "new.bin", "data.bin"];
+        assert_eq!(
+            upload_conflicts(&rels, &existing),
+            (vec!["a.txt".to_string()], vec!["docs".to_string()])
+        );
+        // 目录里没有同名（只有上一轮的半成品）→ 不问，直接入队。
+        let empty: HashMap<String, bool> = HashMap::new();
+        assert_eq!(upload_conflicts(&rels, &empty), (Vec::new(), Vec::new()));
+    }
+
+    /// 归类以远端条目的类型为准：本地传 `notes` 这个文件，远端同名的是目录，仍按目录报。
+    #[test]
+    fn upload_conflicts_classifies_by_remote_kind() {
+        let existing: HashMap<String, bool> = [("notes".to_string(), true)].into_iter().collect();
+        assert_eq!(
+            upload_conflicts(&["notes"], &existing),
+            (Vec::new(), vec!["notes".to_string()])
+        );
     }
 }

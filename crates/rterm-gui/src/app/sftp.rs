@@ -6,11 +6,12 @@ use iced::{Subscription, Task};
 
 use crate::app::tasks::{
     ensure_remote_dir, join_path, new_dir_targets, open_sftp_task, parent_path,
-    resolve_and_list_task, valid_rename_name,
+    resolve_and_list_task, upload_conflicts, valid_rename_name,
 };
 use crate::i18n::localize_error;
 use crate::state::{CenterView, SftpDialog, SftpView, ToastKind};
 use crate::t;
+use log::warn;
 use rterm_core::{FileEntry, SftpClient, SshConnection};
 
 /// SFTP 模块私有状态：每标签文件管理视图。
@@ -143,6 +144,15 @@ pub enum Message {
     SftpPickUpload,
     /// 打开系统文件夹选择器以选择要上传的本地文件夹（可多选），保留目录层级上传。
     SftpPickUploadFolder,
+    /// 上传选择器返回（携带上传项）：先探测目标目录的同名条目，再决定入队还是弹覆盖确认。
+    SftpUploadPicked(Vec<(std::path::PathBuf, String)>),
+    /// 探测到远端同名（携带探测时的目录、上传项、同名文件与同名目录），请求弹覆盖确认。
+    SftpUploadConflict(
+        String,
+        Vec<(std::path::PathBuf, String)>,
+        Vec<String>,
+        Vec<String>,
+    ),
     /// 打开系统文件夹选择器以选择下载目标目录（携带远端文件名）。
     SftpPickDownload(String),
     /// 下载远端文件（携带远端名称与本地目标目录），经覆盖检查后上行给传输模块。
@@ -537,6 +547,10 @@ impl State {
                     SftpDialog::OverwriteDownload { name, local, .. } => {
                         Task::done(Event::StartDownload(name, local))
                     }
+                    // 上传覆盖确认：点头后把探测时暂存的上传项原样上行入队，取消则整批不入队。
+                    SftpDialog::OverwriteUpload { items, .. } => {
+                        Task::done(Event::StartUpload(items))
+                    }
                     // 属性框为只读信息框，确认仅关闭。
                     SftpDialog::Properties { .. } => Task::none(),
                 }
@@ -596,11 +610,12 @@ impl State {
                         })
                 },
                 |items| match items {
-                    Some(items) => Event::StartUpload(items),
+                    // 选择结果先回模块做同名探测，由那边决定直接入队还是请用户确认。
+                    Some(items) => Event::Emit(Box::new(Message::SftpUploadPicked(items))),
                     None => Event::Emit(Box::new(Message::SftpNoop)),
                 },
             ),
-            // 文件夹上传：选一个或多个本地文件夹，递归展平为带层级相对路径的上传项后上行。
+            // 文件夹上传：选一个或多个本地文件夹，递归展平为带层级相对路径的上传项后交同名探测。
             Message::SftpPickUploadFolder => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
@@ -615,10 +630,63 @@ impl State {
                         })
                 },
                 |items| match items {
-                    Some(items) => Event::StartUpload(items),
+                    Some(items) => Event::Emit(Box::new(Message::SftpUploadPicked(items))),
                     None => Event::Emit(Box::new(Message::SftpNoop)),
                 },
             ),
+            Message::SftpUploadPicked(items) => {
+                let (client, path, listed) = match self.per_tab.get(&active_tab) {
+                    Some(tab) => {
+                        // 快照只取名字与类型：万一要顶上，整条元数据都用不上。
+                        let listed: Vec<(String, bool)> = tab
+                            .entries
+                            .iter()
+                            .map(|e| (e.name.clone(), e.is_dir))
+                            .collect();
+                        (tab.client.clone(), tab.path.clone(), listed)
+                    }
+                    None => return Task::done(Event::StartUpload(items)),
+                };
+                let Some(client) = client else {
+                    return Task::done(Event::StartUpload(items));
+                };
+                // 入队前探一次目标目录；列举失败退回上面那份快照——探测本身不该挡住上传。
+                Task::perform(
+                    async move {
+                        let existing: HashMap<String, bool> = match client.list_dir(&path).await {
+                            Ok(entries) => {
+                                entries.into_iter().map(|e| (e.name, e.is_dir)).collect()
+                            }
+                            Err(e) => {
+                                warn!("upload conflict probe failed for {path}: {e}");
+                                listed.into_iter().collect()
+                            }
+                        };
+                        (path, items, existing)
+                    },
+                    |(path, items, existing)| {
+                        let rels: Vec<&str> = items.iter().map(|(_, rel)| rel.as_str()).collect();
+                        let (files, dirs) = upload_conflicts(&rels, &existing);
+                        if files.is_empty() && dirs.is_empty() {
+                            return Event::StartUpload(items);
+                        }
+                        Event::Emit(Box::new(Message::SftpUploadConflict(
+                            path, items, files, dirs,
+                        )))
+                    },
+                )
+            }
+            Message::SftpUploadConflict(path, items, files, dirs) => {
+                // 结论只对「仍是那个目录」的视图成立：视图已切走或已不在，就按老行为直接入队。
+                let Some(tab) = self.per_tab.get_mut(&active_tab) else {
+                    return Task::done(Event::StartUpload(items));
+                };
+                if tab.path != path {
+                    return Task::done(Event::StartUpload(items));
+                }
+                tab.dialog = Some(SftpDialog::OverwriteUpload { items, files, dirs });
+                Task::none()
+            }
             Message::SftpPickDownload(name) => {
                 // 起始目录取「上次选择的下载目录」，首次为系统下载目录（`~/Downloads`）。
                 // 不传 `set_directory` 时 rfd 用平台默认值（通常是家目录），与用户预期不符。

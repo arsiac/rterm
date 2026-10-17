@@ -107,6 +107,15 @@ pub enum SftpDialog {
         /// 对应的传输任务 id（确认后继续 / 跳过）。
         transfer_id: u64,
     },
+    /// 上传覆盖确认（携带待入队的上传项，以及目标目录里已同名的文件与目录）。
+    OverwriteUpload {
+        /// 待上行的上传项（本地路径 + 远端相对路径）。
+        items: Vec<(std::path::PathBuf, String)>,
+        /// 目标目录里已存在的同名文件。
+        files: Vec<String>,
+        /// 目标目录里已存在的同名目录，风险是整个目录树里的同名文件都会被覆盖。
+        dirs: Vec<String>,
+    },
     /// 文件属性展示（携带条目与完整远端路径，只读信息框）。
     Properties {
         /// 展示的文件条目元数据。

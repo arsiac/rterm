@@ -293,6 +293,8 @@ sftp:
   delete_confirm: Delete %{kind} "%{name}"? This cannot be undone.
   overwrite_title: Overwrite confirmation
   overwrite_confirm: '"%{name}" already exists in the target folder. Overwrite?'
+  overwrite_many_confirm: '%{count} files already exist in the target folder. Overwrite all of them?'
+  overwrite_dir_confirm: 'Folders with the same names already exist in the target folder (%{count}). Files inside them will be overwritten. Continue?'
   overwrite: Overwrite
   file: File
   dir: Folder

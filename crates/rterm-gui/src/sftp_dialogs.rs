@@ -24,6 +24,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let content = match dialog {
         SftpDialog::Delete { name, is_dir } => delete_dialog(name, *is_dir),
         SftpDialog::OverwriteDownload { name, .. } => overwrite_dialog(name),
+        SftpDialog::OverwriteUpload { files, dirs, .. } => upload_overwrite_dialog(files, dirs),
         SftpDialog::Properties { entry, path } => properties_dialog(entry, path),
     };
     // 属性框无取消动作，遮罩单击对齐其「关闭」按钮；确认框对齐「取消」。
@@ -54,6 +55,37 @@ fn overwrite_dialog(name: &str) -> Element<'_, Message> {
     dialog_panel(
         t!("sftp.overwrite_title"),
         column![text(t!("sftp.overwrite_confirm", name => name)).size(14),],
+        t!("sftp.overwrite"),
+        true,
+    )
+}
+
+/// 上传覆盖确认弹窗：单文件复用下载侧那句文案，多文件与目录各报数量。
+fn upload_overwrite_dialog<'a>(files: &'a [String], dirs: &'a [String]) -> Element<'a, Message> {
+    let mut lines: Vec<Element<'a, Message>> = Vec::new();
+    if files.len() == 1 {
+        lines.push(
+            text(t!("sftp.overwrite_confirm", name => files[0].clone()))
+                .size(14)
+                .into(),
+        );
+    } else if !files.is_empty() {
+        lines.push(
+            text(t!("sftp.overwrite_many_confirm", count => files.len()))
+                .size(14)
+                .into(),
+        );
+    }
+    if !dirs.is_empty() {
+        lines.push(
+            text(t!("sftp.overwrite_dir_confirm", count => dirs.len()))
+                .size(14)
+                .into(),
+        );
+    }
+    dialog_panel(
+        t!("sftp.overwrite_title"),
+        column(lines).spacing(8),
         t!("sftp.overwrite"),
         true,
     )

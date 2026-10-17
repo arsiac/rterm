@@ -293,6 +293,8 @@ sftp:
   delete_confirm: 确定删除%{kind} “%{name}” 吗？此操作不可恢复。
   overwrite_title: 覆盖确认
   overwrite_confirm: “%{name}” 已存在于目标目录，是否覆盖？
+  overwrite_many_confirm: 目标目录里已有 %{count} 个同名文件，全部覆盖？
+  overwrite_dir_confirm: 目标目录里已有 %{count} 个同名目录，其中的同名文件会被覆盖，是否继续？
   overwrite: 覆盖
   file: 文件
   dir: 目录
