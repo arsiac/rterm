@@ -175,7 +175,7 @@ pub enum Message {
     SftpGotoTerminalDir,
     /// 模块内部无操作占位（如文件选择器被取消，避免父层需要一个无意义的事件）。
     SftpNoop,
-    /// 请求在文件列表内联进入“新建文件夹”输入态（默认名称 “New Folder”）。
+    /// 请求在文件列表内联进入“新建文件夹”输入态
     SftpNewDirConfirm,
     /// 内联“新建文件夹”输入框内容变更（携带当前文本）。
     SftpNewDirInput(String),
@@ -374,7 +374,7 @@ impl State {
             }
             Message::SftpNewDirConfirm => {
                 if let Some(tab) = self.per_tab.get_mut(&active_tab) {
-                    tab.creating_dir = Some("New Folder".to_string());
+                    tab.creating_dir = Some(t!("sftp.new_dir_name").to_string());
                 }
                 Task::none()
             }
