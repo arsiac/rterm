@@ -1,5 +1,6 @@
 //! 主密码设置 / 解锁模块
 
+use crate::i18n::localize_config_error;
 use crate::state::ToastKind;
 use crate::t;
 use iced::Task;
@@ -339,7 +340,7 @@ fn setup_derive(state: &mut State, new_vault: Arc<Vault>, ctx: &Ctx) -> Task<Eve
                 store
                     .save(&new_sessions, &header)
                     .map(|_| (new_vault, new_sessions))
-                    .map_err(|e| format!("failed to write encrypted file: {e}"))
+                    .map_err(|e| e.to_string())
             })
             .await
             .unwrap()
@@ -373,7 +374,7 @@ fn setup_rekey(
         }
         Err(e) => {
             state.stage = MpwStage::Idle;
-            state.error = Some(e);
+            state.error = Some(t!("masterpw.write_failed", err => e));
             Task::none()
         }
     }
@@ -388,7 +389,7 @@ fn submit_unlock(state: &mut State, ctx: &Ctx) -> Task<Event> {
     let header = match store.load_crypto_header() {
         Ok(h) => h,
         Err(e) => {
-            state.error = Some(t!("masterpw.read_failed", err => e));
+            state.error = Some(t!("masterpw.read_failed", err => localize_config_error(&e)));
             return Task::none();
         }
     };
@@ -513,7 +514,7 @@ fn change_derive(
                 store
                     .save(&new_sessions, new_vault.header())
                     .map(|_| (new_vault, new_sessions))
-                    .map_err(|e| format!("failed to write encrypted file: {e}"))
+                    .map_err(|e| e.to_string())
             })
             .await
             .unwrap()
@@ -552,7 +553,7 @@ fn change_rekey(
         }
         Err(e) => {
             state.stage = MpwStage::Idle;
-            state.change_error = Some(e);
+            state.change_error = Some(t!("masterpw.write_failed", err => e));
             Task::none()
         }
     }

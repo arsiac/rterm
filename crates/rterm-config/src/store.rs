@@ -89,9 +89,9 @@ impl SessionStore {
     /// 当无法定位配置目录或创建目录失败时返回 [`ConfigError::ConfigDir`] / [`ConfigError::Store`]。
     pub fn new() -> Result<Self, ConfigError> {
         let dir = crate::paths::config_dir()
-            .ok_or_else(|| ConfigError::ConfigDir("无法定位 XDG 配置目录".into()))?;
+            .ok_or_else(|| ConfigError::ConfigDir("cannot locate XDG config directory".into()))?;
         fs::create_dir_all(&dir)
-            .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to create config directory: {e}")))?;
         let path = dir.join("sessions.toml");
         debug!("Session config file path: {}", path.display());
         Ok(Self { path })
@@ -107,7 +107,7 @@ impl SessionStore {
     pub fn load_crypto_header(&self) -> Result<CryptoHeader, ConfigError> {
         let file = self
             .read_parsed()?
-            .ok_or_else(|| ConfigError::Store("会话文件不存在".into()))?;
+            .ok_or_else(|| ConfigError::Store("session file does not exist".into()))?;
         if file.is_export_file() {
             return Err(ConfigError::ExportFileInPlace);
         }
@@ -180,11 +180,12 @@ impl SessionStore {
             sessions: sessions.to_vec(),
         })?;
         fs::write(&self.path, content)
-            .map_err(|e| ConfigError::Store(format!("写入会话文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to write session file: {e}")))?;
         // 会话含密文凭据，Unix 下限制为仅属主可读写，降低泄露风险。
         #[cfg(unix)]
-        fs::set_permissions(&self.path, PermissionsExt::from_mode(0o600))
-            .map_err(|e| ConfigError::Store(format!("设置会话文件权限失败: {e}")))?;
+        fs::set_permissions(&self.path, PermissionsExt::from_mode(0o600)).map_err(|e| {
+            ConfigError::Store(format!("failed to set session file permissions: {e}"))
+        })?;
         debug!(
             "Saved {} session(s) to {}",
             sessions.len(),
@@ -218,7 +219,8 @@ pub fn export_sessions(path: &Path, sessions: &[SessionConfig]) -> Result<(), Co
         crypto: None,
         sessions: stripped,
     })?;
-    fs::write(path, content).map_err(|e| ConfigError::Store(format!("写入导出文件失败: {e}")))?;
+    fs::write(path, content)
+        .map_err(|e| ConfigError::Store(format!("failed to write export file: {e}")))?;
     debug!(
         "Exported {} session(s) (without credentials) to {}",
         sessions.len(),
@@ -235,7 +237,7 @@ pub fn export_sessions(path: &Path, sessions: &[SessionConfig]) -> Result<(), Co
 /// [`import_credential_export`]（先用品令解出明文，再用本机 DEK 重新包裹）。
 pub fn import_sessions(path: &Path) -> Result<Vec<SessionConfig>, ConfigError> {
     let content = fs::read_to_string(path)
-        .map_err(|e| ConfigError::Store(format!("读取导入文件失败: {e}")))?;
+        .map_err(|e| ConfigError::Store(format!("failed to read import file: {e}")))?;
     let file: SessionsFile = toml::from_str(&content)?;
     debug!(
         "Parsed {} session(s) from {}",
@@ -265,7 +267,7 @@ pub struct SessionsFileMeta {
 /// `[crypto]` 头**（裸拷贝的他机配置）→ 拒绝——绝不拿用户口令去解非导出文件，那是口令试探 oracle。
 pub fn inspect_sessions_file(path: &Path) -> Result<SessionsFileMeta, ConfigError> {
     let content = fs::read_to_string(path)
-        .map_err(|e| ConfigError::Store(format!("读取导入文件失败: {e}")))?;
+        .map_err(|e| ConfigError::Store(format!("failed to read import file: {e}")))?;
     let file: SessionsFile = toml::from_str(&content)?;
     Ok(SessionsFileMeta {
         with_credentials: file.is_export_file() && file.crypto.is_some(),
@@ -297,11 +299,12 @@ pub fn export_sessions_with_credentials(
         crypto: Some(export.header().clone()),
         sessions: rewrapped,
     })?;
-    fs::write(path, content).map_err(|e| ConfigError::Store(format!("写入导出文件失败: {e}")))?;
+    fs::write(path, content)
+        .map_err(|e| ConfigError::Store(format!("failed to write export file: {e}")))?;
     // 凭据密文与导出口令的 KDF 参数都在文件里，Unix 下收紧为仅属主可读写。
     #[cfg(unix)]
     fs::set_permissions(path, PermissionsExt::from_mode(0o600))
-        .map_err(|e| ConfigError::Store(format!("设置导出文件权限失败: {e}")))?;
+        .map_err(|e| ConfigError::Store(format!("failed to set export file permissions: {e}")))?;
     debug!(
         "Exported {} session(s) (with credentials, {} credential(s) dropped) to {}",
         sessions.len(),
@@ -321,14 +324,14 @@ pub fn import_credential_export(
     local: &Vault,
 ) -> Result<(Vec<SessionConfig>, usize), ConfigError> {
     let content = fs::read_to_string(path)
-        .map_err(|e| ConfigError::Store(format!("读取导入文件失败: {e}")))?;
+        .map_err(|e| ConfigError::Store(format!("failed to read import file: {e}")))?;
     let file: SessionsFile = toml::from_str(&content)?;
     if !file.is_export_file() {
         return Err(ConfigError::ExportFileInPlace);
     }
-    let header = file
-        .crypto
-        .ok_or_else(|| ConfigError::Store("带凭据导出件缺少加密头".into()))?;
+    let header = file.crypto.ok_or_else(|| {
+        ConfigError::Store("credential-bearing export file is missing its crypto header".into())
+    })?;
     let export = Vault::unlock(passphrase, &header)?;
 
     let mut dropped = 0usize;

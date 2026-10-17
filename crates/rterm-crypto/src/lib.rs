@@ -79,16 +79,16 @@ pub enum CryptoError {
     /// Argon2 参数非法或派生失败。
     ///
     /// 构造点在 [`Vault::unlock`]：头里的 KDF 参数是外部输入，越界须可恢复地拒绝而非 panic。
-    #[error("密钥派生失败")]
+    #[error("key derivation failed")]
     Kdf,
     /// AEAD 加解密失败（密文被篡改或密钥不匹配）。
-    #[error("加解密失败")]
+    #[error("cipher failure")]
     Cipher,
     /// 主密码校验失败（verifier 解密后与哨兵不符）。
-    #[error("主密码不正确")]
+    #[error("master password is incorrect")]
     Verify,
     /// 密文信封格式损坏（base64 或长度非法）。
-    #[error("密文格式损坏")]
+    #[error("malformed envelope")]
     BadEnvelope,
 }
 

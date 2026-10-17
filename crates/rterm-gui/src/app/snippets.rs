@@ -3,6 +3,7 @@
 //! 持有片段清单内存态、编辑弹窗草稿与列表交互态；发送把片段原文（加可选回车）上行给父层，
 //! 由父层经 `BackendCommand::Write` 直达远端——刻意不经粘贴编码（见 [`crate::app::events`]）。
 
+use crate::i18n::localize_config_error;
 use crate::state::{TerminalTab, ToastKind};
 use crate::t;
 use iced::Task;
@@ -549,7 +550,7 @@ impl State {
             error!("failed to save snippets: {e}");
             Task::done(Event::Toast(
                 ToastKind::Error,
-                t!("snippet.save_failed", err => e.to_string()),
+                t!("snippet.save_failed", err => localize_config_error(&e)),
             ))
         })
     }

@@ -71,23 +71,23 @@ pub async fn check_latest(repo: &str) -> Result<Option<ReleaseInfo>, String> {
             " (+https://github.com/arsiac/rterm)"
         ))
         .build()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {e}"))?;
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
     let resp = client
         .get(&url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("请求更新信息失败: {e}"))?;
+        .map_err(|e| format!("failed to request update info: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回状态 {}", resp.status()));
+        return Err(format!("GitHub API returned status {}", resp.status()));
     }
 
     let release: GithubRelease = resp
         .json()
         .await
-        .map_err(|e| format!("解析更新信息失败: {e}"))?;
+        .map_err(|e| format!("failed to parse update info: {e}"))?;
 
     if release.prerelease || release.draft {
         debug!("Ignoring pre-release / draft release {}", release.tag_name);

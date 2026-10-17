@@ -812,14 +812,14 @@ fn is_legacy(table: &toml::Table) -> bool {
 /// TOML 解析失败时返回 [`ConfigError::Store`]。
 fn parse_config(content: &str) -> Result<(AppConfig, bool), ConfigError> {
     let table: toml::Table = toml::from_str(content)
-        .map_err(|e| ConfigError::Store(format!("解析配置文件失败: {e}")))?;
+        .map_err(|e| ConfigError::Store(format!("failed to parse config file: {e}")))?;
     if is_legacy(&table) {
         let legacy: LegacyAppConfig = toml::from_str(content)
-            .map_err(|e| ConfigError::Store(format!("解析旧版配置文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to parse legacy config file: {e}")))?;
         Ok((AppConfig::from(legacy), true))
     } else {
         let config: AppConfig = toml::from_str(content)
-            .map_err(|e| ConfigError::Store(format!("解析配置文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to parse config file: {e}")))?;
         Ok((config, false))
     }
 }
@@ -853,10 +853,11 @@ impl AppConfig {
     /// 无法定位配置目录时返回 [`ConfigError::ConfigDir`]；创建目录失败、读取或解析
     /// 配置文件失败时返回 [`ConfigError::Store`]。
     pub fn new() -> Result<Self, ConfigError> {
-        let dir = crate::paths::config_dir()
-            .ok_or_else(|| ConfigError::ConfigDir("无法定位系统配置目录".into()))?;
+        let dir = crate::paths::config_dir().ok_or_else(|| {
+            ConfigError::ConfigDir("cannot locate system config directory".into())
+        })?;
         fs::create_dir_all(&dir)
-            .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to create config directory: {e}")))?;
         let path = dir.join("config.toml");
         debug!("App config file path: {}", path.display());
         if !path.exists() {
@@ -881,7 +882,7 @@ impl AppConfig {
             return Ok(config);
         }
         let content = fs::read_to_string(&path)
-            .map_err(|e| ConfigError::Store(format!("读取配置文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to read config file: {e}")))?;
         let (mut config, migrated) = parse_config(&content)?;
         // `path` 字段标记了 `#[serde(skip)]`，反序列化不会填充它，必须在此回填，
         // 否则 `save()` 将向空路径写入而失败，导致配置（含主题）无法持久化。
@@ -944,9 +945,9 @@ impl AppConfig {
     /// 当序列化或写入失败时返回 [`ConfigError::Store`]。
     pub fn save(&self) -> Result<(), ConfigError> {
         let content = toml::to_string_pretty(self)
-            .map_err(|e| ConfigError::Store(format!("序列化配置失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to serialize config: {e}")))?;
         fs::write(&self.path, content)
-            .map_err(|e| ConfigError::Store(format!("写入配置文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to write config file: {e}")))?;
         debug!("App config saved to {}", self.path.display());
         Ok(())
     }

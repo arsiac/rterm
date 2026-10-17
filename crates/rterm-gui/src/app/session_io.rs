@@ -4,6 +4,7 @@
 //! 全程不落明文，模式 0（钥匙串随机 DEK）的机器也能导出。菜单只发意图（见 [`super::session`]），
 //! 口令弹窗、文件对话框、重包裹与落盘全部归本模块。
 
+use crate::i18n::localize_config_error;
 use crate::state::ToastKind;
 use crate::t;
 use iced::Task;
@@ -103,7 +104,8 @@ pub enum Message {
     OpenExportPicker,
     /// 取消导出弹窗。
     ExportCancel,
-    /// 带凭据导出完成（`Err` 携带底层错误文本）。
+    /// 带凭据导出完成（`Err` 携带已本地化的错误文案——`ConfigError` 不可 `Clone`，
+    /// 无法穿越事件，故在 `spawn_blocking` 内就地翻译）。
     ExportDone(Result<ExportSummary, String>),
     /// 导入口令输入变更。
     ImportPassInput(String),
@@ -426,7 +428,7 @@ fn plain_export_at_path(state: &mut State, path: &Path, ctx: &Ctx) -> Task<Event
         )),
         Err(e) => Task::done(Event::Toast(
             ToastKind::Error,
-            t!("app.export_failed", err => e).to_string(),
+            t!("app.export_failed", err => localize_config_error(&e)).to_string(),
         )),
     }
 }
@@ -449,7 +451,7 @@ fn credential_export_at_path(state: &mut State, path: PathBuf, ctx: &Ctx) -> Tas
             spawn_blocking(move || {
                 let export = Vault::for_export(&passphrase);
                 let dropped = export_sessions_with_credentials(&path, &sessions, &local, &export)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| localize_config_error(&e))?;
                 Ok(ExportSummary { exported, dropped })
             })
             .await

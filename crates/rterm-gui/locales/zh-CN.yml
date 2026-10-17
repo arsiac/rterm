@@ -470,3 +470,14 @@ errors:
   sftp_read_remote: "读取远端失败: %{detail}"
   sftp_remote_metadata: "读取远端文件信息失败: %{detail}"
   session_gone: "连接已断开，需重新连接后再试"
+  config:
+    io: "I/O 错误: %{detail}"
+    parse: "配置解析失败: %{detail}"
+    serialize: "配置序列化失败: %{detail}"
+    store: "配置存储错误: %{detail}"
+    export_file_in_place: 该文件是会话导出文件，不能作为本机会话配置加载
+    dir: "配置目录不可用: %{detail}"
+  crypto:
+    kdf: 密钥派生失败（加密头中的 KDF 参数非法）
+    cipher: 加解密失败——数据可能被篡改或密钥不匹配
+    envelope: 密文信封格式损坏（base64 或长度非法）

@@ -75,7 +75,7 @@ fn font_lists() -> &'static FontLists {
         let mut mono: Vec<String> = mono.into_iter().collect();
         mono.sort_unstable();
         debug!(
-            "扫描到 {} 个系统字体系列（其中 {} 个等宽）",
+            "Scanned {} system font families ({} monospace)",
             all.len(),
             mono.len()
         );

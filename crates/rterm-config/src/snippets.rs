@@ -125,9 +125,9 @@ impl Snippets {
     /// 无法定位配置目录或创建目录失败时返回 [`ConfigError::ConfigDir`] / [`ConfigError::Store`]。
     pub fn new() -> Result<Self, ConfigError> {
         let dir = crate::paths::config_dir()
-            .ok_or_else(|| ConfigError::ConfigDir("无法定位 XDG 配置目录".into()))?;
+            .ok_or_else(|| ConfigError::ConfigDir("cannot locate XDG config directory".into()))?;
         fs::create_dir_all(&dir)
-            .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to create config directory: {e}")))?;
         let path = dir.join("snippets.toml");
         debug!("Snippets file path: {}", path.display());
         Ok(Self {
@@ -152,7 +152,7 @@ impl Snippets {
         }
         let content = fs::read_to_string(&self.path).map_err(|e| {
             self.unusable = true;
-            ConfigError::Store(format!("读取片段文件失败: {e}"))
+            ConfigError::Store(format!("failed to read snippets file: {e}"))
         })?;
         if content.trim().is_empty() {
             return Ok(Vec::new());
@@ -175,7 +175,7 @@ impl Snippets {
     pub fn save(&self, items: &[Snippet]) -> Result<(), ConfigError> {
         if self.unusable {
             return Err(ConfigError::Store(format!(
-                "片段文件不可用，拒绝覆盖写入: {}",
+                "snippets file unusable, refusing to overwrite: {}",
                 self.path.display()
             )));
         }
@@ -183,9 +183,9 @@ impl Snippets {
             snippet: items.to_vec(),
         };
         let content = toml::to_string_pretty(&file)
-            .map_err(|e| ConfigError::Store(format!("序列化片段文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to serialize snippets file: {e}")))?;
         fs::write(&self.path, content)
-            .map_err(|e| ConfigError::Store(format!("写入片段文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to write snippets file: {e}")))?;
         debug!("Saved {} snippet(s)", items.len());
         Ok(())
     }

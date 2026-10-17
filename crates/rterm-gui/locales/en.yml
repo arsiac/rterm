@@ -470,3 +470,14 @@ errors:
   sftp_read_remote: "Failed to read remote file: %{detail}"
   sftp_remote_metadata: "Failed to read remote file info: %{detail}"
   session_gone: "Connection closed — reconnect, then retry"
+  config:
+    io: "I/O error: %{detail}"
+    parse: "Failed to parse config: %{detail}"
+    serialize: "Failed to serialize config: %{detail}"
+    store: "Config store error: %{detail}"
+    export_file_in_place: This file is a session export file and cannot be loaded as the local session config
+    dir: "Config directory unavailable: %{detail}"
+  crypto:
+    kdf: Key derivation failed (invalid KDF parameters in the crypto header)
+    cipher: Encryption or decryption failed — the data may be corrupted or the key does not match
+    envelope: Malformed ciphertext envelope (invalid base64 or length)

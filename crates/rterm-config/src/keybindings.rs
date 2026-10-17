@@ -125,14 +125,14 @@ impl FromStr for Chord {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            return Err("空字符串不是合法和弦".into());
+            return Err("empty string is not a valid chord".into());
         }
         let (mut ctrl, mut shift, mut alt, mut logo) = (false, false, false, false);
         let mut key: Option<ChordKey> = None;
         for part in trimmed.split('+') {
             let token = part.trim();
             if token.is_empty() {
-                return Err(format!("和弦 `{s}` 含空段"));
+                return Err(format!("chord `{s}` contains an empty segment"));
             }
             match token.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => ctrl = true,
@@ -141,13 +141,15 @@ impl FromStr for Chord {
                 "super" | "cmd" | "command" | "meta" | "win" | "logo" => logo = true,
                 _ => {
                     if key.is_some() {
-                        return Err(format!("和弦 `{s}` 只能有一个非修饰键"));
+                        return Err(format!(
+                            "chord `{s}` must contain exactly one non-modifier key"
+                        ));
                     }
                     key = Some(parse_key(token)?);
                 }
             }
         }
-        let key = key.ok_or_else(|| format!("和弦 `{s}` 缺少按键"))?;
+        let key = key.ok_or_else(|| format!("chord `{s}` is missing a key"))?;
         Ok(Chord {
             ctrl,
             shift,
@@ -187,7 +189,7 @@ fn parse_key(token: &str) -> Result<ChordKey, String> {
             let mut chars = token.chars();
             return match (chars.next(), chars.next()) {
                 (Some(c), None) => Ok(ChordKey::Char(c.to_ascii_uppercase())),
-                _ => Err(format!("无法识别的按键 `{token}`")),
+                _ => Err(format!("unrecognized key `{token}`")),
             };
         }
     };
@@ -215,9 +217,9 @@ impl Keybindings {
     /// 无法定位配置目录或创建目录失败时返回 [`ConfigError::ConfigDir`] / [`ConfigError::Store`]。
     pub fn new() -> Result<Self, ConfigError> {
         let dir = crate::paths::config_dir()
-            .ok_or_else(|| ConfigError::ConfigDir("无法定位 XDG 配置目录".into()))?;
+            .ok_or_else(|| ConfigError::ConfigDir("cannot locate XDG config directory".into()))?;
         fs::create_dir_all(&dir)
-            .map_err(|e| ConfigError::Store(format!("创建配置目录失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to create config directory: {e}")))?;
         let path = dir.join("keybindings.toml");
         debug!("Keybindings file path: {}", path.display());
         Ok(Self {
@@ -241,7 +243,7 @@ impl Keybindings {
             return Ok(());
         }
         let content = fs::read_to_string(&self.path)
-            .map_err(|e| ConfigError::Store(format!("读取键位文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to read keybindings file: {e}")))?;
         if content.trim().is_empty() {
             self.overrides = BTreeMap::new();
             return Ok(());
@@ -256,10 +258,11 @@ impl Keybindings {
     /// # 错误
     /// 序列化或写入失败时返回 [`ConfigError::Store`]。
     pub fn save(&self) -> Result<(), ConfigError> {
-        let content = toml::to_string_pretty(&self.overrides)
-            .map_err(|e| ConfigError::Store(format!("序列化键位文件失败: {e}")))?;
+        let content = toml::to_string_pretty(&self.overrides).map_err(|e| {
+            ConfigError::Store(format!("failed to serialize keybindings file: {e}"))
+        })?;
         fs::write(&self.path, content)
-            .map_err(|e| ConfigError::Store(format!("写入键位文件失败: {e}")))?;
+            .map_err(|e| ConfigError::Store(format!("failed to write keybindings file: {e}")))?;
         debug!("Saved {} key override(s)", self.overrides.len());
         Ok(())
     }

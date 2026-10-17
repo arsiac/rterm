@@ -4,7 +4,9 @@
 //! locale 把错误翻译成用户可见文案：带底层来源的种类会附带 `detail`，纯语义失败则只给文案。
 
 use crate::t;
+use rterm_config::ConfigError;
 use rterm_core::{CoreError, CoreErrorKind};
+use rterm_crypto::CryptoError;
 use std::error::Error as StdError;
 
 /// 把 [`CoreError`] 翻译为当前语言下的用户可见文案。
@@ -97,9 +99,53 @@ pub fn localize_error(err: &CoreError) -> String {
     }
 }
 
+/// 把 [`ConfigError`] 翻译为当前语言下的用户可见文案，在 GUI 边界（展示前）调用。
+///
+/// 底层来源（TOML / I/O 错误、`Store` 自由文本）作为 `detail` 补充，与 [`localize_error`]
+/// 同一纪律；`Verify` 复用导入口令错文案 `cred.wrong_pass`。
+pub fn localize_config_error(err: &ConfigError) -> String {
+    match err {
+        ConfigError::Io(e) => t!("errors.config.io", detail => e.to_string()),
+        ConfigError::TomlDe(e) => t!("errors.config.parse", detail => e.to_string()),
+        ConfigError::TomlSer(e) => t!("errors.config.serialize", detail => e.to_string()),
+        ConfigError::Store(s) => t!("errors.config.store", detail => s.as_str()),
+        ConfigError::ExportFileInPlace => t!("errors.config.export_file_in_place"),
+        ConfigError::Crypto(ce) => match ce {
+            CryptoError::Kdf => t!("errors.crypto.kdf"),
+            CryptoError::Cipher => t!("errors.crypto.cipher"),
+            CryptoError::Verify => t!("cred.wrong_pass"),
+            CryptoError::BadEnvelope => t!("errors.crypto.envelope"),
+        },
+        ConfigError::ConfigDir(s) => t!("errors.config.dir", detail => s.as_str()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ConfigError` 边界翻译：带 detail 的变体必须把底层文本嵌进译文，
+    /// `Verify` 复用导入口令错文案，与导入通道特判口径一致。
+    #[test]
+    fn config_error_kinds_translate_with_detail() {
+        let store = ConfigError::Store("failed to read session file: boom".into());
+        assert_eq!(
+            localize_config_error(&store),
+            t!("errors.config.store", detail => "failed to read session file: boom")
+        );
+
+        let io = ConfigError::Io(std::io::Error::other("disk full"));
+        assert_eq!(
+            localize_config_error(&io),
+            t!("errors.config.io", detail => "disk full")
+        );
+
+        let verify = ConfigError::Crypto(CryptoError::Verify);
+        assert_eq!(localize_config_error(&verify), t!("cred.wrong_pass"));
+
+        assert!(!localize_config_error(&ConfigError::ExportFileInPlace).is_empty());
+        assert!(!localize_config_error(&ConfigError::Crypto(CryptoError::Kdf)).is_empty());
+    }
 
     /// 跳板机失败要同时给出跳序（1 起）、host 与内层原因，且内层也要本地化——
     /// 否则用户只知道「某一跳挂了」，看不到究竟卡在认证还是网络。
