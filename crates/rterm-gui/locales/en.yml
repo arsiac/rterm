@@ -63,6 +63,12 @@ settings:
   restore_cwd_on_reconnect_hint: When enabled, the directory captured before the disconnect is sent to the new shell as a cd command, so the terminal returns to where it was. A directory that no longer exists is reported by the shell itself.
   trim_trailing_whitespace: Trim trailing whitespace on copy
   trim_trailing_whitespace_hint: When enabled, trailing spaces and tabs are removed from each line when copying selected terminal text.
+  copy_on_select: Auto-copy on selection
+  copy_on_select_hint: What happens to the selected text when you release a drag selection. "Selection (PRIMARY)" keeps it available for middle-click paste; "Clipboard" copies it for Ctrl+V and shows a notification; "Off" only copies via explicit actions (right-click menu / keyboard).
+  copy_on_select_primary: Selection buffer
+  copy_on_select_clipboard: Clipboard
+  copy_on_select_off: Off
+  copy_on_select_linux_only: The selection buffer is only available on Linux (PRIMARY maps to the system clipboard elsewhere).
   bell: Visual bell (flash the tab)
   bell_hint: When enabled, the tab briefly flashes when the terminal receives a bell character (BEL), so programs can alert you without a sound.
   scrollbar: Show terminal scrollbar
@@ -353,6 +359,8 @@ terminal:
   reconnect_button: Reconnect
   reconnecting: Reconnecting…
   reconnected_notice: Session restarted; previous processes were not resumed
+  copied_to_clipboard: Selection copied to clipboard
+  copied_to_primary: Selection copied to selection buffer
   reconnected_notice_cwd: "Session restarted; previous processes were not resumed · previous directory: %{cwd}"
   startup_command_notice: "startup command: %{cmd}"
   menu_copy: Copy

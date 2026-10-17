@@ -4,6 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use crate::widget::term::ColorPalette;
 use iced::Font;
+use rterm_config::CopyOnSelect;
 
 /// 默认启动的 shell 程序（Windows 下使用 WSL）。
 #[cfg(target_os = "windows")]
@@ -39,6 +40,8 @@ pub struct BackendSettings {
     pub scrollback: usize,
     /// 复制时是否去除每行尾部空格。
     pub trim_trailing_whitespace: bool,
+    /// 拖选释放后自动写入的剪贴板策略；缺省即平台默认（Linux `primary` / 其它 `clipboard`）。
+    pub copy_on_select: CopyOnSelect,
 }
 
 impl Default for BackendSettings {
@@ -51,6 +54,7 @@ impl Default for BackendSettings {
             working_directory: None,
             scrollback: 10000,
             trim_trailing_whitespace: true,
+            copy_on_select: CopyOnSelect::default(),
         }
     }
 }

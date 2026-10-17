@@ -20,6 +20,7 @@ use crate::widget::term::{
     BackendCommand, Command as TermCommand, Event as TermEvent, RusshPty, Terminal,
 };
 use iced::Task;
+use iced_core::clipboard::Kind as ClipboardKind;
 use rterm_core::{BridgeInput, ConnectionStatus, PtySize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +52,17 @@ pub(crate) fn apply_terminal_theme(tabs: &mut tabs::State, theme: &str) {
     for tab in tabs.list_mut().iter_mut() {
         if let Some(term) = tab.terminal.as_mut() {
             term.handle(TermCommand::ChangeTheme(Box::new(palette.clone())));
+        }
+    }
+}
+
+/// 把拖选自动复制策略热替换到所有已打开的终端标签。
+///
+/// 逐标签 `SetCopyOnSelect`；不写配置（配置写回在父层 `apply_settings_event`）。
+pub(crate) fn apply_copy_on_select(tabs: &mut tabs::State, v: rterm_config::CopyOnSelect) {
+    for tab in tabs.list_mut().iter_mut() {
+        if let Some(term) = tab.terminal.as_mut() {
+            term.handle(TermCommand::SetCopyOnSelect(v));
         }
     }
 }
@@ -232,6 +244,7 @@ pub(crate) fn spawn_terminal_widget(
         backend: BackendSettings {
             scrollback: app.config.terminal.scrollback,
             trim_trailing_whitespace: app.config.terminal.trim_trailing_whitespace,
+            copy_on_select: app.config.terminal.copy_on_select,
             ..Default::default()
         },
         font: FontSettings {
@@ -350,6 +363,15 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             Some(command) => routing::dispatch_command(app, command),
             None => Task::none(),
         },
+        // 拖选释放已把选区写入剪贴板（primary / clipboard 档会发）：toast 告知复制去向。
+        TermEvent::AutoCopied(kind) => {
+            let msg = match kind {
+                ClipboardKind::Primary => t!("terminal.copied_to_primary"),
+                ClipboardKind::Standard => t!("terminal.copied_to_clipboard"),
+            };
+            contexts::set_toast(app, crate::state::ToastKind::Success, msg);
+            Task::none()
+        }
         TermEvent::BackendCall(id, backend_cmd) => {
             // 点击 / 选择 / 滚轮 / 键入等「用户与终端的交互」都以非 Resize 的 BackendCall 形式到达；
             // 一旦出现即说明键盘焦点已落回终端，恢复聚焦态（修正「点回终端边框仍显未聚焦」）。

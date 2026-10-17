@@ -443,6 +443,13 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::CopyOnSelect(v) => {
+            app.config.terminal.copy_on_select = v;
+            contexts::save_config(app);
+            // 即时热替换到所有已打开的终端标签。
+            terminal_bridge::apply_copy_on_select(&mut app.tabs, v);
+            Task::none()
+        }
         settings::Event::Bell(v) => {
             app.config.terminal.bell = v;
             contexts::save_config(app);

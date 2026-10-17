@@ -2,6 +2,7 @@
 
 mod clipboard;
 mod common;
+mod copy_on_select;
 mod mouse;
 mod scrollbar;
 mod scrolling;

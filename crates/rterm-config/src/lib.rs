@@ -25,7 +25,7 @@ pub mod store;
 pub const DEFAULT_SSH_PORT: u16 = 22;
 
 pub use app_config::{
-    AppConfig, ConnectOptions, Language, LogLevel, MAX_CONCURRENT, MAX_KEEPALIVE_MAX,
+    AppConfig, ConnectOptions, CopyOnSelect, Language, LogLevel, MAX_CONCURRENT, MAX_KEEPALIVE_MAX,
     MAX_RETRY_ATTEMPTS, MIN_CONCURRENT, TransferConfig, log_dir,
 };
 pub use error::ConfigError;

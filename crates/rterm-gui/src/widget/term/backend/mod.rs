@@ -23,6 +23,7 @@ use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{self, Term};
 use alacritty_terminal::tty;
 use alacritty_terminal::tty::EventedPty;
+use rterm_config::CopyOnSelect;
 use std::io::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -46,6 +47,8 @@ pub struct Backend {
     pub(crate) url_regex: RegexSearch,
     /// 复制时是否去除每行尾部空格。
     trim_trailing_whitespace: bool,
+    /// 拖选释放后自动写入的剪贴板策略。
+    copy_on_select: CopyOnSelect,
     /// 终端内搜索的锁内状态（`None` = 无活动查询）。
     search: Option<SearchState>,
 }
@@ -73,6 +76,7 @@ impl Backend {
             pty,
             settings.scrollback,
             settings.trim_trailing_whitespace,
+            settings.copy_on_select,
         )
     }
 
@@ -83,6 +87,7 @@ impl Backend {
         pty: RusshPty,
         scrollback: usize,
         trim_trailing_whitespace: bool,
+        copy_on_select: CopyOnSelect,
     ) -> Result<Self> {
         Self::from_pty(
             id,
@@ -90,6 +95,7 @@ impl Backend {
             pty,
             scrollback,
             trim_trailing_whitespace,
+            copy_on_select,
         )
     }
 
@@ -100,6 +106,7 @@ impl Backend {
         pty: Pty,
         scrollback: usize,
         trim_trailing_whitespace: bool,
+        copy_on_select: CopyOnSelect,
     ) -> Result<Self>
     where
         Pty: EventedPty + OnResize + Send + 'static,
@@ -134,8 +141,25 @@ impl Backend {
             last_pty_size: None,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
             trim_trailing_whitespace,
+            copy_on_select,
             search: None,
         })
+    }
+
+    /// 当前的拖选自动复制策略（供释放路径读档）。
+    pub(crate) fn copy_on_select(&self) -> CopyOnSelect {
+        self.copy_on_select
+    }
+
+    /// 更新拖选自动复制策略（设置页热应用路径），对打开中的标签即刻生效。
+    pub(crate) fn set_copy_on_select(&mut self, v: CopyOnSelect) {
+        self.copy_on_select = v;
+    }
+
+    /// 测试专用：直接访问 alacritty `Term`，供离线注入网格内容。
+    #[cfg(test)]
+    pub(crate) fn test_term(&self) -> &Arc<FairMutex<Term<EventProxy>>> {
+        &self.term
     }
 
     /// 就地换接一条新 PTY（断线重连）：网格、历史与选区原样保留，仅重建 alacritty event loop。

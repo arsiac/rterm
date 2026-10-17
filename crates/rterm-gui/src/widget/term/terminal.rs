@@ -12,6 +12,7 @@ use iced::Subscription;
 use iced::futures::stream::BoxStream;
 use iced::futures::{SinkExt, StreamExt};
 use iced::widget::canvas::Cache;
+use iced_core::clipboard::Kind as ClipboardKind;
 use rterm_config::keybindings::Chord;
 use std::hash::{Hash, Hasher};
 use std::io::Result;
@@ -48,6 +49,9 @@ pub enum Event {
         /// 命中的保留和弦。
         chord: Chord,
     },
+    /// 拖选释放已把选区写入剪贴板（`primary` / `clipboard` 档会发，`off` 不发）：
+    /// 请求宿主按写入目标弹「已复制到 …」提示。
+    AutoCopied(ClipboardKind),
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +65,8 @@ pub enum Command {
     AddBindings(Vec<(Binding<InputKind>, BindingAction)>),
     /// 透传给后端直接执行。
     ProxyToBackend(backend::Command),
+    /// 切换拖选自动复制策略（设置页热应用路径），对打开中的标签即刻生效。
+    SetCopyOnSelect(rterm_config::CopyOnSelect),
 }
 
 /// 终端部件实例：封装后端、字体、主题、绑定与渲染缓存。
@@ -121,6 +127,7 @@ impl Terminal {
                 pty,
                 settings.backend.scrollback,
                 settings.backend.trim_trailing_whitespace,
+                settings.backend.copy_on_select,
             )?,
             backend_event_rx: Arc::new(Mutex::new(backend_event_rx)),
         })
@@ -214,6 +221,9 @@ impl Terminal {
             }
             Command::ProxyToBackend(cmd) => {
                 action = self.backend.handle(cmd);
+            }
+            Command::SetCopyOnSelect(v) => {
+                self.backend.set_copy_on_select(v);
             }
         };
 

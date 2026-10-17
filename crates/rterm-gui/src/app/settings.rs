@@ -1,13 +1,43 @@
 //! 应用设置弹窗模块
 
+use crate::t;
 use iced::Task;
 use iced::widget::combo_box;
 use log::error;
 use rterm_config::{
-    AppConfig, Language, LogLevel, MAX_CONCURRENT, MAX_KEEPALIVE_MAX, MAX_RETRY_ATTEMPTS,
-    MIN_CONCURRENT,
+    AppConfig, CopyOnSelect, Language, LogLevel, MAX_CONCURRENT, MAX_KEEPALIVE_MAX,
+    MAX_RETRY_ATTEMPTS, MIN_CONCURRENT,
 };
 use rterm_core::host_key::KnownHostEntry;
+
+/// 「选中后自动复制」下拉框项：包装策略档位，`Display` 走 i18n（照 `LanguageOption` 先例）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CopyOnSelectOption(pub CopyOnSelect);
+
+impl std::fmt::Display for CopyOnSelectOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self.0 {
+            CopyOnSelect::Primary => t!("settings.copy_on_select_primary"),
+            CopyOnSelect::Clipboard => t!("settings.copy_on_select_clipboard"),
+            CopyOnSelect::Off => t!("settings.copy_on_select_off"),
+        };
+        f.write_str(&s)
+    }
+}
+
+/// 「选中后自动复制」下拉框选项：非 Linux 平台不含 `primary` 档——iced 会把 PRIMARY
+/// 映射为系统剪贴板，独立档位无独立语义。
+fn copy_on_select_options() -> Vec<CopyOnSelectOption> {
+    let all = [
+        CopyOnSelect::Primary,
+        CopyOnSelect::Clipboard,
+        CopyOnSelect::Off,
+    ];
+    all.iter()
+        .filter(|v| *v != &CopyOnSelect::Primary || cfg!(target_os = "linux"))
+        .map(|v| CopyOnSelectOption(*v))
+        .collect()
+}
 
 /// 设置弹窗的分类（按用户心智分组，而非按底层 TOML 段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +70,8 @@ pub struct State {
     pub ui_font_combo: combo_box::State<String>,
     /// 终端字体下拉框状态，选项为「系统默认 + 已安装的等宽字体」。
     pub terminal_font_combo: combo_box::State<String>,
+    /// 「选中后自动复制」下拉框状态，选项为平台可用的策略档位。
+    pub copy_on_select_combo: combo_box::State<CopyOnSelectOption>,
     /// 已信任主机列表缓存：打开设置（停在「安全」分类）或切到该分类时从 known_hosts 重读。
     pub known_hosts: Vec<KnownHostEntry>,
     /// 鼠标悬浮的已知主机条目键（`host:port`），用于渲染行悬浮高亮。
@@ -62,6 +94,7 @@ impl State {
             terminal_font_combo: combo_box::State::new(crate::font::terminal_font_options(
                 &config.terminal.font,
             )),
+            copy_on_select_combo: combo_box::State::new(copy_on_select_options()),
             known_hosts: Vec::new(),
             known_hosts_hovered: None,
             known_hosts_error: None,
@@ -158,6 +191,8 @@ pub enum Message {
     RestoreCwdOnReconnect(bool),
     /// 修改「复制时去除行尾空格」设置（携带开关状态，即时持久化）。
     TrimTrailingWhitespace(bool),
+    /// 修改「选中后自动复制」策略（携带目标档位，即时持久化并热应用到所有终端标签）。
+    CopyOnSelect(CopyOnSelect),
     /// 修改「响铃视觉提示」设置（携带开关状态，即时持久化；关闭后新响铃不再闪烁标签）。
     Bell(bool),
     /// 修改「显示终端滚动条」设置（携带开关状态，即时持久化并即刻作用于所有终端标签）。
@@ -232,6 +267,8 @@ pub enum Event {
     RestoreCwdOnReconnect(bool),
     /// 写回"复制时去除行尾空格"配置（携带开关状态）。
     TrimTrailingWhitespace(bool),
+    /// 写回"选中后自动复制"配置（携带策略档位），并热替换到所有已打开的终端标签。
+    CopyOnSelect(CopyOnSelect),
     /// 写回"响铃视觉提示"配置（携带开关状态）。
     Bell(bool),
     /// 写回"显示终端滚动条"配置（携带开关状态）。
@@ -353,6 +390,7 @@ impl State {
             Message::RestoreCwdOnReconnect(v) => Task::done(Event::RestoreCwdOnReconnect(v)),
             Message::TrimTrailingWhitespace(v) => Task::done(Event::TrimTrailingWhitespace(v)),
             Message::Bell(v) => Task::done(Event::Bell(v)),
+            Message::CopyOnSelect(v) => Task::done(Event::CopyOnSelect(v)),
             Message::Scrollbar(v) => Task::done(Event::Scrollbar(v)),
             Message::PasteWarnEnabled(v) => Task::done(Event::PasteWarnEnabled(v)),
             Message::PasteWarnControlChars(v) => Task::done(Event::PasteWarnControlChars(v)),

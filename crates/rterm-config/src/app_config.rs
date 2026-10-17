@@ -220,6 +220,21 @@ impl Default for ConnectionConfig {
     }
 }
 
+/// 拖选释放后自动写入的剪贴板策略（`[terminal] copy_on_select`，小写序列化进 `config.toml`）。
+/// 默认随平台：Linux `primary`（中键粘贴惯例），Windows / macOS `clipboard`（选中即复制）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyOnSelect {
+    /// 写 PRIMARY 选择区（Linux 中键粘贴惯例），写后由 GUI 层弹「已复制到选区」提示。
+    #[cfg_attr(target_os = "linux", default)]
+    Primary,
+    /// 写 CLIPBOARD（「选中即复制」），写入后由 GUI 层弹「已复制到剪贴板」提示。
+    #[cfg_attr(not(target_os = "linux"), default)]
+    Clipboard,
+    /// 释放后不写任何剪贴板，只认显式复制动作（右键复制 / 键盘绑定）。
+    Off,
+}
+
 /// `[terminal]` 段：终端显示与目录追踪设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalConfig {
@@ -282,6 +297,10 @@ pub struct TerminalConfig {
     /// 粘贴文本含 `\t` / `\n` / `\r` 之外的控制字符时是否弹窗确认，默认开启。
     #[serde(default = "default_true")]
     pub paste_warn_control_chars: bool,
+    /// 拖选释放后自动写入的剪贴板策略；缺省即平台默认（Linux `primary` / 其它 `clipboard`）。
+    /// 非法取值解析报错而非静默回落。
+    #[serde(default)]
+    pub copy_on_select: CopyOnSelect,
 }
 
 impl Default for TerminalConfig {
@@ -303,6 +322,7 @@ impl Default for TerminalConfig {
             paste_warn_lines: default_paste_warn_lines(),
             paste_warn_bytes: default_paste_warn_bytes(),
             paste_warn_control_chars: default_true(),
+            copy_on_select: CopyOnSelect::default(),
         }
     }
 }
@@ -728,6 +748,8 @@ impl From<LegacyAppConfig> for AppConfig {
                 paste_warn_lines: default_paste_warn_lines(),
                 paste_warn_bytes: default_paste_warn_bytes(),
                 paste_warn_control_chars: default_true(),
+                // 旧版没有复制策略字段：取平台默认（Linux primary / 其它 clipboard）。
+                copy_on_select: CopyOnSelect::default(),
             },
             // 旧版没有传输段：一律取默认值（并发 3）。
             transfer: TransferConfig::default(),
@@ -1020,6 +1042,8 @@ window_height = 720.0
         assert!(config.terminal.bell);
         // 旧格式无滚动条开关：迁移后取默认（开启）。
         assert!(config.terminal.show_scrollbar);
+        // 旧格式没有复制策略字段：迁移后取平台默认。
+        assert_eq!(config.terminal.copy_on_select, CopyOnSelect::default());
         assert_eq!(config.appearance.theme, "Dracula");
         assert_eq!(config.appearance.ui_font, "Noto Sans");
         assert_eq!(config.appearance.language, Language::ZhCn);
@@ -1032,6 +1056,45 @@ window_height = 720.0
         assert_eq!(config.window.height, Some(720.0));
         // 旧格式无传输段：迁移后取默认并发数。
         assert_eq!(config.transfer.max_concurrent, 3);
+    }
+
+    #[test]
+    fn copy_on_select_defaults_follow_platform() {
+        // `[terminal]` 段缺键即平台默认：Linux primary（保持现状），其它平台 clipboard。
+        let sectioned = "[terminal]\nfont = \"Fira Code\"\n";
+        let (config, _) = parse_config(sectioned).expect("解析新配置应成功");
+        let expected = if cfg!(target_os = "linux") {
+            CopyOnSelect::Primary
+        } else {
+            CopyOnSelect::Clipboard
+        };
+        assert_eq!(config.terminal.copy_on_select, CopyOnSelect::default());
+        assert_eq!(config.terminal.copy_on_select, expected);
+    }
+
+    #[test]
+    fn copy_on_select_roundtrips_all_variants() {
+        for (text, expected) in [
+            ("primary", CopyOnSelect::Primary),
+            ("clipboard", CopyOnSelect::Clipboard),
+            ("off", CopyOnSelect::Off),
+        ] {
+            let toml_text = format!("[terminal]\ncopy_on_select = \"{text}\"\n");
+            let (config, _) = parse_config(&toml_text).expect("三档合法取值均应解析成功");
+            assert_eq!(config.terminal.copy_on_select, expected);
+            // 序列化回写仍是同名小写串（保存后读回无损）。
+            let serialized = toml::to_string(&config.terminal).expect("TerminalConfig 应可序列化");
+            assert!(serialized.contains(&format!("copy_on_select = \"{text}\"")));
+        }
+    }
+
+    #[test]
+    fn copy_on_select_rejects_unknown_value() {
+        let toml_text = "[terminal]\ncopy_on_select = \"both\"\n";
+        assert!(
+            parse_config(toml_text).is_err(),
+            "非法取值应解析报错而非静默回落"
+        );
     }
 
     #[test]

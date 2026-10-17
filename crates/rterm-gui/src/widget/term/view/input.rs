@@ -15,6 +15,7 @@ use iced_core::clipboard::Kind as ClipboardKind;
 use iced_core::input_method::{self, InputMethod, Purpose};
 use iced_core::keyboard::{Key, Modifiers, key::Named};
 use iced_core::mouse::{self, Click};
+use rterm_config::CopyOnSelect;
 
 impl<'a> TerminalView<'a> {
     /// 判断鼠标光标是否落在终端部件布局矩形范围内。
@@ -598,6 +599,40 @@ pub(super) fn read_middle_paste(clipboard: &dyn iced_graphics::core::Clipboard) 
         .filter(|data| !data.is_empty())
 }
 
+/// 拖选释放的自动写入决策：返回 `(写入的剪贴板, 选区文本)`，`off` 或选区为空时为 `None`。
+/// `primary` 写 PRIMARY（中键粘贴惯例）、`clipboard` 写标准剪贴板，宿主按目标弹「已复制到 …」提示。
+pub(super) fn auto_copy_target(
+    strategy: CopyOnSelect,
+    selection: Option<&str>,
+) -> Option<(ClipboardKind, &str)> {
+    let selection = selection?;
+    if selection.is_empty() {
+        return None;
+    }
+    match strategy {
+        CopyOnSelect::Primary => Some((ClipboardKind::Primary, selection)),
+        CopyOnSelect::Clipboard => Some((ClipboardKind::Standard, selection)),
+        CopyOnSelect::Off => None,
+    }
+}
+
+impl TerminalView<'_> {
+    /// 左键拖选释放后按 [`CopyOnSelect`] 策略自动写入剪贴板，返回写入目标。
+    ///
+    /// `off` 档直接返回 `None`，连网格遍历都不做；其余档位取一次选区文本，非空才写。
+    pub(super) fn auto_copy_on_drag_release(
+        &self,
+        clipboard: &mut dyn iced_graphics::core::Clipboard,
+    ) -> Option<ClipboardKind> {
+        let strategy = self.term.backend.copy_on_select();
+        let selection =
+            (strategy != CopyOnSelect::Off).then(|| self.term.backend.selectable_content());
+        let (kind, text) = auto_copy_target(strategy, selection.as_deref())?;
+        clipboard.write(kind, text.to_owned());
+        Some(kind)
+    }
+}
+
 /// 拖选自动滚动的单次最大行数：拖得越远滚得越快，封顶避免长距离拖动时视口跳跃。
 pub(super) const SELECTION_AUTOSCROLL_MAX_LINES: i32 = 5;
 
@@ -815,7 +850,9 @@ pub(super) fn update(
                         &mut paste,
                     );
 
-                    // 左键拖选结束即把选区写入 PRIMARY（Linux 中键粘贴惯例）；鼠标模式下的拖拽是上报而非选区，不写。
+                    // 左键拖选结束即按 `copy_on_select` 策略自动写入剪贴板；鼠标模式下的拖拽是
+                    // 上报而非选区，不写。写入成功（primary / clipboard 档）即发 `AutoCopied`，
+                    // 由宿主按写入目标弹「已复制到 …」提示（off 档不写不发）。
                     if was_dragged
                         && matches!(
                             mouse_event,
@@ -827,11 +864,9 @@ pub(super) fn update(
                             .renderable_content()
                             .terminal_mode
                             .intersects(TermMode::MOUSE_MODE)
+                        && let Some(kind) = view.auto_copy_on_drag_release(clipboard)
                     {
-                        let selection = view.term.backend.selectable_content();
-                        if !selection.is_empty() {
-                            clipboard.write(ClipboardKind::Primary, selection);
-                        }
+                        shell.publish(Event::AutoCopied(kind));
                     }
 
                     commands

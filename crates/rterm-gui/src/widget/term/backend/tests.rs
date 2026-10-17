@@ -183,7 +183,8 @@ impl Fixture {
         .expect("wrap the sync end as a pty");
         let (event_tx, events) = mpsc::unbounded_channel();
         let backend =
-            Backend::new_with_pty(1, event_tx, pty, scrollback, true).expect("create the backend");
+            Backend::new_with_pty(1, event_tx, pty, scrollback, true, CopyOnSelect::default())
+                .expect("create the backend");
         Self {
             backend,
             remote,

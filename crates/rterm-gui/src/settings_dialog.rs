@@ -28,6 +28,33 @@ use rterm_config::{
 };
 use std::fmt;
 
+/// 「选中后自动复制」策略下拉框，选项由 settings 模块按平台给出（非 Linux 不含 `primary` 档）。
+/// 配置文件手写 `primary` 时下拉框照实显示当前值，改选即离开该档。
+fn copy_on_select_section(app: &App) -> Element<'_, Message> {
+    let current = settings::CopyOnSelectOption(app.config.terminal.copy_on_select);
+    let picker = combo_box(
+        &app.settings.copy_on_select_combo,
+        &t!("settings.copy_on_select"),
+        Some(&current),
+        |v| Message::Settings(settings::Message::CopyOnSelect(v.0)),
+    )
+    .input_style(crate::ui::text_input_style)
+    .width(Length::Fill);
+    let mut col = column![
+        crate::ui::field_label(t!("settings.copy_on_select")),
+        picker,
+    ]
+    .spacing(4);
+    if !cfg!(target_os = "linux") {
+        col = col.push(crate::ui::hint_text(t!(
+            "settings.copy_on_select_linux_only"
+        )));
+    }
+    col.push(crate::ui::hint_text(t!("settings.copy_on_select_hint")))
+        .spacing(4)
+        .into()
+}
+
 /// 语言下拉框项的本地化展示名：随当前 UI 语言变化，避免英文界面仍显示「跟随系统」。
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct LanguageOption(Language);
@@ -446,6 +473,7 @@ fn terminal_pane(app: &App) -> Element<'_, Message> {
             .on_toggle(|v| Message::Settings(settings::Message::TrimTrailingWhitespace(v)))
             .spacing(8),
         crate::ui::hint_text(t!("settings.trim_trailing_whitespace_hint")),
+        copy_on_select_section(app),
         checkbox(app.config.terminal.bell)
             .label(t!("settings.bell"))
             .on_toggle(|v| Message::Settings(settings::Message::Bell(v)))

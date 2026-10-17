@@ -63,6 +63,12 @@ settings:
   restore_cwd_on_reconnect_hint: 开启后会把断开前捕获的目录以 cd 下发给新 shell，使终端回到原处；目录已不存在时由 shell 自行报错。
   trim_trailing_whitespace: 复制时去除行尾空格
   trim_trailing_whitespace_hint: 开启后每次复制多行文本时自动去除每行末尾的多余空白字符。
+  copy_on_select: 选中后自动复制
+  copy_on_select_hint: 拖选释放后选中文本的去向。“选区（PRIMARY）”保留 Linux 中键粘贴惯例；“剪贴板”选中即复制到 Ctrl+V 剪贴板并弹提示；“关闭”只用显式动作（右键菜单 / 快捷键）复制。
+  copy_on_select_primary: 选区
+  copy_on_select_clipboard: 剪贴板
+  copy_on_select_off: 关闭
+  copy_on_select_linux_only: 选区（PRIMARY）仅 Linux 可用（其它平台上 PRIMARY 即系统剪贴板）。
   bell: 响铃视觉提示（闪烁标签）
   bell_hint: 开启后终端收到响铃字符（BEL，即 \a）时对应标签短暂闪烁，作为程序提示音的可视替代。
   scrollbar: 显示终端滚动条
@@ -353,6 +359,8 @@ terminal:
   reconnect_button: 重新连接
   reconnecting: 正在重新连接…
   reconnected_notice: 会话已重新开始，之前的进程未恢复
+  copied_to_clipboard: 选中文本已复制到剪贴板
+  copied_to_primary: 选中文本已复制到选区
   reconnected_notice_cwd: 会话已重新开始，之前的进程未恢复 · 之前目录：%{cwd}
   startup_command_notice: 启动作业：%{cmd}
   menu_copy: 复制
