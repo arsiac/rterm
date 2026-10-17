@@ -202,7 +202,8 @@ impl From<TerminalSize> for WindowSize {
     }
 }
 
-/// 把 alacritty 事件归约为宿主动作：退出 / 标题 / 响铃需要宿主响应，其余静默忽略。
+/// 把 alacritty 事件归约为宿主动作：只上报退出 / 标题 / 响铃三类，
+/// 其余在本层直接丢弃（含 `Event::ResetTitle`）；哪些真被响应见 `Action`。
 pub(super) fn action_for_event(event: Event) -> Action {
     match event {
         Event::Exit => Action::Shutdown,

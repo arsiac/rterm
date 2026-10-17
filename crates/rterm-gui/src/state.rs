@@ -61,7 +61,7 @@ pub struct TerminalTab {
     /// 文件管理「进入终端目录」按钮读取它跳转到对应远端目录。多标签各自独立，
     /// 故按标签持有（同一会话开多标签时各标签 cwd 互不串）。
     pub cwd: Arc<Mutex<Option<String>>>,
-    /// 标签标题（默认取会话名）。
+    /// 标签标题：建标签时取会话名，此后不随远端 OSC 上报变化。
     pub title: String,
     /// 响铃视觉提示
     ///

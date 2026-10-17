@@ -423,11 +423,7 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
             } else {
                 Action::default()
             };
-            // 宿主动作分流：响铃走视觉提示；`Shutdown` 与 `ChangeTitle` 暂无消费方。
-            //
-            // `Action::Shutdown` 由 alacritty 在「PTY 已结束」时产出。它表示终端自身收尾，
-            // **不代表**用户要关标签：断开归因由 `TerminalDisconnected` 负责、
-            // 关标签只走显式关闭动作，故必须显式忽略。
+            // 动作分流：响铃走视觉提示；`Shutdown` 与 `ChangeTitle` 有意忽略（理由见下）。
             match action {
                 Action::Bell if app.config.terminal.bell => {
                     // 响铃视觉提示。
@@ -437,6 +433,9 @@ pub(crate) fn handle_terminal_event(app: &mut App, event: TermEvent) -> Task<Mes
                         .update(tabs::Message::Bell(id), &ctx, &app.sftp)
                         .map(Message::TabsEvent);
                 }
+                // `Shutdown` 只是终端自身收尾，不代表关标签：关标签走显式动作、断线走归因消息；
+                // 远端 OSC 标题不改标签：标签名是会话身份，`tab_label` 的去重序号建在它之上。
+                Action::Shutdown | Action::ChangeTitle(_) => {}
                 _ => {}
             }
             Task::none()
