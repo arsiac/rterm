@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use iced::{Subscription, Task};
 
-use crate::app::tasks::{join_path, open_sftp_task, parent_path, resolve_and_list_task};
+use crate::app::tasks::{
+    ensure_remote_dir, join_path, new_dir_targets, open_sftp_task, parent_path,
+    resolve_and_list_task, valid_rename_name,
+};
 use crate::i18n::localize_error;
 use crate::state::{CenterView, SftpDialog, SftpView, ToastKind};
 use crate::t;
@@ -388,19 +391,20 @@ impl State {
                 let Some(client) = client else {
                     return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
                 };
-                let new_path = join_path(&path, &name);
+                let Some((parent, target)) = new_dir_targets(&path, &name) else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.dir_name_invalid")));
+                };
                 Task::perform(
                     async move {
-                        client
-                            .create_dir(&new_path)
-                            .await
-                            .map_err(|e| localize_error(&e))
+                        // 父级逐级补齐，末级单独创建：重名不在本地吞成成功，仍交服务端定夺。
+                        ensure_remote_dir(&client, &parent).await?;
+                        client.create_dir(&target).await
                     },
                     move |res| match res {
                         Ok(()) => Event::Emit(Box::new(Message::SftpCd(path))),
                         Err(e) => Event::Toast(
                             ToastKind::Error,
-                            format!("{}: {e}", t!("sftp.mkdir_failed")),
+                            format!("{}: {}", t!("sftp.mkdir_failed"), localize_error(&e)),
                         ),
                     },
                 )
@@ -436,6 +440,12 @@ impl State {
                 let Some(client) = client else {
                     return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
                 };
+                if !valid_rename_name(cur.trim()) {
+                    return Task::done(Event::Toast(
+                        ToastKind::Error,
+                        t!("sftp.rename_name_invalid"),
+                    ));
+                }
                 let from_path = join_path(&path, &from);
                 let to_path = join_path(&path, &cur);
                 Task::perform(

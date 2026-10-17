@@ -319,6 +319,34 @@ pub(crate) async fn ensure_remote_dir(client: &SftpClient, dir: &str) -> Result<
     Ok(())
 }
 
+/// 单个路径段的可用判据：非空、不是 `.` / `..`、且不含 `\`。
+/// Windows 的路径语义把 `\` 当分隔符（Windows OpenSSH 上建 `a\b` 直接报 `NoSuchFile`），
+/// POSIX 却把它当合法字面字符——同一份输入两种结果，一律拒绝比猜服务器属于哪一派可靠。
+pub(crate) fn valid_name_component(part: &str) -> bool {
+    !part.is_empty() && part != "." && part != ".." && !part.contains('\\')
+}
+
+/// 重命名只接受当前目录下的单个名字：带 `/` 会把条目搬出当前目录，不是重命名的语义。
+pub(crate) fn valid_rename_name(name: &str) -> bool {
+    !name.contains('/') && valid_name_component(name)
+}
+
+/// 把「新建文件夹」输入换算成要建的两个路径：需逐级补齐的父目录、待创建的末级目录。
+/// 名字允许 `logs` 也允许 `logs/2026/10`，一律相对当前目录；`.` / `..` 会跳出当前目录，
+/// 以 `/` 开头会切出空段，非法段一律返回 `None`。
+pub(crate) fn new_dir_targets(path: &str, name: &str) -> Option<(String, String)> {
+    let mut parts = Vec::new();
+    for part in name.trim().trim_end_matches('/').split('/') {
+        let part = part.trim();
+        if !valid_name_component(part) {
+            return None;
+        }
+        parts.push(part);
+    }
+    let target = join_path(path, &parts.join("/"));
+    Some((parent_path(&target), target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +377,51 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// 多级名字要拆成「父目录逐级补齐 + 末级单独创建」两个目标；非法写法一律拒绝。
+    #[test]
+    fn new_dir_targets_splits_nested_names_and_rejects_escapes() {
+        assert_eq!(
+            new_dir_targets("/srv", "logs/2026/10"),
+            Some((
+                "/srv/logs/2026".to_string(),
+                "/srv/logs/2026/10".to_string()
+            ))
+        );
+        assert_eq!(
+            new_dir_targets("/", "logs"),
+            Some(("/".to_string(), "/logs".to_string()))
+        );
+        // 首尾空白与结尾斜杠是输入噪音，不算非法。
+        assert_eq!(
+            new_dir_targets("/var/log", "  reports/ "),
+            Some(("/var/log".to_string(), "/var/log/reports".to_string()))
+        );
+        for bad in [
+            "",
+            "   ",
+            "/",
+            "/abs",
+            "a//b",
+            "..",
+            "../x",
+            "a/../b",
+            ".",
+            r"a\b",
+            r"logs\2026",
+        ] {
+            assert_eq!(new_dir_targets("/srv", bad), None, "应判非法: {bad:?}");
+        }
+    }
+
+    /// 重命名只收单个名字：分隔符与点段都会把条目搬出当前目录。
+    #[test]
+    fn valid_rename_name_rejects_separators_and_dot_segments() {
+        assert!(valid_rename_name("notes.txt"));
+        assert!(valid_rename_name("我的 文档"));
+        for bad in ["", ".", "..", "../x", "docs/a.txt", r"a\b"] {
+            assert!(!valid_rename_name(bad), "应判非法: {bad:?}");
+        }
     }
 }

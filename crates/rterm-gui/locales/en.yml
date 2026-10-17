@@ -299,6 +299,8 @@ sftp:
   unknown: Unknown
   not_connected: SFTP channel not established. Connect a session first.
   mkdir_failed: Failed to create directory
+  dir_name_invalid: Invalid folder name, use a plain relative name under the current folder
+  rename_name_invalid: Invalid name, it cannot contain path separators or '..'
   delete_failed: Failed to delete
   rename_failed: Failed to rename
   upload_title: Select files to upload

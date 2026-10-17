@@ -298,6 +298,8 @@ sftp:
   dir: 目录
   not_connected: SFTP 通道未建立，请先连接会话
   mkdir_failed: 创建目录失败
+  dir_name_invalid: 文件夹名称无效，请使用当前目录下的普通名称
+  rename_name_invalid: 名称无效，不能含路径分隔符或 '..'
   delete_failed: 删除失败
   rename_failed: 重命名失败
   upload_title: 选择要上传的文件
