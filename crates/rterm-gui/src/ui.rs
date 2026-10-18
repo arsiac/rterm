@@ -541,6 +541,99 @@ pub fn dialog_btn_style_neutral(theme: &Theme, status: button::Status) -> button
     }
 }
 
+/// 分段单选控件选中段的配色档位。
+#[derive(Debug, Clone, Copy)]
+pub enum SegmentTone {
+    /// 弱危险（覆盖这类破坏性动作）：[`DANGER`] 文字 + 半透明红底。
+    Danger,
+    /// 中性（跳过这类保守动作）：次要文字 + 抬升实底。
+    Neutral,
+    /// 信息（重命名这类替代动作）：强调色文字 + 半透明强调底。
+    Accent,
+}
+
+/// 分段单选控件的一个段。
+pub struct SegmentOption<M> {
+    /// 段文案。
+    pub label: String,
+    /// 是否为当前选中段。
+    pub selected: bool,
+    /// 选中时的配色档位。
+    pub tone: SegmentTone,
+    /// 点击后上行的消息（单击即生效，无弹层）。
+    pub on_press: M,
+}
+
+/// 分段单选控件：数段共容器、圆角、单击即切换——下拉与菜单弹层会被弹窗内滚动区裁切，故不用。
+pub fn segmented<'a, M: Clone + 'static>(
+    options: impl IntoIterator<Item = SegmentOption<M>>,
+) -> Element<'a, M> {
+    let mut seg = iced::widget::row![].spacing(2);
+    for opt in options {
+        seg = seg.push(
+            button(text(opt.label).size(12))
+                .padding([2, 8])
+                .style(segment_btn_style(opt.selected, opt.tone))
+                .on_press(opt.on_press),
+        );
+    }
+    container(seg)
+        .padding(2)
+        .style(|theme: &Theme| {
+            let p = theme::custom_palette(theme);
+            container::Style {
+                background: Some(Background::Color(p.surface_raised)),
+                border: Border {
+                    color: p.border,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+/// 分段控件单钮样式：选中段按档位着色（红/蓝档用 20% 半透明底、悬停加深），未选中段透明底悬停抬一档。
+fn segment_btn_style(
+    selected: bool,
+    tone: SegmentTone,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme: &Theme, status| {
+        let p = theme::custom_palette(theme);
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let mut style = button::Style {
+            background: None,
+            text_color: p.text_secondary,
+            border: Border::default().rounded(6.0),
+            ..Default::default()
+        };
+        if selected {
+            match tone {
+                SegmentTone::Neutral => {
+                    style.background = Some(Background::Color(p.hover_raised));
+                }
+                SegmentTone::Danger | SegmentTone::Accent => {
+                    let base = match tone {
+                        SegmentTone::Danger => DANGER,
+                        _ => theme::accent_color(theme),
+                    };
+                    style.background = Some(Background::Color(Color::from_rgba(
+                        base.r,
+                        base.g,
+                        base.b,
+                        if hovered { 0.32 } else { 0.20 },
+                    )));
+                    style.text_color = base;
+                }
+            }
+        } else if hovered {
+            style.background = Some(Background::Color(p.hover_raised));
+        }
+        style
+    }
+}
+
 /// 为任意部件包裹一个悬停 `tooltip`，在 `label` 被裁剪时展示其完整内容（如超长文件名）。
 ///
 /// 延迟与样式与 [`crate::icons::icon_button`] 内置的 tooltip 保持一致。tooltip 文本限宽并

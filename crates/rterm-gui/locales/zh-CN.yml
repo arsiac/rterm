@@ -293,9 +293,21 @@ sftp:
   delete_confirm: 确定删除%{kind} “%{name}” 吗？此操作不可恢复。
   overwrite_title: 覆盖确认
   overwrite_confirm: “%{name}” 已存在于目标目录，是否覆盖？
-  overwrite_many_confirm: 目标目录里已有 %{count} 个同名文件，全部覆盖？
-  overwrite_dir_confirm: 目标目录里已有 %{count} 个同名目录，其中的同名文件会被覆盖，是否继续？
   overwrite: 覆盖
+  skip: 跳过
+  conflict_title: 上传冲突
+  conflict_hint: 发现 %{count} 个与远端同名的条目，请逐条选择处理方式；确认后加入上传队列。
+  batch_badge: 第 %{current} / 共 %{total} 批
+  dir_merge_hint: 目录整树合并 · 子树内同名文件将被覆盖
+  foot_sum_all: 共 %{total} 项，将全部上传
+  foot_sum_mixed: 共 %{total} 项 · 将上传 %{up} 项 · 跳过 %{skipped} 项
+  upload_count: 上传 %{count} 项
+  cancel_upload: 取消上传
+  apply_all: 应用到全部：
+  apply_overwrite: 全部覆盖
+  apply_skip: 全部跳过
+  apply_rename: 全部重命名
+  rename_preview: 将上传为 “%{name}”
   file: 文件
   dir: 目录
   not_connected: SFTP 通道未建立，请先连接会话

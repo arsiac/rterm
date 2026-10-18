@@ -4,15 +4,19 @@
 //! [`crate::modal::overlay_wrap_dismissable`] 叠加为窗口级模态。所有对话框经 [`view`] 分发，
 //! 由 [`App`] 的 `sftp.dialog` 状态驱动。
 
+use crate::app::tasks::apply_upload_decisions;
+use crate::icons::Icon;
 use crate::modal::overlay_wrap_dismissable;
 use crate::t;
+use crate::theme;
 
 use crate::App;
 use crate::app::sftp::Message;
 use crate::sftp_panel;
-use crate::state::SftpDialog;
-use iced::widget::{column, container, row, text};
-use iced::{Element, Length};
+use crate::state::{ConflictDecision, ConflictRow, SftpDialog};
+use crate::ui::{SegmentOption, SegmentTone};
+use iced::widget::{button, column, container, row, scrollable, text};
+use iced::{Background, Border, Element, Length, Theme};
 use rterm_core::FileEntry;
 
 /// 根据当前打开的对话框返回遮罩层元素；无对话框时返回 `None`。
@@ -20,11 +24,14 @@ use rterm_core::FileEntry;
 /// 该函数仅在当前活动标签的 SFTP 视图存在对话框时返回内容（`App::active_sftp`）；
 /// 实际由 `crate::layout` 用 `iced::widget::stack` 叠加，覆盖**整个窗口**而非仅文件列表。
 pub fn view(app: &App) -> Option<Element<'_, Message>> {
-    let dialog = app.active_sftp().and_then(|s| s.dialog.as_ref())?;
+    let view = app.active_sftp()?;
+    let dialog = view.dialog.as_ref()?;
     let content = match dialog {
         SftpDialog::Delete { name, is_dir } => delete_dialog(name, *is_dir),
         SftpDialog::OverwriteDownload { name, .. } => overwrite_dialog(name),
-        SftpDialog::OverwriteUpload { files, dirs, .. } => upload_overwrite_dialog(files, dirs),
+        SftpDialog::UploadConflicts { items, rows } => {
+            upload_conflicts_dialog(items, rows, 1 + view.queued_conflicts.len())
+        }
         SftpDialog::Properties { entry, path } => properties_dialog(entry, path),
     };
     // 属性框无取消动作，遮罩单击对齐其「关闭」按钮；确认框对齐「取消」。
@@ -60,35 +67,251 @@ fn overwrite_dialog(name: &str) -> Element<'_, Message> {
     )
 }
 
-/// 上传覆盖确认弹窗：单文件复用下载侧那句文案，多文件与目录各报数量。
-fn upload_overwrite_dialog<'a>(files: &'a [String], dirs: &'a [String]) -> Element<'a, Message> {
-    let mut lines: Vec<Element<'a, Message>> = Vec::new();
-    if files.len() == 1 {
-        lines.push(
-            text(t!("sftp.overwrite_confirm", name => files[0].clone()))
-                .size(14)
-                .into(),
-        );
-    } else if !files.is_empty() {
-        lines.push(
-            text(t!("sftp.overwrite_many_confirm", count => files.len()))
-                .size(14)
-                .into(),
+/// 上传冲突逐条决策弹窗：标题+批次徽标 / 副标题 / 应用到全部工具条 / 逐条目行卡片 / 页脚汇总。
+///
+/// 配色一律取应用主题（`custom_palette` / `accent_color` / `DANGER`）；`batch_total` > 1 时标题旁出徽标。
+fn upload_conflicts_dialog<'a>(
+    items: &[(std::path::PathBuf, String)],
+    rows: &[ConflictRow],
+    batch_total: usize,
+) -> Element<'a, Message> {
+    let kept = apply_upload_decisions(items, rows).len();
+    let skipped = items.len() - kept;
+    let summary = if skipped == 0 {
+        t!("sftp.foot_sum_all", total => items.len())
+    } else {
+        t!("sftp.foot_sum_mixed", total => items.len(), up => kept, skipped => skipped)
+    };
+    let primary_label = if kept == 0 {
+        t!("sftp.cancel_upload")
+    } else {
+        t!("sftp.upload_count", count => kept)
+    };
+
+    let mut title_line = row![text(t!("sftp.conflict_title")).size(15)].spacing(10);
+    if batch_total > 1 {
+        title_line = title_line.push(
+            container(
+                text(t!("sftp.batch_badge", current => 1usize, total => batch_total)).size(11.5),
+            )
+            .padding([1, 10])
+            .style(|theme: &Theme| {
+                let accent = theme::accent_color(theme);
+                container::Style {
+                    background: Some(Background::Color(iced::Color::from_rgba(
+                        accent.r, accent.g, accent.b, 0.20,
+                    ))),
+                    text_color: Some(accent),
+                    border: Border {
+                        radius: 999.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }),
         );
     }
-    if !dirs.is_empty() {
-        lines.push(
-            text(t!("sftp.overwrite_dir_confirm", count => dirs.len()))
-                .size(14)
-                .into(),
-        );
+
+    let toolbar = row![
+        container(text(t!("sftp.apply_all")).size(12)).style(weak_text),
+        tool_button(
+            t!("sftp.apply_overwrite"),
+            Message::SftpConflictApplyAll(ConflictDecision::Overwrite),
+        ),
+        tool_button(
+            t!("sftp.apply_skip"),
+            Message::SftpConflictApplyAll(ConflictDecision::Skip),
+        ),
+        tool_button(
+            t!("sftp.apply_rename"),
+            Message::SftpConflictApplyAll(ConflictDecision::Rename),
+        ),
+    ]
+    .spacing(6)
+    .align_y(iced::alignment::Vertical::Center);
+
+    let mut list = column![].spacing(8);
+    for (index, row_state) in rows.iter().enumerate() {
+        list = list.push(conflict_row(row_state, index));
     }
-    dialog_panel(
-        t!("sftp.overwrite_title"),
-        column(lines).spacing(8),
-        t!("sftp.overwrite"),
-        true,
+
+    let foot = row![
+        container(text(summary).size(12))
+            .style(weak_text)
+            .width(Length::Fill),
+        button(text(t!("common.cancel")).size(13))
+            .padding([6, 18])
+            .style(crate::ui::dialog_btn_style_neutral)
+            .on_press(Message::SftpCancelDialog),
+        button(text(primary_label).size(13))
+            .padding([6, 18])
+            .style(|theme, status| crate::ui::dialog_btn_style(theme, status, false))
+            .on_press(Message::SftpDialogConfirm),
+    ]
+    .spacing(10)
+    .align_y(iced::alignment::Vertical::Center);
+
+    container(
+        column![
+            container(
+                column![
+                    title_line,
+                    container(text(t!("sftp.conflict_hint", count => rows.len())).size(12.5))
+                        .style(secondary_text),
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
+            .padding(iced::Padding {
+                top: 18.0,
+                right: 20.0,
+                bottom: 10.0,
+                left: 20.0
+            }),
+            container(toolbar)
+                .width(Length::Fill)
+                .padding(iced::Padding {
+                    top: 2.0,
+                    right: 20.0,
+                    bottom: 10.0,
+                    left: 20.0
+                }),
+            // 内滚 + 外层封顶（≈6 行），沿用 known_hosts 列表的做法与细滚动条基座。
+            container(
+                container(
+                    scrollable(list)
+                        .width(Length::Fill)
+                        .height(Length::Shrink)
+                        .direction(crate::ui::thin_scrollbar_direction()),
+                )
+                .width(Length::Fill)
+                .max_height(336.0),
+            )
+            .width(Length::Fill)
+            .padding(iced::Padding {
+                top: 0.0,
+                right: 14.0,
+                bottom: 10.0,
+                left: 14.0
+            }),
+            crate::ui::hairline(),
+            container(foot).width(Length::Fill).padding([13, 20]),
+        ]
+        .width(Length::Fill),
     )
+    .width(520.0)
+    .style(crate::ui::dialog_panel_style(None))
+    .into()
+}
+
+/// 冲突单行：图标 + 名称（裁剪 + 悬浮全名）+ 可选目录风险提示 / 重命名预览 + 分段三档钮。
+fn conflict_row<'a>(row_state: &ConflictRow, index: usize) -> Element<'a, Message> {
+    let icon = if row_state.is_dir {
+        Icon::Folder
+    } else {
+        Icon::Document
+    };
+    let name_clip = crate::ui::hover_tooltip(
+        container(
+            text(row_state.name.clone())
+                .size(13)
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::None),
+        )
+        .clip(true),
+        row_state.name.clone(),
+        iced::widget::tooltip::Position::FollowCursor,
+    );
+    let mut meta = column![name_clip];
+    if row_state.is_dir {
+        meta = meta.push(container(text(t!("sftp.dir_merge_hint")).size(11.5)).style(danger_text));
+    }
+    if row_state.decision == ConflictDecision::Rename {
+        meta = meta.push(
+            container(
+                text(t!("sftp.rename_preview", name => row_state.new_name.clone())).size(11.5),
+            )
+            .style(accent_text),
+        );
+    }
+    let seg = crate::ui::segmented([
+        SegmentOption {
+            label: t!("sftp.overwrite"),
+            selected: row_state.decision == ConflictDecision::Overwrite,
+            tone: SegmentTone::Danger,
+            on_press: Message::SftpConflictDecide(index, ConflictDecision::Overwrite),
+        },
+        SegmentOption {
+            label: t!("sftp.skip"),
+            selected: row_state.decision == ConflictDecision::Skip,
+            tone: SegmentTone::Neutral,
+            on_press: Message::SftpConflictDecide(index, ConflictDecision::Skip),
+        },
+        SegmentOption {
+            label: t!("sftp.rename"),
+            selected: row_state.decision == ConflictDecision::Rename,
+            tone: SegmentTone::Accent,
+            on_press: Message::SftpConflictDecide(index, ConflictDecision::Rename),
+        },
+    ]);
+    container(
+        row![icon.svg(16.0), container(meta).width(Length::Fill), seg]
+            .spacing(10)
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .width(Length::Fill)
+    .padding([10, 12])
+    .style(|theme: &Theme| {
+        let p = theme::custom_palette(theme);
+        container::Style {
+            background: Some(Background::Color(p.surface)),
+            text_color: Some(p.text_secondary),
+            border: Border::default().rounded(10.0),
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// 工具条小描边按钮（应用到全部三钮）。
+fn tool_button<'a>(label: String, on_press: Message) -> Element<'a, Message> {
+    button(text(label).size(12))
+        .padding([3, 10])
+        .style(crate::ui::dialog_btn_style_neutral)
+        .on_press(on_press)
+        .into()
+}
+
+/// 弱文本色（页脚汇总 / 工具条标签），经容器 `text_color` 下发给子文本。
+fn weak_text(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme::custom_palette(theme).text_tertiary),
+        ..Default::default()
+    }
+}
+
+/// 次文本色（副标题）。
+fn secondary_text(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme::custom_palette(theme).text_secondary),
+        ..Default::default()
+    }
+}
+
+/// 危险语义文字（目录整树合并提示）。
+fn danger_text(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::ui::DANGER),
+        ..Default::default()
+    }
+}
+
+/// 强调色文字（重命名预览、批次徽标）。
+fn accent_text(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme::accent_color(theme)),
+        ..Default::default()
+    }
 }
 
 /// 只读信息框，展示名称 / 类型 / 大小 / 修改时间 / 完整路径。

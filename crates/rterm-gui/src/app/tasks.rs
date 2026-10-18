@@ -4,6 +4,7 @@ use crate::app::hostkey;
 use crate::app::tabs;
 use crate::i18n::localize_error;
 use crate::message::{Message, ResizeSender};
+use crate::state::{ConflictDecision, ConflictRow};
 use crate::t;
 use futures::SinkExt;
 use rterm_config::{ConnectOptions, SessionConfig};
@@ -374,6 +375,82 @@ pub(crate) fn upload_conflicts(
     (files, dirs)
 }
 
+/// 为重名冲突生成 `x (1).ext` 式递增候选，跳过目录快照里已占用的名字。
+///
+/// 目录不拆扩展名（`logs.old (1)`）；文件在最后一个点前插入；点开头文件整体视为干，不造 ` (1).bashrc`。
+pub(crate) fn rename_candidate(
+    existing: &HashMap<String, bool>,
+    name: &str,
+    is_dir: bool,
+) -> String {
+    let (stem, ext) = match (is_dir, name.rfind('.')) {
+        (false, Some(i)) if i > 0 => name.split_at(i),
+        _ => (name, ""),
+    };
+    let mut n = 1u32;
+    loop {
+        let candidate = format!("{stem} ({n}){ext}");
+        if !existing.contains_key(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// 把探测出的同名文件与目录装配成对话框决策行，候选名按目录快照排重，初始决策一律覆盖。
+pub(crate) fn build_conflict_rows(
+    files: &[String],
+    dirs: &[String],
+    existing: &HashMap<String, bool>,
+) -> Vec<ConflictRow> {
+    let mut rows: Vec<ConflictRow> = files
+        .iter()
+        .map(|name| ConflictRow {
+            name: name.clone(),
+            is_dir: false,
+            new_name: rename_candidate(existing, name, false),
+            decision: ConflictDecision::Overwrite,
+        })
+        .collect();
+    rows.extend(dirs.iter().map(|name| ConflictRow {
+        name: name.clone(),
+        is_dir: true,
+        new_name: rename_candidate(existing, name, true),
+        decision: ConflictDecision::Overwrite,
+    }));
+    rows
+}
+
+/// 按各行决策把上传项展开成最终入队项：跳过即剔除，重命名改写首层段、保留内部层级；
+/// 未冲突的项原样保留。同一首层的所有层级项随该行的决策整组处置。
+pub(crate) fn apply_upload_decisions(
+    items: &[(std::path::PathBuf, String)],
+    rows: &[ConflictRow],
+) -> Vec<(std::path::PathBuf, String)> {
+    items
+        .iter()
+        .filter_map(|(local, rel)| {
+            let head = rel.split('/').next().unwrap_or(rel);
+            let Some(row) = rows.iter().find(|r| r.name == head) else {
+                return Some((local.clone(), rel.clone()));
+            };
+            match row.decision {
+                ConflictDecision::Overwrite => Some((local.clone(), rel.clone())),
+                ConflictDecision::Skip => None,
+                ConflictDecision::Rename => {
+                    let rest = &rel[head.len()..];
+                    let new_rel = if rest.is_empty() {
+                        row.new_name.clone()
+                    } else {
+                        format!("{}{rest}", row.new_name)
+                    };
+                    Some((local.clone(), new_rel))
+                }
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +557,97 @@ mod tests {
             upload_conflicts(&["notes"], &existing),
             (Vec::new(), vec!["notes".to_string()])
         );
+    }
+
+    /// 重命名候选按快照排重递增；目录与点开头面板文件不拆扩展名。
+    #[test]
+    fn rename_candidate_increments_past_taken_names() {
+        let existing: HashMap<String, bool> = [
+            ("notes.txt".to_string(), false),
+            ("notes (1).txt".to_string(), false),
+            (".bashrc".to_string(), false),
+            ("docs".to_string(), true),
+            ("logs.old".to_string(), true),
+        ]
+        .into_iter()
+        .collect();
+        // (1) 已被占，下一候选是 (2)。
+        assert_eq!(
+            rename_candidate(&existing, "notes.txt", false),
+            "notes (2).txt"
+        );
+        // 点开头整体视为干：不造出 " (1).bashrc"。
+        assert_eq!(rename_candidate(&existing, ".bashrc", false), ".bashrc (1)");
+        // 目录带点不拆扩展名。
+        assert_eq!(
+            rename_candidate(&existing, "logs.old", true),
+            "logs.old (1)"
+        );
+        assert_eq!(rename_candidate(&existing, "docs", true), "docs (1)");
+    }
+
+    /// 决策行按「文件在前、目录在后」装配，候选一律预生成，初始决策全为覆盖。
+    #[test]
+    fn build_conflict_rows_defaults_to_overwrite() {
+        let existing: HashMap<String, bool> =
+            [("a.txt".to_string(), false), ("docs".to_string(), true)]
+                .into_iter()
+                .collect();
+        let rows = build_conflict_rows(&["a.txt".to_string()], &["docs".to_string()], &existing);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "a.txt");
+        assert_eq!(rows[0].new_name, "a (1).txt");
+        assert!(!rows[0].is_dir);
+        assert_eq!(rows[1].name, "docs");
+        assert_eq!(rows[1].new_name, "docs (1)");
+        assert!(rows[1].is_dir);
+        assert!(
+            rows.iter()
+                .all(|r| r.decision == ConflictDecision::Overwrite)
+        );
+    }
+
+    /// 处置按首层整组展开：跳过剔全组、重命名只改写首层且保留层级，未冲突项原样。
+    #[test]
+    fn apply_upload_decisions_rewrites_head_and_drops_skips() {
+        let items: Vec<(PathBuf, String)> = vec![
+            ("/l/a.txt".into(), "a.txt".into()),
+            ("/l/d1/x.md".into(), "docs/x.md".into()),
+            ("/l/d2/sub/y.md".into(), "docs/sub/y.md".into()),
+            ("/l/new.bin".into(), "new.bin".into()),
+        ];
+        let rows = vec![
+            ConflictRow {
+                name: "a.txt".to_string(),
+                is_dir: false,
+                new_name: "a (1).txt".to_string(),
+                decision: ConflictDecision::Skip,
+            },
+            ConflictRow {
+                name: "docs".to_string(),
+                is_dir: true,
+                new_name: "docs (1)".to_string(),
+                decision: ConflictDecision::Rename,
+            },
+        ];
+        let kept = apply_upload_decisions(&items, &rows);
+        let rels: Vec<&str> = kept.iter().map(|(_, r)| r.as_str()).collect();
+        assert_eq!(rels, vec!["docs (1)/x.md", "docs (1)/sub/y.md", "new.bin"]);
+    }
+
+    /// 覆盖决策下入队项必须原样不动：与未弹决策框时的直传行为逐项一致。
+    #[test]
+    fn apply_upload_decisions_overwrite_keeps_items_untouched() {
+        let items: Vec<(PathBuf, String)> = vec![
+            ("/l/a.txt".into(), "a.txt".into()),
+            ("/l/d/x.md".into(), "docs/x.md".into()),
+        ];
+        let rows = vec![ConflictRow {
+            name: "a.txt".to_string(),
+            is_dir: false,
+            new_name: "a (1).txt".to_string(),
+            decision: ConflictDecision::Overwrite,
+        }];
+        assert_eq!(apply_upload_decisions(&items, &rows), items);
     }
 }

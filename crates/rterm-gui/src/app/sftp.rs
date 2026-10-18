@@ -5,11 +5,11 @@ use std::sync::Arc;
 use iced::{Subscription, Task};
 
 use crate::app::tasks::{
-    ensure_remote_dir, join_path, new_dir_targets, open_sftp_task, parent_path,
-    resolve_and_list_task, upload_conflicts, valid_rename_name,
+    apply_upload_decisions, build_conflict_rows, ensure_remote_dir, join_path, new_dir_targets,
+    open_sftp_task, parent_path, resolve_and_list_task, upload_conflicts, valid_rename_name,
 };
 use crate::i18n::localize_error;
-use crate::state::{CenterView, SftpDialog, SftpView, ToastKind};
+use crate::state::{CenterView, ConflictDecision, SftpDialog, SftpView, ToastKind};
 use crate::t;
 use log::warn;
 use rterm_core::{FileEntry, SftpClient, SshConnection};
@@ -64,6 +64,7 @@ impl State {
             view.creating_dir = None;
             view.renaming = None;
             view.dialog = None;
+            view.queued_conflicts.clear();
         }
     }
 
@@ -144,15 +145,20 @@ pub enum Message {
     SftpPickUpload,
     /// 打开系统文件夹选择器以选择要上传的本地文件夹（可多选），保留目录层级上传。
     SftpPickUploadFolder,
-    /// 上传选择器返回（携带上传项）：先探测目标目录的同名条目，再决定入队还是弹覆盖确认。
+    /// 上传选择器返回（携带上传项）：先探测目标目录的同名条目，再决定直接入队还是弹逐条决策框。
     SftpUploadPicked(Vec<(std::path::PathBuf, String)>),
-    /// 探测到远端同名（携带探测时的目录、上传项、同名文件与同名目录），请求弹覆盖确认。
+    /// 探测到远端同名（携带探测时的目录、上传项、同名文件、同名目录与目录快照），请求弹逐条决策框。
     SftpUploadConflict(
         String,
         Vec<(std::path::PathBuf, String)>,
         Vec<String>,
         Vec<String>,
+        HashMap<String, bool>,
     ),
+    /// 修改冲突对话框中某一行的处置策略（按行序号，0 基）。
+    SftpConflictDecide(usize, ConflictDecision),
+    /// 把冲突对话框所有行的处置策略设为同一档（「应用到全部」）。
+    SftpConflictApplyAll(ConflictDecision),
     /// 打开系统文件夹选择器以选择下载目标目录（携带远端文件名）。
     SftpPickDownload(String),
     /// 下载远端文件（携带远端名称与本地目标目录），经覆盖检查后上行给传输模块。
@@ -494,6 +500,10 @@ impl State {
                 if tab.renaming.take().is_some() || tab.creating_dir.take().is_some() {
                     // 退出内联输入态：焦点已离开文件管理器，交还终端（焦点态在父层）。
                     Task::done(Event::FocusTerminal)
+                } else if let Some(SftpDialog::UploadConflicts { .. }) = tab.dialog.take() {
+                    // 取消一批冲突＝该批整批不入队；排队的下一批（若有）接上弹出。
+                    tab.dialog = tab.queued_conflicts.pop_front();
+                    Task::none()
                 } else {
                     tab.dialog = None;
                     Task::none()
@@ -547,9 +557,18 @@ impl State {
                     SftpDialog::OverwriteDownload { name, local, .. } => {
                         Task::done(Event::StartDownload(name, local))
                     }
-                    // 上传覆盖确认：点头后把探测时暂存的上传项原样上行入队，取消则整批不入队。
-                    SftpDialog::OverwriteUpload { items, .. } => {
-                        Task::done(Event::StartUpload(items))
+                    // 上传冲突逐条决策：按各行策略展开成最终入队项；全部跳过则不入队。
+                    // 处理完这批再弹出排队里的下一批。
+                    SftpDialog::UploadConflicts { items, rows } => {
+                        if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+                            tab.dialog = tab.queued_conflicts.pop_front();
+                        }
+                        let kept = apply_upload_decisions(&items, &rows);
+                        if kept.is_empty() {
+                            Task::none()
+                        } else {
+                            Task::done(Event::StartUpload(kept))
+                        }
                     }
                     // 属性框为只读信息框，确认仅关闭。
                     SftpDialog::Properties { .. } => Task::none(),
@@ -671,12 +690,12 @@ impl State {
                             return Event::StartUpload(items);
                         }
                         Event::Emit(Box::new(Message::SftpUploadConflict(
-                            path, items, files, dirs,
+                            path, items, files, dirs, existing,
                         )))
                     },
                 )
             }
-            Message::SftpUploadConflict(path, items, files, dirs) => {
+            Message::SftpUploadConflict(path, items, files, dirs, existing) => {
                 // 结论只对「仍是那个目录」的视图成立：视图已切走或已不在，就按老行为直接入队。
                 let Some(tab) = self.per_tab.get_mut(&active_tab) else {
                     return Task::done(Event::StartUpload(items));
@@ -684,7 +703,39 @@ impl State {
                 if tab.path != path {
                     return Task::done(Event::StartUpload(items));
                 }
-                tab.dialog = Some(SftpDialog::OverwriteUpload { items, files, dirs });
+                let dialog = SftpDialog::UploadConflicts {
+                    items,
+                    rows: build_conflict_rows(&files, &dirs, &existing),
+                };
+                // 上一批还没处理完：排队，不覆盖正在显示的对话框（否则前一批被静默丢弃）。
+                if matches!(tab.dialog, Some(SftpDialog::UploadConflicts { .. })) {
+                    tab.queued_conflicts.push_back(dialog);
+                } else {
+                    tab.dialog = Some(dialog);
+                }
+                Task::none()
+            }
+            Message::SftpConflictDecide(index, decision) => {
+                if let Some(SftpDialog::UploadConflicts { rows, .. }) = self
+                    .per_tab
+                    .get_mut(&active_tab)
+                    .and_then(|tab| tab.dialog.as_mut())
+                    && let Some(row) = rows.get_mut(index)
+                {
+                    row.decision = decision;
+                }
+                Task::none()
+            }
+            Message::SftpConflictApplyAll(decision) => {
+                if let Some(SftpDialog::UploadConflicts { rows, .. }) = self
+                    .per_tab
+                    .get_mut(&active_tab)
+                    .and_then(|tab| tab.dialog.as_mut())
+                {
+                    for row in rows.iter_mut() {
+                        row.decision = decision;
+                    }
+                }
                 Task::none()
             }
             Message::SftpPickDownload(name) => {
@@ -846,8 +897,102 @@ mod tests {
         assert!(view.creating_dir.is_none());
         assert!(view.renaming.is_none());
         assert!(view.dialog.is_none());
+        assert!(view.queued_conflicts.is_empty());
 
         // 作废不存在的标签只是无操作。
         state.invalidate(404);
+    }
+
+    /// 造一批「与现有条目同名」的冲突探测结论：单文件 `name` 相对路径，目录快照里就有它。
+    fn conflict_batch(name: &str) -> Message {
+        Message::SftpUploadConflict(
+            ".".to_string(),
+            vec![(
+                std::path::PathBuf::from(format!("/l/{name}")),
+                name.to_string(),
+            )],
+            vec![name.to_string()],
+            Vec::new(),
+            std::collections::HashMap::from([(name.to_string(), false)]),
+        )
+    }
+
+    /// 连点两批上传时，后一批必须排队而不是覆盖正在显示的对话框。
+    #[test]
+    fn second_conflict_batch_queues_behind_the_first() {
+        let mut state = State::default();
+        state.ensure(7);
+
+        let _ = state.update(conflict_batch("a.txt"), 7);
+        let _ = state.update(conflict_batch("b.txt"), 7);
+
+        let view = state.tab(7).expect("视图存在");
+        match view.dialog.as_ref() {
+            Some(SftpDialog::UploadConflicts { rows, .. }) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].name, "a.txt");
+            }
+            other => panic!("期望第一批冲突对话框，实际 {other:?}"),
+        }
+        assert_eq!(view.queued_conflicts.len(), 1);
+    }
+
+    /// 确认与取消都要弹出排队中的下一批；取消不把该批入队（上行事件在父层，这里只验状态推进）。
+    #[test]
+    fn finishing_a_conflict_batch_promotes_the_next_queued_one() {
+        let mut state = State::default();
+        state.ensure(7);
+        let _ = state.update(conflict_batch("a.txt"), 7);
+        let _ = state.update(conflict_batch("b.txt"), 7);
+
+        let _ = state.update(Message::SftpDialogConfirm, 7);
+        let view = state.tab(7).expect("视图存在");
+        match view.dialog.as_ref() {
+            Some(SftpDialog::UploadConflicts { rows, .. }) => {
+                assert_eq!(rows[0].name, "b.txt", "确认后应弹出第二批");
+            }
+            other => panic!("期望第二批冲突对话框，实际 {other:?}"),
+        }
+        assert!(view.queued_conflicts.is_empty());
+
+        let _ = state.update(Message::SftpCancelDialog, 7);
+        assert!(state.tab(7).expect("视图存在").dialog.is_none());
+    }
+
+    /// 「应用到全部」把当前对话框的每一行都设为同一策略，逐行改判互不串台。
+    #[test]
+    fn apply_all_and_per_row_decisions_write_through_rows() {
+        let two = Message::SftpUploadConflict(
+            ".".to_string(),
+            vec![
+                (std::path::PathBuf::from("/l/a.txt"), "a.txt".to_string()),
+                (std::path::PathBuf::from("/l/b.txt"), "b.txt".to_string()),
+            ],
+            vec!["a.txt".to_string(), "b.txt".to_string()],
+            Vec::new(),
+            std::collections::HashMap::from([
+                ("a.txt".to_string(), false),
+                ("b.txt".to_string(), false),
+            ]),
+        );
+        let mut state = State::default();
+        state.ensure(9);
+        let _ = state.update(two, 9);
+
+        let _ = state.update(Message::SftpConflictApplyAll(ConflictDecision::Skip), 9);
+        let rows_of = |s: &State| match s.tab(9).and_then(|t| t.dialog.as_ref()) {
+            Some(SftpDialog::UploadConflicts { rows, .. }) => rows.clone(),
+            other => panic!("期望冲突对话框，实际 {other:?}"),
+        };
+        assert!(
+            rows_of(&state)
+                .iter()
+                .all(|r| r.decision == ConflictDecision::Skip)
+        );
+
+        let _ = state.update(Message::SftpConflictDecide(0, ConflictDecision::Rename), 9);
+        let rows = rows_of(&state);
+        assert_eq!(rows[0].decision, ConflictDecision::Rename);
+        assert_eq!(rows[1].decision, ConflictDecision::Skip);
     }
 }

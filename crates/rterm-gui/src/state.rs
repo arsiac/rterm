@@ -8,6 +8,7 @@ use rterm_core::{
     BridgeState, ConnectionStatus, DisconnectReason, FileEntry, HostKeyPrompt, HostKeyReply,
     SftpClient, SshConnection,
 };
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -107,14 +108,12 @@ pub enum SftpDialog {
         /// 对应的传输任务 id（确认后继续 / 跳过）。
         transfer_id: u64,
     },
-    /// 上传覆盖确认（携带待入队的上传项，以及目标目录里已同名的文件与目录）。
-    OverwriteUpload {
-        /// 待上行的上传项（本地路径 + 远端相对路径）。
+    /// 上传冲突逐条决策（携带待入队的上传项与按首层同名生成的决策行）。
+    UploadConflicts {
+        /// 待裁决的上传项（本地路径 + 远端相对路径）。
         items: Vec<(std::path::PathBuf, String)>,
-        /// 目标目录里已存在的同名文件。
-        files: Vec<String>,
-        /// 目标目录里已存在的同名目录，风险是整个目录树里的同名文件都会被覆盖。
-        dirs: Vec<String>,
+        /// 每个首层同名条目一行，渲染与决策均按此顺序。
+        rows: Vec<ConflictRow>,
     },
     /// 文件属性展示（携带条目与完整远端路径，只读信息框）。
     Properties {
@@ -123,6 +122,30 @@ pub enum SftpDialog {
         /// 完整远端路径。
         path: String,
     },
+}
+
+/// 单个上传冲突条目的处置策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictDecision {
+    /// 覆盖远端同名条目（文件夹则整树合并写入）。
+    Overwrite,
+    /// 跳过本条目，不入队。
+    Skip,
+    /// 以重命名候选为目标名上传。
+    Rename,
+}
+
+/// 冲突对话框中的一行：首层名称、类型、预生成的重命名候选与当前决策。
+#[derive(Debug, Clone)]
+pub struct ConflictRow {
+    /// 目标目录里已存在的同名条目名（即上传项的首层名）。
+    pub name: String,
+    /// 远端同名条目是否为目录：目录的处置覆盖的是整棵树。
+    pub is_dir: bool,
+    /// 装配时按目录快照排重生成的候选名，决策为 `Rename` 时生效。
+    pub new_name: String,
+    /// 当前决策，初始一律 `Overwrite`。
+    pub decision: ConflictDecision,
 }
 
 /// 顶部反馈横幅的类型。
@@ -270,6 +293,8 @@ pub struct SftpView {
     pub busy: bool,
     /// 当前打开的模态对话框（`None` 表示无）：删除确认 / 下载覆盖确认 / 文件属性。
     pub dialog: Option<SftpDialog>,
+    /// 排队待弹的上传冲突对话框：连点多批上传时，后一批的探测结论不再覆盖前一批，按队列逐个弹。
+    pub queued_conflicts: VecDeque<SftpDialog>,
     /// 上次选择的下载目录：用作下载目录选择器的起始目录，首次取系统下载目录
     /// （`~/Downloads`，经 [`rterm_config::paths::download_dir`] 解析并逐级回退）。
     ///
@@ -293,6 +318,7 @@ impl Default for SftpView {
             context_target: None,
             busy: false,
             dialog: None,
+            queued_conflicts: VecDeque::new(),
             download_dir: rterm_config::paths::download_dir()
                 .to_string_lossy()
                 .to_string(),

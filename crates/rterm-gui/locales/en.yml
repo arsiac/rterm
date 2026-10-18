@@ -293,9 +293,21 @@ sftp:
   delete_confirm: Delete %{kind} "%{name}"? This cannot be undone.
   overwrite_title: Overwrite confirmation
   overwrite_confirm: '"%{name}" already exists in the target folder. Overwrite?'
-  overwrite_many_confirm: '%{count} files already exist in the target folder. Overwrite all of them?'
-  overwrite_dir_confirm: 'Folders with the same names already exist in the target folder (%{count}). Files inside them will be overwritten. Continue?'
   overwrite: Overwrite
+  skip: Skip
+  conflict_title: Upload conflicts
+  conflict_hint: '%{count} item(s) conflict with names on the server. Choose what to do for each; kept items join the upload queue.'
+  batch_badge: 'Batch %{current} of %{total}'
+  dir_merge_hint: Whole folder merges — files with the same names inside are overwritten
+  foot_sum_all: '%{total} item(s) total — all will be uploaded'
+  foot_sum_mixed: '%{total} total · %{up} to upload · %{skipped} skipped'
+  upload_count: 'Upload %{count}'
+  cancel_upload: Cancel upload
+  apply_all: "Apply to all:"
+  apply_overwrite: Overwrite all
+  apply_skip: Skip all
+  apply_rename: Rename all
+  rename_preview: 'rename to "%{name}"'
   file: File
   dir: Folder
   unknown: Unknown
