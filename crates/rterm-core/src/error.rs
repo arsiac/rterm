@@ -103,6 +103,8 @@ pub enum CoreErrorKind {
     DeleteDir,
     /// 目录非空，无法删除。
     DirNotEmpty,
+    /// 递归删除游树时嵌套超过上限（符号链接成环的兜底）。
+    DirTooDeep,
     /// 重命名失败。
     Rename,
     /// 创建远端文件失败。

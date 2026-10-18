@@ -291,6 +291,11 @@ sftp:
   properties: 属性
   delete_title: 删除确认
   delete_confirm: 确定删除%{kind} “%{name}” 吗？此操作不可恢复。
+  delete_tree_counting: 正在清点内容…
+  delete_tree_counts: 内容：%{files} 个文件 · %{dirs} 个子目录 · %{size}。
+  delete_tree_unknown: 无法清点目录内容，仍将整体删除该目录。
+  deleted_tree: 已删除 %{dirs} 个目录中的 %{files} 个文件。
+  delete_partial: 已删除 %{files} 个文件、%{dirs} 个目录，%{failed} 项失败：%{reason}
   overwrite_title: 覆盖确认
   overwrite_confirm: “%{name}” 已存在于目标目录，是否覆盖？
   overwrite: 覆盖
@@ -484,7 +489,8 @@ errors:
   sftp_create_dir: "创建目录失败: %{detail}"
   sftp_delete_file: "删除文件失败: %{detail}"
   sftp_delete_dir: "删除目录失败: %{detail}"
-  sftp_dir_not_empty: 目录非空（暂不支持递归删除）
+  sftp_dir_not_empty: 目录非空
+  sftp_dir_too_deep: 目录嵌套超过 64 层（可能存在符号链接环），已拒绝删除。
   sftp_rename: "重命名失败: %{detail}"
   sftp_create_remote_file: "创建远端文件失败: %{detail}"
   sftp_write_remote: "写入远端失败: %{detail}"

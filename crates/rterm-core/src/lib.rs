@@ -21,7 +21,7 @@ pub mod terminal_bridge;
 pub use connection::{HopSpec, HostKeyPrompt, HostKeyReply, SessionSecrets, SshConnection};
 pub use error::{CoreError, CoreErrorKind, ErrorClass};
 pub use model::{ConnectionStatus, FileEntry};
-pub use sftp::{Fingerprint, ResumeAt, SftpClient};
+pub use sftp::{Fingerprint, RemovalReport, ResumeAt, SftpClient};
 pub use terminal_bridge::{
     BridgeInput, BridgeState, DisconnectReason, InitialInput, PtySize, compose_initial_input,
     spawn_terminal_bridge,

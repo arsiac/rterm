@@ -13,6 +13,20 @@ use std::path::Path;
 use std::time::SystemTime;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader};
 
+/// 递归删除游树的最大嵌套深度：符号链接成环的兜底（是否跟链随服务端行为而定）。
+const MAX_DELETE_DEPTH: usize = 64;
+
+/// [`SftpClient::remove_dir_recursive`] 的结果汇总（尽力而为语义）。
+#[derive(Debug, Default)]
+pub struct RemovalReport {
+    /// 成功删除的文件数。
+    pub files: usize,
+    /// 成功删除的目录数（含树根目录本身）。
+    pub dirs: usize,
+    /// 失败条目的 `(路径, 错误)`；非空即删除不完整，交调用方呈现。
+    pub errors: Vec<(String, CoreError)>,
+}
+
 /// 源端指纹：续传判定中用来确认「还是同一个文件」。
 ///
 /// 必须含修改时间而非只有大小：只比大小时，源端被换成一个更长的同名文件会被判为可续传，
@@ -155,6 +169,69 @@ impl SftpClient {
             .remove_dir(path)
             .await
             .map_err(|e| CoreError::sftp(CoreErrorKind::DeleteDir, e))
+    }
+
+    /// 递归删除整棵目录树：先序游树收集，逐个删文件后目录按先序**逆序**删（父必在其全部后代之后）。
+    /// 单条目失败记入报告继续（尽力而为）；空路径、`/` 根与深度超限的硬守卫在任何删除前生效。
+    /// 符号链接按协议语义删链接本身，不写穿目标。
+    pub async fn remove_dir_recursive(&self, path: &str) -> Result<RemovalReport, CoreError> {
+        let root = path.trim_end_matches('/');
+        if root.is_empty() || root == "/" {
+            return Err(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("refusing to remove recursively: {path:?}"),
+            )));
+        }
+        debug!("Removing tree recursively: {root}");
+        let mut files: Vec<String> = Vec::new();
+        // 先序记录：根在最前；逆序删除保证父目录必在其全部后代之后。
+        let mut dirs: Vec<String> = vec![root.to_string()];
+        let mut list_errors: Vec<(String, CoreError)> = Vec::new();
+        let mut stack: Vec<(String, usize)> = vec![(root.to_string(), 1)];
+        while let Some((dir, depth)) = stack.pop() {
+            if depth > MAX_DELETE_DEPTH {
+                return Err(CoreError::sftp_msg(CoreErrorKind::DirTooDeep));
+            }
+            match self.list_dir(&dir).await {
+                Ok(entries) => {
+                    for entry in entries {
+                        if entry.name == "." || entry.name == ".." {
+                            continue;
+                        }
+                        let child = format!("{dir}/{}", entry.name);
+                        if entry.is_dir {
+                            dirs.push(child.clone());
+                            stack.push((child, depth + 1));
+                        } else {
+                            files.push(child);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // 列不动就不再深入：记下原因跳过子树；目录本身照旧尝试删除
+                    // （空则成功，非空由服务端 `DirNotEmpty` 裁决）。
+                    warn!("Cannot list {dir} for recursive removal: {e}");
+                    list_errors.push((dir, e));
+                }
+            }
+        }
+        let mut report = RemovalReport {
+            errors: list_errors,
+            ..Default::default()
+        };
+        for file in &files {
+            match self.remove_file(file).await {
+                Ok(()) => report.files += 1,
+                Err(e) => report.errors.push((file.clone(), e)),
+            }
+        }
+        for dir in dirs.iter().rev() {
+            match self.remove_dir(dir).await {
+                Ok(()) => report.dirs += 1,
+                Err(e) => report.errors.push((dir.clone(), e)),
+            }
+        }
+        Ok(report)
     }
 
     /// 重命名 / 移动远端文件或目录（跨目录即移动语义）。

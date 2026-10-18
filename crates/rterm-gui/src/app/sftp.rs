@@ -99,6 +99,31 @@ impl State {
     }
 }
 
+/// 目录整树删除的操作结果分类（供汇总 toast 呈现）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemovalOutcome {
+    /// 全部删除。
+    Complete {
+        /// 删除的文件数。
+        files: usize,
+        /// 删除的目录数（含根）。
+        dirs: usize,
+    },
+    /// 尽力而为的部分成功：`failed` 条目原地留存。
+    Partial {
+        /// 删除的文件数。
+        files: usize,
+        /// 删除的目录数。
+        dirs: usize,
+        /// 失败条目数。
+        failed: usize,
+        /// 首个失败项说明（路径 + 本地化原因）。
+        reason: String,
+    },
+    /// 守卫 / 游树环节即失败：删除尚未开始，树内没有任何损失。
+    Failed(String),
+}
+
 /// 模块内部消息：UI 意图 + 模块自处理的异步结果（列举 / 写操作）。
 ///
 /// 由父层经 `Message::Sftp` 路由进来；模块 `update` 自行消费，不外泄。
@@ -173,7 +198,12 @@ pub enum Message {
     ///
     /// 条目类型由菜单快照随消息携带，而非在装配时重新查表：菜单项的渲染与动作出自
     /// 同一份快照，重新查表会在列表刷新后与用户看到的那一项不一致。
+    /// 目录走整树删除：先弹计数确认框，Enter 或点「删除」一次即执行。
     SftpDeleteConfirm(String, bool),
+    /// 目录删除前计数探测回流（携带目录名与探测结果；仅对同名弹窗生效）。
+    SftpDeleteProbed(String, crate::state::DeleteProbe),
+    /// 目录整树删除执行完毕（携带刷新用基准目录与结果分类）。
+    SftpDeleteTreeDone(String, RemovalOutcome),
     /// 请求打开“属性”对话框（携带名称，展示文件详细信息）。
     SftpShowProperties(String),
     /// 复制远端条目的完整路径到系统剪贴板（携带完整路径）。
@@ -524,7 +554,7 @@ impl State {
                     return Task::none();
                 };
                 match dialog {
-                    SftpDialog::Delete { name, is_dir } => {
+                    SftpDialog::DeleteFile { name } => {
                         let (client, base_path) = match self.per_tab.get(&active_tab) {
                             Some(tab) => (tab.client.clone(), tab.path.clone()),
                             None => {
@@ -543,12 +573,10 @@ impl State {
                         let full = join_path(&base_path, &name);
                         Task::perform(
                             async move {
-                                let res = if is_dir {
-                                    client.remove_dir(&full).await
-                                } else {
-                                    client.remove_file(&full).await
-                                };
-                                res.map_err(|e| localize_error(&e))
+                                client
+                                    .remove_file(&full)
+                                    .await
+                                    .map_err(|e| localize_error(&e))
                             },
                             move |res| match res {
                                 Ok(()) => Event::Emit(Box::new(Message::SftpCd(base_path))),
@@ -556,6 +584,56 @@ impl State {
                                     ToastKind::Error,
                                     format!("{}: {e}", t!("sftp.delete_failed")),
                                 ),
+                            },
+                        )
+                    }
+                    SftpDialog::DeleteTree { name, .. } => {
+                        let (client, base_path) = match self.per_tab.get(&active_tab) {
+                            Some(tab) => (tab.client.clone(), tab.path.clone()),
+                            None => {
+                                return Task::done(Event::Toast(
+                                    ToastKind::Error,
+                                    t!("sftp.not_connected"),
+                                ));
+                            }
+                        };
+                        let Some(client) = client else {
+                            return Task::done(Event::Toast(
+                                ToastKind::Error,
+                                t!("sftp.not_connected"),
+                            ));
+                        };
+                        let full = join_path(&base_path, &name);
+                        Task::perform(
+                            async move {
+                                match client.remove_dir_recursive(&full).await {
+                                    Ok(report) if report.errors.is_empty() => {
+                                        RemovalOutcome::Complete {
+                                            files: report.files,
+                                            dirs: report.dirs,
+                                        }
+                                    }
+                                    Ok(report) => {
+                                        // 汇总只点名第一个失败项：尽力而为语义下其余失败同理。
+                                        let reason = report
+                                            .errors
+                                            .first()
+                                            .map(|(p, e)| format!("{p}: {}", localize_error(e)))
+                                            .unwrap_or_default();
+                                        RemovalOutcome::Partial {
+                                            files: report.files,
+                                            dirs: report.dirs,
+                                            failed: report.errors.len(),
+                                            reason,
+                                        }
+                                    }
+                                    Err(e) => RemovalOutcome::Failed(localize_error(&e)),
+                                }
+                            },
+                            move |outcome| {
+                                Event::Emit(Box::new(Message::SftpDeleteTreeDone(
+                                    base_path, outcome,
+                                )))
                             },
                         )
                     }
@@ -588,10 +666,103 @@ impl State {
                 }
             }
             Message::SftpDeleteConfirm(name, is_dir) => {
+                if !is_dir {
+                    if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+                        tab.dialog = Some(crate::state::SftpDialog::DeleteFile { name });
+                    }
+                    return Task::none();
+                }
+                let (client, base_path) = match self.per_tab.get(&active_tab) {
+                    Some(tab) => (tab.client.clone(), tab.path.clone()),
+                    None => {
+                        return Task::done(Event::Toast(
+                            ToastKind::Error,
+                            t!("sftp.not_connected"),
+                        ));
+                    }
+                };
+                let Some(client) = client else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
+                };
+                // 先开「计数中」弹窗再发探测：计数是整树列举，慢网络上不该让弹窗缺席。
                 if let Some(tab) = self.per_tab.get_mut(&active_tab) {
-                    tab.dialog = Some(crate::state::SftpDialog::Delete { name, is_dir });
+                    tab.dialog = Some(crate::state::SftpDialog::DeleteTree {
+                        name: name.clone(),
+                        probe: crate::state::DeleteProbe::Counting,
+                    });
+                }
+                let full = join_path(&base_path, &name);
+                Task::perform(
+                    async move {
+                        crate::app::folder_job::plan_remote_tree(&client, &full)
+                            .await
+                            .map(|plan| {
+                                // 目录步 = 全部后代目录（不含根），正是提示里的「子目录数」。
+                                let dirs = plan
+                                    .steps
+                                    .iter()
+                                    .filter(|s| {
+                                        matches!(s, crate::app::folder_job::Step::CreateDir { .. })
+                                    })
+                                    .count();
+                                crate::state::DeleteProbe::Counts {
+                                    files: plan.file_count,
+                                    dirs,
+                                    bytes: plan.total_bytes,
+                                }
+                            })
+                            .unwrap_or(crate::state::DeleteProbe::Unknown)
+                    },
+                    move |probe| Event::Emit(Box::new(Message::SftpDeleteProbed(name, probe))),
+                )
+            }
+            Message::SftpDeleteProbed(name, probe) => {
+                if let Some(tab) = self.per_tab.get_mut(&active_tab)
+                    && let Some(crate::state::SftpDialog::DeleteTree {
+                        name: cur,
+                        probe: p,
+                        ..
+                    }) = &mut tab.dialog
+                {
+                    // 只认同名弹窗：期间可能已取消、或改开了另一个目录的删除框。
+                    if *cur == name {
+                        *p = probe;
+                    }
                 }
                 Task::none()
+            }
+            Message::SftpDeleteTreeDone(base_path, outcome) => {
+                let toast = match outcome {
+                    RemovalOutcome::Complete { files, dirs } => Event::Toast(
+                        ToastKind::Success,
+                        t!("sftp.deleted_tree", files => files, dirs => dirs),
+                    ),
+                    RemovalOutcome::Partial {
+                        files,
+                        dirs,
+                        failed,
+                        reason,
+                    } => Event::Toast(
+                        ToastKind::Error,
+                        t!(
+                            "sftp.delete_partial",
+                            files => files,
+                            dirs => dirs,
+                            failed => failed,
+                            reason => reason
+                        ),
+                    ),
+                    RemovalOutcome::Failed(e) => Event::Toast(
+                        ToastKind::Error,
+                        format!("{}: {e}", t!("sftp.delete_failed")),
+                    ),
+                };
+                // 三种结局都重扫目录：删除进行过多则树已变、少则远端可能已被他方改动，
+                // 列表都不能留在旧快照。
+                Task::batch([
+                    Task::done(toast),
+                    Task::done(Event::Emit(Box::new(Message::SftpCd(base_path)))),
+                ])
             }
             Message::SftpShowProperties(name) => {
                 // 组装 Properties 对话框：从当前目录条目里取出该名称的元数据。
@@ -947,30 +1118,100 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 删除确认弹窗必须采用菜单快照携带的条目类型：装配处曾把它硬编码为 `false`，
-    /// 使目录删除永远发到 `remove_file` 上、必然失败。
+    /// 删除入口按菜单快照携带的条目类型分流：文件直接装配确认框；目录要先探测计数，
+    /// 无通道时不弹（计数无从谈起）。装配处曾把类型硬编码为 `false`，使目录删除永远发到
+    /// `remove_file` 上、必然失败。
     #[test]
-    fn delete_dialog_carries_the_entry_kind_from_the_menu() {
+    fn delete_confirm_routes_by_the_entry_kind_from_the_menu() {
         let mut state = State::default();
         state.ensure(7);
 
         let _ = state.update(Message::SftpDeleteConfirm("docs".to_string(), true), 7);
-        match state.tab(7).and_then(|tab| tab.dialog.as_ref()) {
-            Some(SftpDialog::Delete { name, is_dir }) => {
-                assert_eq!(name, "docs");
-                assert!(*is_dir, "目录必须以 is_dir = true 装配");
-            }
-            other => panic!("期望删除确认弹窗，实际 {other:?}"),
-        }
+        assert!(
+            state.tab(7).and_then(|tab| tab.dialog.as_ref()).is_none(),
+            "无通道时目录删除不应弹窗"
+        );
 
         let _ = state.update(
             Message::SftpDeleteConfirm("notes.txt".to_string(), false),
             7,
         );
-        assert!(matches!(
-            state.tab(7).and_then(|tab| tab.dialog.as_ref()),
-            Some(SftpDialog::Delete { is_dir: false, .. })
-        ));
+        match state.tab(7).and_then(|tab| tab.dialog.as_ref()) {
+            Some(SftpDialog::DeleteFile { name }) => assert_eq!(name, "notes.txt"),
+            other => panic!("期望单文件删除确认弹窗，实际 {other:?}"),
+        }
+    }
+
+    /// 计数探测回流只更新同名弹窗：乱序 / 错名的迟到结果不得盖掉当前弹窗的探测态。
+    #[test]
+    fn delete_tree_probe_updates_only_the_matching_dialog() {
+        let mut state = State::default();
+        state.ensure(7);
+        {
+            let tab = state.tab_mut(7).unwrap();
+            tab.dialog = Some(SftpDialog::DeleteTree {
+                name: "docs".to_string(),
+                probe: crate::state::DeleteProbe::Counting,
+            });
+        }
+
+        let _ = state.update(
+            Message::SftpDeleteProbed(
+                "docs".to_string(),
+                crate::state::DeleteProbe::Counts {
+                    files: 2,
+                    dirs: 1,
+                    bytes: 70,
+                },
+            ),
+            7,
+        );
+        match state.tab(7).and_then(|tab| tab.dialog.as_ref()) {
+            Some(SftpDialog::DeleteTree {
+                probe: crate::state::DeleteProbe::Counts { files, dirs, bytes },
+                ..
+            }) => {
+                assert_eq!((*files, *dirs, *bytes), (2, 1, 70));
+            }
+            other => panic!("探测结果应写回弹窗，实际 {other:?}"),
+        }
+
+        // 迟到的异名结果被忽略：弹窗仍持上一次的计数。
+        let _ = state.update(
+            Message::SftpDeleteProbed("other".to_string(), crate::state::DeleteProbe::Unknown),
+            7,
+        );
+        assert!(
+            matches!(
+                state.tab(7).and_then(|tab| tab.dialog.as_ref()),
+                Some(SftpDialog::DeleteTree {
+                    probe: crate::state::DeleteProbe::Counts { .. },
+                    ..
+                })
+            ),
+            "异名探测结果不得改写当前弹窗"
+        );
+    }
+
+    /// 目录删除确认一次即放行：弹窗被消费、进入执行分支（单测无通道，执行以
+    /// not_connected 收尾）；计数探测尚未回流的弹窗同样可确认。
+    #[test]
+    fn delete_tree_confirm_executes_in_one_step() {
+        let mut state = State::default();
+        state.ensure(7);
+        {
+            let tab = state.tab_mut(7).unwrap();
+            tab.dialog = Some(SftpDialog::DeleteTree {
+                name: "docs".to_string(),
+                probe: crate::state::DeleteProbe::Counting,
+            });
+        }
+
+        let _ = state.update(Message::SftpDialogConfirm, 7);
+        assert!(
+            state.tab(7).and_then(|tab| tab.dialog.as_ref()).is_none(),
+            "确认必须直接消费弹窗进入执行，不得有任何二次解锁环节"
+        );
     }
 
     /// 作废通道：会话标记 / 目录 / 列表 / 选中 / 内联输入与对话框全部清空，视图回到
@@ -996,9 +1237,8 @@ mod tests {
             view.hovered = Some("syslog".to_string());
             view.creating_dir = Some("New Folder".to_string());
             view.renaming = Some(("a".to_string(), "b".to_string()));
-            view.dialog = Some(SftpDialog::Delete {
+            view.dialog = Some(SftpDialog::DeleteFile {
                 name: "syslog".to_string(),
-                is_dir: false,
             });
             view.busy = true;
         }

@@ -13,7 +13,7 @@ use crate::theme;
 use crate::App;
 use crate::app::sftp::Message;
 use crate::sftp_panel;
-use crate::state::{ConflictDecision, ConflictRow, SftpDialog};
+use crate::state::{ConflictDecision, ConflictRow, DeleteProbe, SftpDialog};
 use crate::ui::{SegmentOption, SegmentTone};
 use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Background, Border, Element, Length, Theme};
@@ -27,7 +27,8 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let view = app.active_sftp()?;
     let dialog = view.dialog.as_ref()?;
     let content = match dialog {
-        SftpDialog::Delete { name, is_dir } => delete_dialog(name, *is_dir),
+        SftpDialog::DeleteFile { name } => delete_dialog(name),
+        SftpDialog::DeleteTree { name, probe } => delete_tree_dialog(name, probe),
         SftpDialog::OverwriteDownload {
             name, is_folder, ..
         } => overwrite_dialog(name, *is_folder),
@@ -44,16 +45,38 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     Some(overlay_wrap_dismissable(content, close))
 }
 
-/// 删除确认弹窗：按条目类型展示「删除文件 / 目录」警告与确认按钮。
-fn delete_dialog(name: &str, is_dir: bool) -> Element<'_, Message> {
-    let kind = if is_dir {
-        t!("sftp.dir")
-    } else {
-        t!("sftp.file")
+/// 单文件删除确认弹窗。
+fn delete_dialog(name: &str) -> Element<'_, Message> {
+    dialog_panel(
+        t!("sftp.delete_title"),
+        column![text(t!("sftp.delete_confirm", kind => t!("sftp.file"), name => name)).size(14),],
+        t!("sftp.delete"),
+        true,
+    )
+}
+
+/// 目录整树删除确认弹窗：确认句 + 计数行，一次回车 / 点击即执行。
+///
+/// 计数未完成或探测失败时计数行显示对应说明；探测只是风险信息，不构成执行门槛。
+fn delete_tree_dialog<'a>(name: &str, probe: &DeleteProbe) -> Element<'a, Message> {
+    let counts = match probe {
+        DeleteProbe::Counting => text(t!("sftp.delete_tree_counting")).size(14),
+        DeleteProbe::Counts { files, dirs, bytes } => text(t!(
+            "sftp.delete_tree_counts",
+            files => files,
+            dirs => dirs,
+            size => sftp_panel::format_size(*bytes)
+        ))
+        .size(14),
+        DeleteProbe::Unknown => text(t!("sftp.delete_tree_unknown")).size(14),
     };
     dialog_panel(
         t!("sftp.delete_title"),
-        column![text(t!("sftp.delete_confirm", kind => kind, name => name)).size(14),],
+        column![
+            text(t!("sftp.delete_confirm", kind => t!("sftp.dir"), name => name)).size(14),
+            counts,
+        ]
+        .spacing(10),
         t!("sftp.delete"),
         true,
     )

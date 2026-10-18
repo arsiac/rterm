@@ -291,6 +291,11 @@ sftp:
   properties: Properties
   delete_title: Delete confirmation
   delete_confirm: Delete %{kind} "%{name}"? This cannot be undone.
+  delete_tree_counting: 'Counting contents…'
+  delete_tree_counts: 'Contents: %{files} files · %{dirs} subfolders · %{size}.'
+  delete_tree_unknown: Folder contents could not be counted; it will still be removed entirely.
+  deleted_tree: 'Deleted %{files} file(s) in %{dirs} folder(s).'
+  delete_partial: '%{files} file(s) / %{dirs} folder(s) deleted, %{failed} failed: %{reason}'
   overwrite_title: Overwrite confirmation
   overwrite_confirm: '"%{name}" already exists in the target folder. Overwrite?'
   overwrite: Overwrite
@@ -484,7 +489,8 @@ errors:
   sftp_create_dir: "Failed to create directory: %{detail}"
   sftp_delete_file: "Failed to delete file: %{detail}"
   sftp_delete_dir: "Failed to delete directory: %{detail}"
-  sftp_dir_not_empty: "The directory is not empty (recursive deletion is not supported yet)"
+  sftp_dir_not_empty: "The directory is not empty"
+  sftp_dir_too_deep: "Folder nests deeper than 64 levels (possible symlink loop); nothing was deleted."
   sftp_rename: "Failed to rename: %{detail}"
   sftp_create_remote_file: "Failed to create remote file: %{detail}"
   sftp_write_remote: "Failed to write remote file: %{detail}"

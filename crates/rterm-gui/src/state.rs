@@ -92,12 +92,17 @@ pub struct HostKeyPromptState {
 /// SFTP 模态对话框类型。
 #[derive(Debug, Clone)]
 pub enum SftpDialog {
-    /// 删除确认（携带名称与是否目录）。
-    Delete {
-        /// 待删除条目名称。
+    /// 单文件删除确认。
+    DeleteFile {
+        /// 待删除文件名。
         name: String,
-        /// 是否为目录。
-        is_dir: bool,
+    },
+    /// 目录整树删除确认：先计数，Enter / 点击「删除」一次即执行。
+    DeleteTree {
+        /// 待删除目录名。
+        name: String,
+        /// 计数探测的进行中 / 结果态。
+        probe: DeleteProbe,
     },
     /// 下载覆盖确认（携带远端名称、本地目标完整路径与对应传输任务 id）。
     OverwriteDownload {
@@ -124,6 +129,24 @@ pub enum SftpDialog {
         /// 完整远端路径。
         path: String,
     },
+}
+
+/// 目录整树删除前的计数探测态。
+#[derive(Debug, Clone)]
+pub enum DeleteProbe {
+    /// 计数进行中。
+    Counting,
+    /// 计数完成（`dirs` 不含待删目录自身）。
+    Counts {
+        /// 树内文件数。
+        files: usize,
+        /// 子目录数。
+        dirs: usize,
+        /// 全部文件字节之和。
+        bytes: u64,
+    },
+    /// 计数失败：显示数量未知，但不拦确认。
+    Unknown,
 }
 
 /// 单个上传冲突条目的处置策略。

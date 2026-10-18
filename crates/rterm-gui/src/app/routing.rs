@@ -179,7 +179,7 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
     }
 }
 
-/// 处理候选按键：录制态 → Esc → 搜索条开条态 → 捕获态 → 键位表，依次分发。
+/// 处理候选按键：录制态 → Esc → 搜索条 / 删除确认框开条态 → 捕获态 → 键位表，依次分发。
 ///
 /// 录制与 Esc 必须先于「已捕获即丢弃」（遮罩会拦键，否则收不到）；搜索条开条时只放行 Enter / ↑ / ↓。
 pub(crate) fn handle_app_key(
@@ -202,6 +202,27 @@ pub(crate) fn handle_app_key(
     }
     if app.search.is_open() {
         return search_nav(app, chord);
+    }
+    // 删除确认框开态：Enter 即确认（右键 → 删除 → 回车，与命令行删除同步骤数）。
+    // 与 palette / 搜索条同理，必须早于 `Captured` 丢弃——模态遮罩会把按键标为已捕获。
+    if chord.key == ChordKey::Enter
+        && !chord.ctrl
+        && !chord.shift
+        && !chord.alt
+        && !chord.logo
+        && matches!(
+            app.sftp
+                .active(app.tabs.active())
+                .and_then(|v| v.dialog.as_ref()),
+            Some(crate::state::SftpDialog::DeleteFile { .. })
+                | Some(crate::state::SftpDialog::DeleteTree { .. })
+        )
+        && let Some(tab_id) = app.tabs.active()
+    {
+        return app
+            .sftp
+            .update(sftp::Message::SftpDialogConfirm, tab_id)
+            .map(Message::SftpEvent);
     }
     if status == iced::event::Status::Captured {
         return Task::none();
