@@ -357,6 +357,7 @@ transfer:
   rename_failed_upload: "The upload finished but the remote file could not be renamed; the data is kept at: %{path}"
   eta: " · %{time} left"
   queue_full: Transfer queue is full; some files were not enqueued.
+  folder_summary: "Folder transfer finished: %{ok} succeeded, %{failed} failed"
 terminal:
   empty: No terminal open yet. Connect in a session and the terminal opens automatically.
   close_tab: Close tab

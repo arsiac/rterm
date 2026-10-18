@@ -4,6 +4,7 @@ pub(crate) mod boot;
 pub(crate) mod connect;
 pub(crate) mod contexts;
 pub(crate) mod events;
+pub(crate) mod folder_job;
 pub(crate) mod hostkey;
 pub(crate) mod masterpw;
 pub(crate) mod panes;

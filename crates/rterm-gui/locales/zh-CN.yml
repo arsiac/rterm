@@ -357,6 +357,7 @@ transfer:
   rename_failed_upload: 上传已完成但远端重命名失败，内容保留在：%{path}
   eta: " · 剩 %{time}"
   queue_full: 传输队列已满，部分文件未入队。
+  folder_summary: 文件夹传输结束：成功 %{ok} 个，失败 %{failed} 个。
 terminal:
   empty: 尚未打开终端。请在会话中“连接”，终端将自动打开。
   close_tab: 关闭标签

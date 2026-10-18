@@ -579,6 +579,7 @@ mod tests {
             client: None,
             resume: None,
             keep_staging: false,
+            folder: None,
         }
     }
 

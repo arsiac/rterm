@@ -634,7 +634,8 @@ impl State {
                     None => Event::Emit(Box::new(Message::SftpNoop)),
                 },
             ),
-            // 文件夹上传：选一个或多个本地文件夹，递归展平为带层级相对路径的上传项后交同名探测。
+            // 文件夹上传：每个所选文件夹只产生一个根条目（相对路径 = 目录名），一棵树占队列一行，
+            // 树内展开由传输模块的作业执行体完成。
             Message::SftpPickUploadFolder => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
@@ -644,7 +645,14 @@ impl State {
                         .map(|folders| {
                             folders
                                 .into_iter()
-                                .flat_map(|f| crate::app::tasks::collect_upload_items(f.path()))
+                                .filter_map(|f| {
+                                    let p = f.path().to_path_buf();
+                                    let name = p
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .filter(|n| !n.is_empty())?;
+                                    Some((p, name))
+                                })
                                 .collect::<Vec<(std::path::PathBuf, String)>>()
                         })
                 },

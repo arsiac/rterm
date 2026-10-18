@@ -70,9 +70,12 @@ use std::time::{Duration, Instant};
 
 use iced::{Subscription, Task};
 
+use crate::app::folder_job::{self, Step};
 use crate::app::tasks::{ensure_remote_dir, join_path, parent_path};
 use crate::i18n::localize_error;
-use crate::state::{ResumeState, ToastKind, Transfer, TransferDirection, TransferStatus};
+use crate::state::{
+    FolderRuntime, ResumeState, ToastKind, Transfer, TransferDirection, TransferStatus,
+};
 use crate::t;
 use futures::{SinkExt, StreamExt};
 use log::{debug, warn};
@@ -81,8 +84,8 @@ use rterm_core::{CoreError, ErrorClass, Fingerprint, ResumeAt, SftpClient};
 use std::path::Path;
 use tokio::task::AbortHandle;
 
-/// 单标签队列的条目上限：文件夹上传会展开成「一文件一条」，十万文件的目录能瞬间产生十万条
-/// `Transfer` 并让面板每帧全量遍历。超限时拒绝并入并提示，不静默丢弃。
+/// 单标签队列的条目上限：一次多选几千个**独立文件**仍会产生几千行，超限时拒绝并入并提示，
+/// 不静默丢弃。文件夹不再参与这个计数——一棵树只占一行（见 `app::folder_job`）。
 const MAX_QUEUE: usize = 1000;
 
 /// 进度上报的最小时间间隔：同一帧内只有最后一个进度值有意义，故按时间节流。
@@ -191,6 +194,10 @@ struct Job {
     client: Option<Arc<SftpClient>>,
     /// 上一轮记录的源端指纹，本轮续传判定的基准（`None` = 无基准，从 0 开始）。
     prior_source: Option<Fingerprint>,
+    /// 文件夹作业的运行时（`None` = 单文件行）；带它即走作业执行体。
+    folder: Option<FolderRuntime>,
+    /// 本轮可用的自动重试次数（`pump` 每轮从 `Ctx` 注入，行上不缓存，见不变量 I1）。
+    retry_attempts: u32,
 }
 
 /// 由一条传输记录 + 其所属标签构造 [`Job`]。
@@ -203,6 +210,8 @@ fn job_from(tab_id: u64, t: &Transfer) -> Job {
         remote: t.remote.clone(),
         client: t.client.clone(),
         prior_source: t.resume.map(|r| r.source),
+        folder: t.folder.clone(),
+        retry_attempts: 0,
     }
 }
 
@@ -253,6 +262,13 @@ impl State {
                     }
                     // 远端相对路径保留目录层级（文件夹上传），再拼到当前远端目录下。
                     let remote = join_path(&ctx.remote_dir, &rel);
+                    // 目录源 = 一行文件夹作业（预游在 worker 里做）；普通文件仍是单文件行。
+                    let folder = std::fs::metadata(&local)
+                        .is_ok_and(|m| m.is_dir())
+                        .then(|| FolderRuntime {
+                            enumerating: true,
+                            ..Default::default()
+                        });
                     let tid = self.next_transfer_id();
                     let transfer = Transfer {
                         id: tid,
@@ -273,6 +289,7 @@ impl State {
                         // 判断它是不是这个文件的（`resume_offset` 会据此从 0 开始并顺手截断它）。
                         resume: None,
                         keep_staging: false,
+                        folder,
                     };
                     self.per_tab.entry(tab_id).or_default().push(transfer);
                 }
@@ -381,13 +398,18 @@ impl State {
                             }
                         }
                     }
+                    // 本轮已结束：在途表要么已被逐文件 Done 清空，要么已快照进上面的清理参数；
+                    // 留着会让下一轮把别处新建的同名暂存误删掉。
+                    if let Some(fr) = &mut t.folder {
+                        fr.inflight.clear();
+                    }
                 }
                 let mut tasks = vec![self.pump(ctx)];
                 // I5：同靶还有存活行时不删。刻意放在 `pump` **之后**判：那一步可能刚启动同靶排队项。
                 if let Some(job) = cleanup
                     && !self.target_busy(&job_target(&job), Some(job.tid))
                 {
-                    tasks.push(cleanup_partial(job));
+                    tasks.push(cleanup_task(job));
                 }
                 if let Some((delay, tid)) = retry {
                     tasks.push(retry_timer(delay, tid));
@@ -437,7 +459,7 @@ impl State {
                     t.partial = None;
                 }
                 match cleanup {
-                    Some(job) => cleanup_partial(job),
+                    Some(job) => cleanup_task(job),
                     None => Task::none(),
                 }
             }
@@ -476,7 +498,7 @@ impl State {
                 self.remove(id);
                 let mut tasks = vec![self.pump(ctx)];
                 if let Some(job) = cleanup {
-                    tasks.push(cleanup_partial(job));
+                    tasks.push(cleanup_task(job));
                 }
                 Task::batch(tasks)
             }
@@ -519,6 +541,62 @@ impl State {
                 }
                 Task::none()
             }
+            Message::FolderPlan {
+                tab_id,
+                tid,
+                files,
+                bytes,
+            } => {
+                self.with_folder(tab_id, tid, |fr, row| {
+                    fr.files_total = files;
+                    fr.enumerating = false;
+                    // 新一轮会重传全部未完成文件：上一轮的失败计数到此作废。
+                    fr.files_failed = 0;
+                    row.total = bytes;
+                });
+                Task::none()
+            }
+            Message::FolderFileStarted(tab_id, tid, rel, staged) => {
+                self.with_folder(tab_id, tid, |fr, _| {
+                    fr.inflight.insert(rel, staged);
+                });
+                Task::none()
+            }
+            Message::FolderFileResumed {
+                tab_id,
+                tid,
+                rel,
+                source,
+                offset,
+            } => {
+                self.with_folder(tab_id, tid, |fr, row| {
+                    fr.resumes.insert(rel, ResumeState { source, offset });
+                    // 断点即本轮真实起点：行读数校正，与单文件行的 `AttemptStarted` 同理。
+                    if offset > row.transferred {
+                        row.transferred = offset;
+                    }
+                });
+                Task::none()
+            }
+            Message::FolderFileDone {
+                tab_id,
+                tid,
+                rel,
+                ok,
+                size,
+            } => {
+                self.with_folder(tab_id, tid, |fr, _| {
+                    fr.inflight.remove(&rel);
+                    if ok {
+                        fr.files_done += 1;
+                        fr.done_bytes += size;
+                        fr.done_rels.insert(rel);
+                    } else {
+                        fr.files_failed += 1;
+                    }
+                });
+                Task::none()
+            }
             Message::ConcurrencyChanged => {
                 // 并发上限变更（设置界面拖动滑块）：只重新调度——调大即刻补位，
                 // 调小不打断在跑任务，只停止补位、待其完成后自然收敛。
@@ -549,7 +627,7 @@ impl State {
                     self.running.remove(&t.id);
                 }
                 let mut tasks = vec![self.pump(ctx)];
-                tasks.extend(cleanups.into_iter().map(cleanup_partial));
+                tasks.extend(cleanups.into_iter().map(cleanup_task));
                 Task::batch(tasks)
             }
             Message::OpenContainingFolder(local) => {
@@ -574,21 +652,16 @@ impl State {
             ctx.client_for(tab_id).is_some() || t.client.is_some()
         });
         let mut tasks = Vec::with_capacity(starts.len());
-        for s in starts {
-            if let Some(client) = ctx.client_for(s.tab_id).or(s.client) {
+        for mut s in starts {
+            // `take` 而非移动 `s.client`：整份 `Job` 随后还要交给 `run_transfer`。
+            if let Some(client) = ctx.client_for(s.tab_id).or(s.client.take()) {
                 // 回写进记录：收尾时的远端清理也走当前通道，而不是入队时那份可能已死的。
                 if let Some(t) = self.find_mut(s.tid) {
                     t.client = Some(client.clone());
                 }
-                tasks.push(run_transfer(
-                    s.tab_id,
-                    s.tid,
-                    s.direction,
-                    client,
-                    s.local,
-                    s.remote,
-                    s.prior_source,
-                ));
+                // 重试预算按**本轮**配置注入：滑块改动不能读到旧值（不变量 I1 同源纪律）。
+                s.retry_attempts = ctx.retry_attempts;
+                tasks.push(run_transfer(s, client));
             }
         }
         Task::batch(tasks)
@@ -716,6 +789,28 @@ impl State {
             .find(|t| t.id == tid)
     }
 
+    /// 文件夹作业事件落地：同时改行上的 [`FolderRuntime`] 与行本身；行已不存在或不是
+    /// 文件夹行时丢弃（迟到的事件不该写到被移除 / 被别的行复用的 id 上）。
+    fn with_folder(
+        &mut self,
+        tab_id: u64,
+        tid: u64,
+        f: impl FnOnce(&mut FolderRuntime, &mut Transfer),
+    ) {
+        if let Some(t) = self
+            .per_tab
+            .get_mut(&tab_id)
+            .and_then(|tab| tab.iter_mut().find(|t| t.id == tid))
+        {
+            // 把运行时短暂取下再传引用：`fr` 与 `t`  otherwise 是同一对象重叠的两份可变借用。
+            let mut holder = t.folder.take();
+            if let Some(fr) = &mut holder {
+                f(fr, t);
+            }
+            t.folder = holder;
+        }
+    }
+
     /// 该传输所属标签 id（跨标签查找；id 全局唯一，故可用于「非活动标签的行也要能操作」）。
     fn tab_of(&self, tid: u64) -> Option<u64> {
         self.per_tab
@@ -779,6 +874,7 @@ impl State {
             client: Some(client),
             resume: None,
             keep_staging: false,
+            folder: None,
         };
         self.per_tab.entry(tab_id).or_default().push(transfer);
         self.pump(ctx)
@@ -801,7 +897,7 @@ impl State {
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
     /// 上传本地文件 / 文件夹（携带标签 id + 上传项列表，每项为 `(本地路径, 远端相对路径)`；
-    /// 文件夹上传时远端相对路径保留目录层级，由本模块在执行时按需创建远端父目录）。
+    /// 目录源只出一个根条目（相对路径 = 目录名），树内层级由文件夹作业执行时还原）。
     Upload(u64, Vec<(PathBuf, String)>),
     /// 下载远端文件（携带标签 id + 远端名称 + 本地目标路径，已由 SFTP 侧拼为完整路径）。
     Download(u64, String, PathBuf),
@@ -834,6 +930,45 @@ pub enum Message {
     RetryDue(u64),
     /// 半成品文件清理结束（携带任务 id + 清理失败时留下的路径）。
     CleanupDone(u64, Option<String>),
+    /// 文件夹作业：预游完成（标签 id + 任务 id + 文件数 + 总字节），落到行的运行时。
+    FolderPlan {
+        /// 所属标签 id。
+        tab_id: u64,
+        /// 传输任务 id。
+        tid: u64,
+        /// 计划内文件总数。
+        files: usize,
+        /// 计划总字节（行进度分母）。
+        bytes: u64,
+    },
+    /// 文件夹作业：某文件开始写入（标签 id + 任务 id + `rel` + 暂存靶），记为在途供取消清理。
+    FolderFileStarted(u64, u64, String, String),
+    /// 文件夹作业：某文件的续传基准（源指纹 + 本轮起点），按 `rel` 记在行上。
+    FolderFileResumed {
+        /// 所属标签 id。
+        tab_id: u64,
+        /// 传输任务 id。
+        tid: u64,
+        /// 相对作业根的文件路径。
+        rel: String,
+        /// 本轮源端指纹（下一轮校验基准）。
+        source: Fingerprint,
+        /// 本轮起始偏移。
+        offset: u64,
+    },
+    /// 文件夹作业：某文件收尾（含改名结果），推进计数、成功集与在途表。
+    FolderFileDone {
+        /// 所属标签 id。
+        tab_id: u64,
+        /// 传输任务 id。
+        tid: u64,
+        /// 相对作业根的文件路径。
+        rel: String,
+        /// 是否成功。
+        ok: bool,
+        /// 该文件字节数（成功时累计进 `done_bytes`，重试轮的进度起点）。
+        size: u64,
+    },
     /// 从列表中移除某个已完成 / 失败的传输（携带任务 id）。
     RemoveTransfer(u64),
     /// 全局最大并发传输数发生变更：重新调度（调大即刻补位，调小不打断在跑任务）。
@@ -1147,20 +1282,547 @@ fn cleanup_partial(job: Job) -> Task<Event> {
     )
 }
 
-/// 运行单个传输任务（上传 / 下载），以 `Task::stream` 把进度与完成事件流回流模块。
+/// 文件夹行已知的暂存靶全集：本轮在途（Started 未 Done）+ 留过续传基准的历史 `.part`。
+/// 成功项除外——其暂存已改名消失；改名失败的文件（内容完整）没有逐文件标记，按同一口径
+/// 一并视为残留，这是行级粗粒度取舍。
+fn folder_staged_targets(
+    fr: &FolderRuntime,
+    direction: TransferDirection,
+    root_local: &Path,
+    root_remote: &str,
+) -> Vec<String> {
+    let mut targets: Vec<String> = fr.inflight.values().cloned().collect();
+    for rel in fr.resumes.keys() {
+        if fr.done_rels.contains(rel) || fr.inflight.contains_key(rel) {
+            continue;
+        }
+        targets.push(match direction {
+            TransferDirection::Upload => staging_remote(&join_path(root_remote, rel)),
+            TransferDirection::Download => {
+                staging_path(&root_local.join(rel)).display().to_string()
+            }
+        });
+    }
+    targets
+}
+
+/// 按行类型分派暂存清理：文件夹行删该作业全部已知暂存靶，单文件行删自己的 `.part`。
+fn cleanup_task(job: Job) -> Task<Event> {
+    let Some(fr) = &job.folder else {
+        return cleanup_partial(job);
+    };
+    let targets = folder_staged_targets(fr, job.direction, &job.local, &job.remote);
+    if targets.is_empty() {
+        return Task::none();
+    }
+    cleanup_folder_partials(job, targets)
+}
+
+/// 删除文件夹作业的已知暂存靶，逐个执行、失败仅记日志。
 ///
-/// 在独立 tokio 任务里调核心层，进度经 mpsc 回传、按真实 I/O 间隔估算速度；起步前先做
-/// 续传判定（见 [`resume_offset`]），结果经 [`Message::AttemptStarted`] 记回行上。
-/// 事件都包成 `Event::Emit(Box<Message>)` 由父层派发回 `State::update`，子模块不持有 `&mut App`。
-fn run_transfer(
-    tab_id: u64,
-    tid: u64,
+/// 残留无需报告用户：下一次同名传输都以 `Start` 截断重写，自我修复。
+fn cleanup_folder_partials(job: Job, staged: Vec<String>) -> Task<Event> {
+    let tid = job.tid;
+    Task::perform(
+        async move {
+            match job.direction {
+                TransferDirection::Upload => {
+                    if let Some(client) = &job.client {
+                        for path in staged {
+                            if let Err(e) = client.remove_file(&path).await {
+                                debug!("failed to remove folder partial remote file {path}: {e}");
+                            }
+                        }
+                    }
+                }
+                TransferDirection::Download => {
+                    for path in staged {
+                        let p = Path::new(&path);
+                        let is_file = tokio::fs::metadata(p)
+                            .await
+                            .map(|m| m.is_file())
+                            .unwrap_or(false);
+                        // 与单文件清理同判据：只删普通文件，绝不把同名目录交给 remove_file。
+                        if is_file && let Err(e) = tokio::fs::remove_file(p).await {
+                            debug!("failed to remove folder partial local file {path}: {e}");
+                        }
+                    }
+                }
+            }
+        },
+        move |()| Event::Emit(Box::new(Message::CleanupDone(tid, None))),
+    )
+}
+
+/// 文件夹作业内部的文件级并发数：行只占一个全局槽位，一棵树的吞吐由本值限流。
+const FOLDER_CONCURRENCY: usize = 4;
+
+/// 作业内部事件：执行体逐文件上报里程碑，外层聚合总进度并包装为 [`Event::Emit`]。
+enum JobEvent {
+    /// 预游完成（文件数 + 总字节，行进度分母）。
+    Plan { files: usize, bytes: u64 },
+    /// 某文件开始写入（携带暂存靶，记为在途供取消清理）。
+    Started { rel: String, staged: String },
+    /// 某文件累计已传字节（含续传前缀；核心层回调转报，外层聚合）。
+    Prog { rel: String, transferred: u64 },
+    /// 某文件的续传判定结果（本轮源指纹 + 起始偏移）。
+    Resumed {
+        rel: String,
+        source: Fingerprint,
+        offset: u64,
+    },
+    /// 某文件收尾（含改名结果与其字节数）。
+    Done { rel: String, ok: bool, size: u64 },
+}
+
+/// 运行一个文件夹作业（一行 = 一棵树），事件流与 [`run_transfer`] 同构：起步登记取消句柄，
+/// 聚合进度按单文件行同一套节流上报，终态必发 [`Message::TransferDone`]。
+fn run_folder_job(job: Job, client: Arc<SftpClient>) -> Task<Event> {
+    let Job {
+        tab_id,
+        tid,
+        direction,
+        local: root_local,
+        remote: root_remote,
+        folder,
+        retry_attempts,
+        ..
+    } = job;
+    // 防御分支：调用方判定过带运行时才会走到这里；万一落空也要给出终态，
+    // 让额度经 `TransferDone` 回收（不变量 I2），不能静默返回。
+    let Some(runtime) = folder else {
+        return Task::done(Event::Emit(Box::new(Message::TransferDone(
+            tab_id,
+            tid,
+            Err(Failure::cancelled(t!("app.canceled"))),
+        ))));
+    };
+    Task::stream(iced::stream::channel(
+        64,
+        move |mut output: futures::channel::mpsc::Sender<Event>| async move {
+            let (job_tx, mut job_rx) = futures::channel::mpsc::channel::<JobEvent>(256);
+            // 重试轮的行进度从上一轮已成功字节起步（`settled` 的初值），否则读数会掉回 0。
+            let seed = runtime.done_bytes;
+            let worker = {
+                let client = client.clone();
+                let root_local = root_local.clone();
+                let root_remote = root_remote.clone();
+                tokio::spawn(folder_job_body(
+                    direction,
+                    client,
+                    root_local,
+                    root_remote,
+                    runtime,
+                    retry_attempts,
+                    job_tx,
+                ))
+            };
+            let handle = worker.abort_handle();
+            let _ = output
+                .send(Event::Emit(Box::new(Message::TransferHandle(tid, handle))))
+                .await;
+
+            // 聚合读数 = 已完结文件的字节和 + 各在途文件的累计已传字节；节流与 EMA 同单文件行。
+            let mut settled = seed;
+            let mut inflight: HashMap<String, u64> = HashMap::new();
+            let mut total = 0u64;
+            let mut speed_ema = 0.0f64;
+            let mut last = Instant::now();
+            let mut last_bytes = settled;
+            let mut last_report = last;
+            let mut reported = settled;
+            let mut first = true;
+            while let Some(ev) = job_rx.next().await {
+                match ev {
+                    JobEvent::Plan { files, bytes } => {
+                        total = bytes;
+                        let _ = output
+                            .send(Event::Emit(Box::new(Message::FolderPlan {
+                                tab_id,
+                                tid,
+                                files,
+                                bytes,
+                            })))
+                            .await;
+                    }
+                    JobEvent::Started { rel, staged } => {
+                        let _ = output
+                            .send(Event::Emit(Box::new(Message::FolderFileStarted(
+                                tab_id, tid, rel, staged,
+                            ))))
+                            .await;
+                    }
+                    JobEvent::Resumed {
+                        rel,
+                        source,
+                        offset,
+                    } => {
+                        let _ = output
+                            .send(Event::Emit(Box::new(Message::FolderFileResumed {
+                                tab_id,
+                                tid,
+                                rel,
+                                source,
+                                offset,
+                            })))
+                            .await;
+                    }
+                    JobEvent::Prog { rel, transferred } => {
+                        inflight.insert(rel, transferred);
+                        let agg = settled.saturating_add(inflight.values().sum::<u64>());
+                        let now = Instant::now();
+                        let dt = now.saturating_duration_since(last).as_secs_f64();
+                        let inst = if dt > 1e-6 && agg >= last_bytes {
+                            (agg - last_bytes) as f64 / dt
+                        } else {
+                            speed_ema
+                        };
+                        speed_ema = speed_ema * 0.7 + inst * 0.3;
+                        last = now;
+                        last_bytes = agg;
+                        let due = first
+                            || (total > 0 && agg == total)
+                            || now.saturating_duration_since(last_report) >= REPORT_INTERVAL
+                            || agg.saturating_sub(reported) >= REPORT_BYTES;
+                        if due {
+                            first = false;
+                            last_report = now;
+                            reported = agg;
+                            let _ = output
+                                .send(Event::Emit(Box::new(Message::Progress(
+                                    tab_id, tid, agg, total, speed_ema,
+                                ))))
+                                .await;
+                        }
+                    }
+                    JobEvent::Done { rel, ok, size } => {
+                        inflight.remove(&rel);
+                        if ok {
+                            settled = settled.saturating_add(size);
+                        }
+                        let _ = output
+                            .send(Event::Emit(Box::new(Message::FolderFileDone {
+                                tab_id,
+                                tid,
+                                rel,
+                                ok,
+                                size,
+                            })))
+                            .await;
+                    }
+                }
+            }
+
+            // 与单文件行同一收尾纪律：abort / panic 一律归「取消」，`TransferDone` 必然发出。
+            let result = worker.await.unwrap_or_else(|e| {
+                warn!("folder job {tid} worker ended abnormally: {e}");
+                Err(Failure::cancelled(t!("app.canceled")))
+            });
+            if result.is_ok() && total > 0 {
+                let _ = output
+                    .send(Event::Emit(Box::new(Message::Progress(
+                        tab_id, tid, total, total, speed_ema,
+                    ))))
+                    .await;
+            }
+            let _ = output
+                .send(Event::Emit(Box::new(Message::TransferDone(
+                    tab_id, tid, result,
+                ))))
+                .await;
+        },
+    ))
+}
+
+/// 作业执行体：预游 → 串行建目录（含作业根）→ 文件级限流并发 → 汇总失败文件。
+///
+/// 文件级瞬时失败先吃作业内小额重试（与行级共用 [`backoff_delay`] 预算），烧穿才记为失败；
+/// 计划的 `rel` 保证父目录先于子项，行重试跳过 `done_rels` = 只补失败与未传项。
+async fn folder_job_body(
     direction: TransferDirection,
     client: Arc<SftpClient>,
-    local: PathBuf,
-    remote: String,
-    prior_source: Option<Fingerprint>,
-) -> Task<Event> {
+    root_local: PathBuf,
+    root_remote: String,
+    runtime: FolderRuntime,
+    retry_attempts: u32,
+    mut tx: futures::channel::mpsc::Sender<JobEvent>,
+) -> Result<(), Failure> {
+    let plan = match direction {
+        TransferDirection::Upload => folder_job::plan_local_tree(&root_local)
+            .map_err(|e| Failure::from_core(&CoreError::Io(e))),
+        TransferDirection::Download => folder_job::plan_remote_tree(&client, &root_remote)
+            .await
+            .map_err(|e| Failure::from_core(&e)),
+    }?;
+    let _ = tx.try_send(JobEvent::Plan {
+        files: plan.file_count,
+        bytes: plan.total_bytes,
+    });
+
+    // 作业根自身：计划只含根以下相对路径，根由这里单独确保（幂等创建，容错既有目录）。
+    match direction {
+        TransferDirection::Upload => ensure_remote_dir(&client, &root_remote)
+            .await
+            .map_err(|e| Failure::core_prefixed(t!("sftp.mkdir_failed"), &e)),
+        TransferDirection::Download => tokio::fs::create_dir_all(&root_local)
+            .await
+            .map_err(|e| Failure::core_prefixed(t!("sftp.mkdir_failed"), &CoreError::Io(e))),
+    }?;
+    for step in &plan.steps {
+        if let Step::CreateDir { rel } = step {
+            match direction {
+                TransferDirection::Upload => {
+                    let dir = join_path(&root_remote, rel);
+                    create_remote_dir(&client, &dir)
+                        .await
+                        .map_err(|e| Failure::core_prefixed(t!("sftp.mkdir_failed"), &e))?;
+                }
+                TransferDirection::Download => {
+                    tokio::fs::create_dir_all(root_local.join(rel))
+                        .await
+                        .map_err(|e| {
+                            Failure::core_prefixed(t!("sftp.mkdir_failed"), &CoreError::Io(e))
+                        })?;
+                }
+            }
+        }
+    }
+
+    let done = runtime.done_rels;
+    let resumes = Arc::new(runtime.resumes);
+    let pending: Vec<Step> = plan
+        .steps
+        .into_iter()
+        .filter(|step| {
+            !matches!(step, Step::CreateDir { .. }) && !done.contains(folder_job::step_rel(step))
+        })
+        .collect();
+    let results: Vec<(String, Result<u64, Failure>)> = futures::stream::iter(pending)
+        .map({
+            let base_tx = tx.clone();
+            let base_client = Arc::clone(&client);
+            let base_local = root_local.clone();
+            let base_remote = root_remote.clone();
+            move |step| {
+                let client = Arc::clone(&base_client);
+                let root_local = base_local.clone();
+                let root_remote = base_remote.clone();
+                let resumes = Arc::clone(&resumes);
+                let mut tx = base_tx.clone();
+                async move {
+                    let rel = folder_job::step_rel(&step).to_string();
+                    // 小额重试在文件内完成：退避后重进 `run_folder_file`，按已落盘的 `.part` 续位。
+                    let mut attempt = 0u32;
+                    let result = loop {
+                        let r = run_folder_file(
+                            &client,
+                            &root_local,
+                            &root_remote,
+                            step.clone(),
+                            &resumes,
+                            &mut tx,
+                        )
+                        .await;
+                        let waiting = match &r {
+                            Err(f) if f.kind.is_retryable() && attempt < retry_attempts => {
+                                Some(f.message.clone())
+                            }
+                            _ => None,
+                        };
+                        let Some(msg) = waiting else { break r };
+                        warn!("folder job file {rel} failed, in-job retry {attempt}: {msg}");
+                        tokio::time::sleep(backoff_delay(attempt)).await;
+                        attempt += 1;
+                    };
+                    let ok = result.is_ok();
+                    let size = result.as_ref().copied().unwrap_or(0);
+                    let _ = tx.try_send(JobEvent::Done {
+                        rel: rel.clone(),
+                        ok,
+                        size,
+                    });
+                    (rel, result)
+                }
+            }
+        })
+        .buffer_unordered(FOLDER_CONCURRENCY)
+        .collect()
+        .await;
+
+    let done_map: HashMap<String, bool> = results
+        .into_iter()
+        .map(|(rel, result)| (rel, result.is_ok()))
+        .collect();
+    let summary = folder_job::summarize(&done_map);
+    if summary.failed > 0 {
+        debug!(
+            "folder job under {root_remote} finished: {} ok, {} failed",
+            summary.ok, summary.failed
+        );
+        // 烧穿过小额重试的失败不再触发行级自动重试（行级 `WaitingRetry` 只留给整树前置失败）：
+        // 文案回答「多少没传成」而非指向某一个文件，逐文件原因留在日志，出路是手动重试补差集。
+        return Err(Failure {
+            kind: FailureKind::Permanent,
+            message: t!(
+                "transfer.folder_summary",
+                ok => summary.ok,
+                failed => summary.failed
+            ),
+            keep_staging: false,
+        });
+    }
+    Ok(())
+}
+
+/// 创建远端目录并容忍「已存在」：重试轮与上一轮的目录必然重合，存在即达成目的。
+async fn create_remote_dir(client: &SftpClient, dir: &str) -> Result<(), CoreError> {
+    match client.create_dir(dir).await {
+        Ok(()) => Ok(()),
+        Err(_) if client.list_dir(dir).await.is_ok() => Ok(()),
+        Err(first) => Err(first),
+    }
+}
+
+/// 执行作业内的单个文件：暂存 → 续传判定 → 分块传输 → 改名，与单文件行同一套规则。
+/// 步骤变体自带方向（Put=上传 / Get=下载），故无需再传 direction。
+async fn run_folder_file(
+    client: &SftpClient,
+    root_local: &Path,
+    root_remote: &str,
+    step: Step,
+    resumes: &HashMap<String, ResumeState>,
+    tx: &mut futures::channel::mpsc::Sender<JobEvent>,
+) -> Result<u64, Failure> {
+    match step {
+        Step::CreateDir { .. } => Ok(0),
+        Step::PutFile { local, rel, size } => {
+            let target = join_path(root_remote, &rel);
+            let staged = staging_remote(&target);
+            let _ = tx.try_send(JobEvent::Started {
+                rel: rel.clone(),
+                staged: staged.clone(),
+            });
+            let prior = resumes.get(&rel).map(|r| r.source);
+            let mut start = 0u64;
+            if let Ok(now) = local_fingerprint(&local).await {
+                let partial = client
+                    .remote_fingerprint(&staged)
+                    .await
+                    .map(|f| f.len)
+                    .unwrap_or(0);
+                start = resume_offset(prior, now, partial);
+                let _ = tx.try_send(JobEvent::Resumed {
+                    rel: rel.clone(),
+                    source: now,
+                    offset: start,
+                });
+            }
+            let resume = if start == 0 {
+                ResumeAt::Start
+            } else {
+                ResumeAt::Offset(start)
+            };
+            let rel_cb = rel.clone();
+            let cb = move |_name: &str, transferred: u64, _total: u64| {
+                let _ = tx.try_send(JobEvent::Prog {
+                    rel: rel_cb.clone(),
+                    transferred,
+                });
+            };
+            match client
+                .upload_with_progress(&local, &staged, resume, cb)
+                .await
+            {
+                Ok(()) => match finalize_upload(client, &staged, &target).await {
+                    Ok(()) => Ok(size),
+                    Err(e) => {
+                        warn!("folder job uploaded {target} but failed to rename {staged}: {e}");
+                        Err(Failure {
+                            kind: FailureKind::Permanent,
+                            message: t!("transfer.rename_failed_upload", path => staged),
+                            keep_staging: true,
+                        })
+                    }
+                },
+                Err(e) => Err(Failure::from_core(&e)),
+            }
+        }
+        Step::GetFile { remote, rel, size } => {
+            let target = root_local.join(&rel);
+            let staged = staging_path(&target);
+            let staged_str = staged.display().to_string();
+            let _ = tx.try_send(JobEvent::Started {
+                rel: rel.clone(),
+                staged: staged_str.clone(),
+            });
+            let prior = resumes.get(&rel).map(|r| r.source);
+            let mut start = 0u64;
+            if let Ok(now) = client.remote_fingerprint(&remote).await {
+                let partial = tokio::fs::metadata(&staged)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                start = resume_offset(prior, now, partial);
+                let _ = tx.try_send(JobEvent::Resumed {
+                    rel: rel.clone(),
+                    source: now,
+                    offset: start,
+                });
+            }
+            let resume = if start == 0 {
+                ResumeAt::Start
+            } else {
+                ResumeAt::Offset(start)
+            };
+            let rel_cb = rel.clone();
+            let cb = move |_name: &str, transferred: u64, _total: u64| {
+                let _ = tx.try_send(JobEvent::Prog {
+                    rel: rel_cb.clone(),
+                    transferred,
+                });
+            };
+            match client
+                .download_with_progress(&remote, &staged, resume, cb)
+                .await
+            {
+                Ok(()) => match finalize_download(&staged, &target).await {
+                    Ok(()) => Ok(size),
+                    Err(e) => {
+                        warn!(
+                            "folder job downloaded {remote} but failed to rename {}: {}",
+                            staged.display(),
+                            e
+                        );
+                        Err(Failure {
+                            kind: FailureKind::Permanent,
+                            message: t!("transfer.rename_failed", path => staged_str),
+                            keep_staging: true,
+                        })
+                    }
+                },
+                Err(e) => Err(Failure::from_core(&e)),
+            }
+        }
+    }
+}
+
+/// 运行单个传输任务（上传 / 下载），以 `Task::stream` 把进度与完成事件流回流模块。
+///
+/// `job.client` 弃而不用——权威客户端已由 `pump` 解析传入；带文件夹运行时的作业转
+/// [`run_folder_job`]。核心层调用跑在独立 tokio 任务里，起步前先做续传判定（[`resume_offset`]）。
+fn run_transfer(job: Job, client: Arc<SftpClient>) -> Task<Event> {
+    if job.folder.is_some() {
+        return run_folder_job(job, client);
+    }
+    let Job {
+        tab_id,
+        tid,
+        direction,
+        local,
+        remote,
+        prior_source,
+        ..
+    } = job;
     Task::stream(iced::stream::channel(
         64,
         move |mut output: futures::channel::mpsc::Sender<Event>| async move {
@@ -1472,6 +2134,7 @@ mod tests {
             client: None,
             resume: None,
             keep_staging: false,
+            folder: None,
         }
     }
 
@@ -2493,6 +3156,8 @@ mod tests {
             remote: "/remote/half.bin".to_string(),
             client: None,
             prior_source: None,
+            folder: None,
+            retry_attempts: 0,
         }));
 
         assert!(!staged.exists(), "暂存的半成品必须被删除");
@@ -2528,6 +3193,8 @@ mod tests {
                 remote: "/remote/x".to_string(),
                 client: None,
                 prior_source: None,
+                folder: None,
+                retry_attempts: 0,
             }));
         }
 
@@ -2551,6 +3218,8 @@ mod tests {
             remote: "/home/user/f.txt".to_string(),
             client: None,
             prior_source: None,
+            folder: None,
+            retry_attempts: 0,
         }));
 
         assert!(
@@ -3199,6 +3868,213 @@ mod tests {
                 Event::Toast(ToastKind::Error, msg) if msg.contains("/tmp/left.part")
             )),
             "行已消失时清理失败必须弹 toast 告知路径"
+        );
+    }
+
+    /// 文件夹作业事件的状态机：计划落地、逐文件成败、在途表、续传读数与迟到事件丢弃。
+    #[test]
+    fn folder_job_events_update_runtime_and_row() {
+        let mut s = State::new();
+        let mut t = make_transfer(1, TransferDirection::Upload);
+        t.status = TransferStatus::Active;
+        t.folder = Some(FolderRuntime {
+            enumerating: true,
+            ..Default::default()
+        });
+        s.per_tab.insert(7, vec![t]);
+        let ctx = no_client_ctx(7);
+
+        let _ = s.update(
+            Message::FolderPlan {
+                tab_id: 7,
+                tid: 1,
+                files: 3,
+                bytes: 100,
+            },
+            &ctx,
+        );
+        let row = s.find(1).unwrap();
+        assert!(!row.folder.as_ref().unwrap().enumerating);
+        assert_eq!(row.total, 100);
+
+        // 在途记录：Started 入表，Done 出表；成功项进 done_rels 并累计字节。
+        let _ = s.update(
+            Message::FolderFileStarted(7, 1, "a".to_string(), "/remote/a.part".to_string()),
+            &ctx,
+        );
+        assert!(
+            s.find(1)
+                .unwrap()
+                .folder
+                .as_ref()
+                .unwrap()
+                .inflight
+                .contains_key("a")
+        );
+        let _ = s.update(
+            Message::FolderFileDone {
+                tab_id: 7,
+                tid: 1,
+                rel: "a".to_string(),
+                ok: true,
+                size: 40,
+            },
+            &ctx,
+        );
+        {
+            let fr = s.find(1).unwrap().folder.as_ref().unwrap().clone();
+            assert!(fr.inflight.is_empty());
+            assert_eq!(fr.files_done, 1);
+            assert_eq!(fr.done_bytes, 40);
+            assert!(fr.done_rels.contains("a"));
+        }
+        // 失败文件计数但**不**进 done_rels——下一轮必须重传它。
+        let _ = s.update(
+            Message::FolderFileDone {
+                tab_id: 7,
+                tid: 1,
+                rel: "b".to_string(),
+                ok: false,
+                size: 10,
+            },
+            &ctx,
+        );
+        {
+            let fr = s.find(1).unwrap().folder.as_ref().unwrap();
+            assert_eq!(fr.files_failed, 1);
+            assert!(!fr.done_rels.contains("b"));
+        }
+        // 新一轮计划把本轮失败数清零（计数语义是「本轮」）。
+        let _ = s.update(
+            Message::FolderPlan {
+                tab_id: 7,
+                tid: 1,
+                files: 3,
+                bytes: 100,
+            },
+            &ctx,
+        );
+        assert_eq!(s.find(1).unwrap().folder.as_ref().unwrap().files_failed, 0);
+
+        // 续传偏移只抬高读数、不回退；同时把基准记到 rel 上。
+        s.find_mut(1).unwrap().transferred = 80;
+        let _ = s.update(
+            Message::FolderFileResumed {
+                tab_id: 7,
+                tid: 1,
+                rel: "c".to_string(),
+                source: Fingerprint {
+                    len: 50,
+                    modified: None,
+                },
+                offset: 30,
+            },
+            &ctx,
+        );
+        {
+            let row = s.find(1).unwrap();
+            assert_eq!(row.transferred, 80);
+            let fr = row.folder.as_ref().unwrap();
+            assert_eq!(fr.resumes.get("c").map(|r| r.offset), Some(30));
+        }
+        // 行已不存在时迟到的事件被丢弃，不得 panic。
+        let _ = s.update(
+            Message::FolderFileDone {
+                tab_id: 7,
+                tid: 99,
+                rel: "x".to_string(),
+                ok: true,
+                size: 1,
+            },
+            &ctx,
+        );
+    }
+
+    /// 文件夹行的清理靶全集：在途 + 续传基准里的历史 `.part`；成功项剔除、在途项去重。
+    #[test]
+    fn folder_staged_targets_covers_resumed_and_inflight() {
+        let fp = Fingerprint {
+            len: 1,
+            modified: None,
+        };
+        let mut fr = FolderRuntime::default();
+        fr.inflight
+            .insert("new.bin".to_string(), "/root/new.bin.part".to_string());
+        for rel in ["old.bin", "done.bin", "new.bin"] {
+            fr.resumes.insert(
+                rel.to_string(),
+                ResumeState {
+                    source: fp,
+                    offset: 1,
+                },
+            );
+        }
+        fr.done_rels.insert("done.bin".to_string());
+
+        let mut up = folder_staged_targets(
+            &fr,
+            TransferDirection::Upload,
+            Path::new("/local/root"),
+            "/root",
+        );
+        up.sort();
+        assert_eq!(
+            up,
+            vec![
+                "/root/new.bin.part".to_string(),
+                "/root/old.bin.part".to_string(),
+            ],
+            "成功项不产靶，在途项不得重复"
+        );
+
+        let down = folder_staged_targets(
+            &fr,
+            TransferDirection::Download,
+            Path::new("/local/root"),
+            "/root",
+        );
+        assert!(
+            down.iter().any(|p| p.ends_with("old.bin.part")),
+            "下载侧按本地暂存口径产出历史 `.part`"
+        );
+        assert!(
+            !down.iter().any(|p| p.contains("done.bin")),
+            "已改名成功的文件不得出现在清理集合里"
+        );
+    }
+
+    /// 取消文件夹作业：在途表快照进清理任务后清空行上的表，且清理走的是文件夹分支。
+    #[test]
+    fn cancelling_folder_job_routes_inflight_into_cleanup() {
+        let mut s = State::new();
+        let mut t = make_transfer(1, TransferDirection::Upload);
+        t.status = TransferStatus::Active;
+        let mut fr = FolderRuntime::default();
+        fr.inflight
+            .insert("a".to_string(), "/remote/a.part".to_string());
+        t.folder = Some(fr);
+        s.per_tab.insert(7, vec![t]);
+        s.running.insert(1);
+        let ctx = no_client_ctx(7);
+
+        let events = run_events(s.update(
+            Message::TransferDone(7, 1, Err(Failure::cancelled(t!("app.canceled")))),
+            &ctx,
+        ));
+
+        assert!(
+            s.find(1)
+                .unwrap()
+                .folder
+                .as_ref()
+                .unwrap()
+                .inflight
+                .is_empty(),
+            "本轮结束后在途表必须清空，否则下一轮误删新暂存"
+        );
+        assert!(
+            matches!(&events[..], [Event::Emit(m)] if matches!(**m, Message::CleanupDone(1, None))),
+            "文件夹行的清理应走逐项在途清理并以 CleanupDone 收尾"
         );
     }
 }

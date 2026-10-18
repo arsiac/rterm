@@ -8,7 +8,7 @@ use rterm_core::{
     BridgeState, ConnectionStatus, DisconnectReason, FileEntry, HostKeyPrompt, HostKeyReply,
     SftpClient, SshConnection,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -248,6 +248,29 @@ pub struct Transfer {
     /// 该行的暂存文件里是**完整数据**（内容已落全、只是改名失败），故任何清理路径都必须跳过它：
     /// 它不是半成品，而是用户唯一的一份数据。由 `Failure::keep_staging` 在最终失败时落到这里。
     pub keep_staging: bool,
+    /// 文件夹作业行的运行时状态（`None` = 普通单文件行），见 [`FolderRuntime`]。
+    pub folder: Option<FolderRuntime>,
+}
+
+/// 文件夹作业行（一行 = 一棵树）的运行时状态，执行体见 `app::transfer::run_folder_job`。
+#[derive(Debug, Clone, Default)]
+pub struct FolderRuntime {
+    /// 计划内文件总数（预游完成前为 `0`）。
+    pub files_total: usize,
+    /// 已成功文件数。
+    pub files_done: usize,
+    /// 已失败文件数。
+    pub files_failed: usize,
+    /// 是否仍在预游目录树（下载侧要问远端，耗时可见）。
+    pub enumerating: bool,
+    /// 每文件的续传基准（源指纹 + 上轮起点），键为相对作业根的 `rel`。
+    pub resumes: HashMap<String, ResumeState>,
+    /// 已成功文件的 `rel` 集：行重试时整文件跳过，只补失败与未传项。
+    pub done_rels: HashSet<String>,
+    /// 已成功文件的字节累计（跨轮累计，重试轮的行进度从它起步）。
+    pub done_bytes: u64,
+    /// 在途文件的暂存靶（`rel` → 暂存路径），取消时逐个清理。
+    pub inflight: HashMap<String, String>,
 }
 
 /// 一次传输的续传状态：下一轮尝试的校验基准。
