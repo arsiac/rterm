@@ -359,7 +359,7 @@ fn panel(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// 条目“右键”菜单内容：目录给「进入」、文件给「下载」，其余按功能用分割线分组——
+/// 条目“右键”菜单内容：目录给「进入 / 下载」，文件给「下载」，其余按功能用分割线分组——
 /// 主操作 / 上传 / 编辑 / 复制 / 信息。
 fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Message> {
     let mut actions: Vec<Element<'a, Message>> = Vec::new();
@@ -367,6 +367,10 @@ fn menu_actions<'a>(name: String, is_dir: bool, path: String) -> Element<'a, Mes
         actions.push(crate::ui::menu_entry(
             t!("sftp.enter"),
             crate::app::sftp::Message::SftpCd(crate::app::tasks::join_path(&path, &name)),
+        ));
+        actions.push(crate::ui::menu_entry(
+            t!("sftp.download"),
+            crate::app::sftp::Message::SftpPickDownloadFolder(name.clone()),
         ));
     } else {
         actions.push(crate::ui::menu_entry(

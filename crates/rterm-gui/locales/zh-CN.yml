@@ -294,6 +294,9 @@ sftp:
   overwrite_title: 覆盖确认
   overwrite_confirm: “%{name}” 已存在于目标目录，是否覆盖？
   overwrite: 覆盖
+  download_folder: 下载文件夹
+  download_folder_merge: “%{name}” 已存在于下载目标处，整棵目录树将合并写入，并覆盖其中的同名文件。
+  download_folder_blocked: 下载目标处已有同名文件（或链接）“%{name}”，会挡住建目录，请先重命名或删除。
   skip: 跳过
   conflict_title: 上传冲突
   conflict_hint: 发现 %{count} 个与远端同名的条目，请逐条选择处理方式；确认后加入上传队列。
@@ -358,6 +361,9 @@ transfer:
   eta: " · 剩 %{time}"
   queue_full: 传输队列已满，部分文件未入队。
   folder_summary: 文件夹传输结束：成功 %{ok} 个，失败 %{failed} 个。
+  enumerating: 扫描文件夹中…
+  folder_files: "%{done}/%{total} 个文件"
+  folder_failed: 失败 %{count} 个
 terminal:
   empty: 尚未打开终端。请在会话中“连接”，终端将自动打开。
   close_tab: 关闭标签

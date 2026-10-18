@@ -28,7 +28,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let dialog = view.dialog.as_ref()?;
     let content = match dialog {
         SftpDialog::Delete { name, is_dir } => delete_dialog(name, *is_dir),
-        SftpDialog::OverwriteDownload { name, .. } => overwrite_dialog(name),
+        SftpDialog::OverwriteDownload {
+            name, is_folder, ..
+        } => overwrite_dialog(name, *is_folder),
         SftpDialog::UploadConflicts { items, rows } => {
             upload_conflicts_dialog(items, rows, 1 + view.queued_conflicts.len())
         }
@@ -57,14 +59,23 @@ fn delete_dialog(name: &str, is_dir: bool) -> Element<'_, Message> {
     )
 }
 
-/// 下载覆盖确认弹窗：提示本地已存在同名文件，确认后将覆盖。
-fn overwrite_dialog(name: &str) -> Element<'_, Message> {
-    dialog_panel(
-        t!("sftp.overwrite_title"),
-        column![text(t!("sftp.overwrite_confirm", name => name)).size(14),],
-        t!("sftp.overwrite"),
-        true,
-    )
+/// 下载同名确认弹窗：文件问覆盖；目录问整树合并（框形同一套，只换措辞与按钮文案）。
+fn overwrite_dialog(name: &str, is_folder: bool) -> Element<'_, Message> {
+    if is_folder {
+        dialog_panel(
+            t!("sftp.download_folder"),
+            column![text(t!("sftp.download_folder_merge", name => name)).size(14),],
+            t!("sftp.download"),
+            true,
+        )
+    } else {
+        dialog_panel(
+            t!("sftp.overwrite_title"),
+            column![text(t!("sftp.overwrite_confirm", name => name)).size(14),],
+            t!("sftp.overwrite"),
+            true,
+        )
+    }
 }
 
 /// 上传冲突逐条决策弹窗：标题+批次徽标 / 副标题 / 应用到全部工具条 / 逐条目行卡片 / 页脚汇总。

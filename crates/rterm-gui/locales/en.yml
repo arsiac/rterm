@@ -294,6 +294,9 @@ sftp:
   overwrite_title: Overwrite confirmation
   overwrite_confirm: '"%{name}" already exists in the target folder. Overwrite?'
   overwrite: Overwrite
+  download_folder: Download folder
+  download_folder_merge: '"%{name}" already exists in the download target. The whole folder will be merged into it, overwriting files with the same names.'
+  download_folder_blocked: '"%{name}" is blocked by a same-named file (or link) in the download target. Rename or remove it first.'
   skip: Skip
   conflict_title: Upload conflicts
   conflict_hint: '%{count} item(s) conflict with names on the server. Choose what to do for each; kept items join the upload queue.'
@@ -358,6 +361,9 @@ transfer:
   eta: " · %{time} left"
   queue_full: Transfer queue is full; some files were not enqueued.
   folder_summary: "Folder transfer finished: %{ok} succeeded, %{failed} failed"
+  enumerating: Scanning folder…
+  folder_files: "%{done}/%{total} files"
+  folder_failed: "%{count} failed"
 terminal:
   empty: No terminal open yet. Connect in a session and the terminal opens automatically.
   close_tab: Close tab

@@ -163,6 +163,10 @@ pub enum Message {
     SftpPickDownload(String),
     /// 下载远端文件（携带远端名称与本地目标目录），经覆盖检查后上行给传输模块。
     SftpDownload(String, std::path::PathBuf),
+    /// 打开系统文件夹选择器以选择远端**目录**的下载落点（携带远端目录名）。
+    SftpPickDownloadFolder(String),
+    /// 下载远端目录（携带远端名称与所选本地落点），经首层同名判定后入队一行文件夹作业。
+    SftpDownloadFolder(String, std::path::PathBuf),
     /// SFTP 写操作完成（归属标签 id + 结果）。
     SftpActionDone(u64, Result<(), String>),
     /// 请求打开“删除确认”对话框（携带名称与是否为目录）。
@@ -218,6 +222,8 @@ pub enum Event {
     StartUpload(Vec<(std::path::PathBuf, String)>),
     /// 上行请求启动一个下载传输（携带远端名称与本地目标路径），由父层转发给传输模块。
     StartDownload(String, std::path::PathBuf),
+    /// 上行请求启动一个**目录**下载作业（携带远端名称与本地作业根完整路径）。
+    StartDownloadFolder(String, std::path::PathBuf),
     /// 请求父层把键盘焦点交还终端。
     ///
     /// 内联输入态（重命名 / 新建文件夹）退出后焦点已离开文件管理器；焦点态属父层，
@@ -553,10 +559,17 @@ impl State {
                             },
                         )
                     }
-                    // 下载覆盖确认：按对话框中记录的本地路径与远端名称上行给传输模块创建下载传输。
-                    SftpDialog::OverwriteDownload { name, local, .. } => {
-                        Task::done(Event::StartDownload(name, local))
-                    }
+                    // 下载覆盖确认：单文件行上行普通下载；目录行上行文件夹作业（同一框形，措辞见渲染侧）。
+                    SftpDialog::OverwriteDownload {
+                        name,
+                        local,
+                        is_folder,
+                        ..
+                    } => Task::done(if is_folder {
+                        Event::StartDownloadFolder(name, local)
+                    } else {
+                        Event::StartDownload(name, local)
+                    }),
                     // 上传冲突逐条决策：按各行策略展开成最终入队项；全部跳过则不入队。
                     // 处理完这批再弹出排队里的下一批。
                     SftpDialog::UploadConflicts { items, rows } => {
@@ -746,41 +759,17 @@ impl State {
                 }
                 Task::none()
             }
-            Message::SftpPickDownload(name) => {
-                // 起始目录取「上次选择的下载目录」，首次为系统下载目录（`~/Downloads`）。
-                // 不传 `set_directory` 时 rfd 用平台默认值（通常是家目录），与用户预期不符。
-                let start = self
-                    .per_tab
-                    .get(&active_tab)
-                    .map(|tab| tab.download_dir.clone())
-                    .filter(|d| !d.is_empty())
-                    .unwrap_or_else(|| {
-                        rterm_config::paths::download_dir()
-                            .to_string_lossy()
-                            .to_string()
-                    });
-                Task::perform(
-                    async move {
-                        rfd::AsyncFileDialog::new()
-                            .set_title(t!("sftp.download_title"))
-                            .set_directory(&start)
-                            .pick_folder()
-                            .await
-                            .map(|handle| handle.path().to_path_buf())
-                    },
-                    move |dir| match dir {
-                        Some(dir) => {
-                            Event::Emit(Box::new(Message::SftpDownload(name, dir.to_path_buf())))
-                        }
-                        None => Event::Emit(Box::new(Message::SftpNoop)),
-                    },
-                )
+            Message::SftpPickDownload(name) => self.pick_download_dir(active_tab, name, {
+                |name, dir| Message::SftpDownload(name, dir)
+            }),
+            Message::SftpPickDownloadFolder(name) => {
+                self.pick_download_dir(active_tab, name, |name, dir| {
+                    Message::SftpDownloadFolder(name, dir)
+                })
             }
             Message::SftpDownload(name, dir) => {
                 // 记住本次选定的目录，作为下次选择器的起始位置（字段语义见 `SftpView::download_dir`）。
-                if let Some(tab) = self.per_tab.get_mut(&active_tab) {
-                    tab.download_dir = dir.to_string_lossy().to_string();
-                }
+                self.remember_download_dir(active_tab, &dir);
                 let local = dir.join(&name);
                 // 本地已存在同名文件：先弹覆盖确认框，确认后再上行给传输模块创建下载传输。
                 if local.exists() {
@@ -789,11 +778,38 @@ impl State {
                             name: name.clone(),
                             local: local.clone(),
                             transfer_id: 0,
+                            is_folder: false,
                         });
                     }
                     Task::none()
                 } else {
                     Task::done(Event::StartDownload(name, local))
+                }
+            }
+            Message::SftpDownloadFolder(name, dir) => {
+                self.remember_download_dir(active_tab, &dir);
+                let local = dir.join(&name);
+                // 首层判定只问落点根：同名真目录合并一次确认后整树覆盖其中同名文件，
+                // 子树逐文件不再问——与上传侧首层三档决策对称。
+                match classify_folder_download_target(&local) {
+                    FolderDownloadTarget::Free => {
+                        Task::done(Event::StartDownloadFolder(name, local))
+                    }
+                    FolderDownloadTarget::Merge => {
+                        if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+                            tab.dialog = Some(SftpDialog::OverwriteDownload {
+                                name,
+                                local,
+                                transfer_id: 0,
+                                is_folder: true,
+                            });
+                        }
+                        Task::none()
+                    }
+                    FolderDownloadTarget::Blocked => Task::done(Event::Toast(
+                        ToastKind::Error,
+                        t!("sftp.download_folder_blocked", name => name),
+                    )),
                 }
             }
             Message::SftpActionDone(tab_id, _result) => {
@@ -802,6 +818,49 @@ impl State {
                 }
                 Task::none()
             }
+        }
+    }
+
+    /// 下载选择器公共骨架：从上次记住的落点打开目录选择器，结果经 `on_picked` 回发自回路。
+    ///
+    /// 起始目录取「上次选择的下载目录」，首次为系统下载目录（`~/Downloads`）——不传
+    /// `set_directory` 时 rfd 用平台默认值（通常是家目录），与用户预期不符。
+    fn pick_download_dir(
+        &self,
+        active_tab: u64,
+        name: String,
+        on_picked: fn(String, std::path::PathBuf) -> Message,
+    ) -> Task<Event> {
+        let start = self
+            .per_tab
+            .get(&active_tab)
+            .map(|tab| tab.download_dir.clone())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| {
+                rterm_config::paths::download_dir()
+                    .to_string_lossy()
+                    .to_string()
+            });
+        Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_title(t!("sftp.download_title"))
+                    .set_directory(&start)
+                    .pick_folder()
+                    .await
+                    .map(|handle| handle.path().to_path_buf())
+            },
+            move |dir| match dir {
+                Some(dir) => Event::Emit(Box::new(on_picked(name, dir))),
+                None => Event::Emit(Box::new(Message::SftpNoop)),
+            },
+        )
+    }
+
+    /// 记住本次选定的本地落点，作为下次下载选择器的起始位置（字段语义见 `SftpView::download_dir`）。
+    fn remember_download_dir(&mut self, active_tab: u64, dir: &std::path::Path) {
+        if let Some(tab) = self.per_tab.get_mut(&active_tab) {
+            tab.download_dir = dir.to_string_lossy().to_string();
         }
     }
 
@@ -831,9 +890,62 @@ fn list_task(tab_id: u64, client: Arc<SftpClient>, path: String) -> Task<Event> 
     )
 }
 
+/// 目录下载的首层同名判定结果（只看落点根自身，不游子树）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FolderDownloadTarget {
+    /// 落点无同名条目：直接入队作业。
+    Free,
+    /// 同名**真目录**：整树合并写一次确认，确认即覆盖其中同名文件。
+    Merge,
+    /// 同名文件或符号链接：挡住建目录，拒绝并提示用户先处理。
+    Blocked,
+}
+
+/// 判据用 `symlink_metadata`（不跟随链接）：指向目录的符号链接同样算 `Blocked`——
+/// 写穿它会把数据落到用户所选落点之外，不能代为合并。
+pub(crate) fn classify_folder_download_target(local: &std::path::Path) -> FolderDownloadTarget {
+    match std::fs::symlink_metadata(local) {
+        Err(_) => FolderDownloadTarget::Free,
+        Ok(meta) if meta.is_dir() => FolderDownloadTarget::Merge,
+        Ok(_) => FolderDownloadTarget::Blocked,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 目录下载首层判定三态：不存在 = Free；真目录 = Merge；普通文件与符号链接都是 Blocked。
+    #[test]
+    fn classify_folder_download_target_three_states() {
+        let base = std::env::temp_dir().join(format!("rterm_fdl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        assert_eq!(
+            classify_folder_download_target(&base.join("none")),
+            FolderDownloadTarget::Free
+        );
+        std::fs::create_dir(base.join("realdir")).unwrap();
+        assert_eq!(
+            classify_folder_download_target(&base.join("realdir")),
+            FolderDownloadTarget::Merge
+        );
+        std::fs::write(base.join("file"), b"x").unwrap();
+        assert_eq!(
+            classify_folder_download_target(&base.join("file")),
+            FolderDownloadTarget::Blocked
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("realdir"), base.join("link")).unwrap();
+            assert_eq!(
+                classify_folder_download_target(&base.join("link")),
+                FolderDownloadTarget::Blocked,
+                "链接指向目录也不放行：写穿链接会逃出用户选的落点"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// 删除确认弹窗必须采用菜单快照携带的条目类型：装配处曾把它硬编码为 `false`，
     /// 使目录删除永远发到 `remove_file` 上、必然失败。

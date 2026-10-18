@@ -406,6 +406,8 @@ fn detail_line(t: &Transfer, retry_limit: u32) -> String {
             attempt => t.attempts,
             max => retry_limit
         ),
+        // 文件夹作业游树未完：既无字节也无分母，报「扫描中」而不是空读数的进度。
+        TransferStatus::Active if is_folder_enumerating(t) => t!("transfer.enumerating"),
         // 传输中 / 已完成：正常态不挂重试计数（手动重试会把 `attempts` 归零，故失败再出现时是新数）。
         _ => progress_line(t),
     }
@@ -456,9 +458,44 @@ fn progress_line(t: &Transfer) -> String {
     if s.is_empty() && t.status == TransferStatus::Active {
         s.push_str(&t!("transfer.transferring"));
     }
+    // 文件夹行在字节之后补文件计数段：一行 = 一棵树时，「传到第几个」比字节数更好读。
+    let folder = folder_detail(t);
+    if !folder.is_empty() {
+        if !s.is_empty() {
+            s.push_str(" · ");
+        }
+        s.push_str(&folder);
+    }
     s.push_str(&speed);
     s.push_str(&eta);
     s
+}
+
+/// 文件夹行的文件计数段：「done/total 个文件」，有失败再缀「· 失败 n」。单文件行为空串。
+fn folder_detail(t: &Transfer) -> String {
+    let Some(fr) = &t.folder else {
+        return String::new();
+    };
+    if fr.files_total == 0 {
+        return String::new();
+    }
+    let mut s = t!(
+        "transfer.folder_files",
+        done => fr.files_done,
+        total => fr.files_total
+    );
+    if fr.files_failed > 0 {
+        s.push_str(&format!(
+            " · {}",
+            t!("transfer.folder_failed", count => fr.files_failed)
+        ));
+    }
+    s
+}
+
+/// 该文件夹行的预游是否仍未完成（游完前没有可靠的字节分母，详情报状态词而非进度）。
+fn is_folder_enumerating(t: &Transfer) -> bool {
+    t.folder.as_ref().is_some_and(|fr| fr.enumerating)
 }
 
 /// 矮进度条（高度固定 5px）。
@@ -555,7 +592,7 @@ fn format_eta(sec: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ResumeState, Transfer, TransferDirection};
+    use crate::state::{FolderRuntime, ResumeState, Transfer, TransferDirection};
     use rterm_core::Fingerprint;
     use std::path::PathBuf;
     use std::time::Instant;
@@ -812,5 +849,48 @@ mod tests {
         from_zero.attempts = 1;
         assert!(is_retrying_without_data(&from_zero));
         assert_eq!(tone_of(&from_zero), Tone::Retry);
+    }
+
+    /// 文件夹行详情：游完前只报「扫描中」；游完后补文件计数段，有失败再缀失败数。
+    #[test]
+    fn folder_rows_show_scan_state_then_file_counts() {
+        // 单文件行永远没有计数段。
+        let plain = transfer(TransferStatus::Active, 1000, 4000);
+        assert!(folder_detail(&plain).is_empty());
+
+        let mut row = transfer(TransferStatus::Active, 0, 0);
+        row.folder = Some(FolderRuntime {
+            enumerating: true,
+            ..Default::default()
+        });
+        assert!(is_folder_enumerating(&row));
+        assert_eq!(detail_line(&row, 2), t!("transfer.enumerating"));
+        assert!(folder_detail(&row).is_empty(), "游完前没有分母，不挂计数段");
+
+        row.folder = Some(FolderRuntime {
+            files_total: 4,
+            files_done: 2,
+            ..Default::default()
+        });
+        assert_eq!(
+            folder_detail(&row),
+            t!("transfer.folder_files", done => 2usize, total => 4usize),
+            "计数段应给出 done/total"
+        );
+        assert!(
+            !detail_line(&row, 2).contains(&t!("transfer.enumerating")),
+            "游完后不再显示扫描中"
+        );
+
+        row.folder = Some(FolderRuntime {
+            files_total: 4,
+            files_done: 2,
+            files_failed: 1,
+            ..Default::default()
+        });
+        assert!(
+            folder_detail(&row).contains(&t!("transfer.folder_failed", count => 1usize)),
+            "失败数应缀在计数之后"
+        );
     }
 }

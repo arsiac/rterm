@@ -260,7 +260,7 @@ impl State {
                     if name.is_empty() {
                         continue;
                     }
-                    // 远端相对路径保留目录层级（文件夹上传），再拼到当前远端目录下。
+                    // 远端绝对路径 = 当前远端目录拼相对路径；行名取本地条目名。
                     let remote = join_path(&ctx.remote_dir, &rel);
                     // 目录源 = 一行文件夹作业（预游在 worker 里做）；普通文件仍是单文件行。
                     let folder = std::fs::metadata(&local)
@@ -309,7 +309,19 @@ impl State {
                 let remote = join_path(&ctx.remote_dir, &name);
                 // `local` 已是完整本地目标路径（SFTP 模块在唤起下载时已 `dir.join(name)` 拼好），
                 // 此处不可再拼接一次，否则目标会变成 `…/name/name` 导致写入失败。
-                self.enqueue_download(tab_id, &name, remote, local, client, ctx)
+                self.enqueue_download(tab_id, remote, local, client, None, ctx)
+            }
+            Message::DownloadFolder(tab_id, name, local) => {
+                let Some(client) = ctx.client.clone() else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
+                };
+                // 与单文件下载同约定：`local` 已是本地作业根（`所选目录 / 名`），远端按当前目录拼绝对路径。
+                let remote = join_path(&ctx.remote_dir, &name);
+                let runtime = FolderRuntime {
+                    enumerating: true,
+                    ..Default::default()
+                };
+                self.enqueue_download(tab_id, remote, local, client, Some(runtime), ctx)
             }
             Message::Progress(tab_id, tid, transferred, total, speed) => {
                 if let Some(tab) = self.per_tab.get_mut(&tab_id)
@@ -840,13 +852,15 @@ impl State {
     }
 
     /// 入队一个下载传输并启动调度（本地已存在同名由调用方先弹覆盖框，此处直接写入）。
+    ///
+    /// 行名取 `remote` 的末段；`folder` 带运行时即为一棵树的作业行（目录下载），`None` 为单文件行。
     fn enqueue_download(
         &mut self,
         tab_id: u64,
-        remote_name: &str,
         remote: String,
         local: PathBuf,
         client: Arc<SftpClient>,
+        folder: Option<FolderRuntime>,
         ctx: &Ctx,
     ) -> Task<Event> {
         if !self.has_queue_capacity(tab_id) {
@@ -855,7 +869,12 @@ impl State {
                 Task::done(Event::Toast(ToastKind::Error, t!("transfer.queue_full"))),
             ]);
         }
-        let name = remote_name.to_string();
+        let name = remote
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&remote)
+            .to_string();
         let tid = self.next_transfer_id();
         let transfer = Transfer {
             id: tid,
@@ -864,6 +883,7 @@ impl State {
             local,
             remote,
             transferred: 0,
+            // 目录行游完前总量未知；单文件行由首个进度回调补上。
             total: 0,
             status: TransferStatus::Queued,
             attempts: 0,
@@ -874,7 +894,7 @@ impl State {
             client: Some(client),
             resume: None,
             keep_staging: false,
-            folder: None,
+            folder,
         };
         self.per_tab.entry(tab_id).or_default().push(transfer);
         self.pump(ctx)
@@ -901,6 +921,10 @@ pub enum Message {
     Upload(u64, Vec<(PathBuf, String)>),
     /// 下载远端文件（携带标签 id + 远端名称 + 本地目标路径，已由 SFTP 侧拼为完整路径）。
     Download(u64, String, PathBuf),
+    /// 下载远端**目录**（携带标签 id + 远端名称 + 本地作业根完整路径 = 所选目录 / 名）。
+    ///
+    /// 一行 = 一棵树：入队即带「枚举中」运行时，远端游树由作业执行体在 worker 里完成。
+    DownloadFolder(u64, String, PathBuf),
     /// 传输进度（携带标签 id + 传输任务 id + 已传字节 + 总字节 + 瞬时速度字节/秒）。
     Progress(u64, u64, u64, u64, f64),
     /// 本轮尝试的元信息（标签 id + 任务 id + 源端指纹 + 起始偏移），由 worker 在拉起核心层
@@ -2199,6 +2223,22 @@ mod tests {
         assert_eq!(events.len(), 1, "缺少客户端应只产出一个错误 toast");
         assert!(matches!(events[0], Event::Toast(ToastKind::Error, _)));
         assert!(s.all_transfers().is_empty(), "无客户端不应入队任何传输");
+    }
+
+    /// 目录下载与单文件下载共用同一条通道前置判定：无客户端时拒绝入队并弹 toast。
+    #[test]
+    fn download_folder_without_client_emits_error_toast_and_enqueues_nothing() {
+        let mut s = State::new();
+        let events = run_events(s.update(
+            Message::DownloadFolder(7, "docs".to_string(), PathBuf::from("/tmp/dl/docs")),
+            &no_client_ctx(7),
+        ));
+        assert_eq!(events.len(), 1, "缺少客户端应只产出一个错误 toast");
+        assert!(matches!(events[0], Event::Toast(ToastKind::Error, _)));
+        assert!(
+            s.all_transfers().is_empty(),
+            "无客户端不应入队任何目录作业行"
+        );
     }
 
     #[test]

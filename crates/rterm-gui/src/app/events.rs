@@ -206,6 +206,13 @@ pub(crate) fn apply_sftp_event(app: &mut App, e: sftp::Event) -> Task<Message> {
                 .update(transfer::Message::Download(tab_id, name, local), &ctx)
                 .map(Message::TransferEvent)
         }
+        sftp::Event::StartDownloadFolder(name, local) => {
+            let tab_id = app.tabs.active().unwrap_or(0);
+            let ctx = contexts::transfer_ctx(app);
+            app.transfer
+                .update(transfer::Message::DownloadFolder(tab_id, name, local), &ctx)
+                .map(Message::TransferEvent)
+        }
         // 自回路：把内部消息派发回 SFTP 模块自身，形成「写操作完成 → 重新列举」等闭环。
         sftp::Event::Emit(m) => app
             .sftp

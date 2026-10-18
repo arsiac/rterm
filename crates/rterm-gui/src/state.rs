@@ -107,6 +107,8 @@ pub enum SftpDialog {
         local: std::path::PathBuf,
         /// 对应的传输任务 id（确认后继续 / 跳过）。
         transfer_id: u64,
+        /// 目录下载的整树合并确认（换措辞，确认后走文件夹作业入队而非单文件下载）。
+        is_folder: bool,
     },
     /// 上传冲突逐条决策（携带待入队的上传项与按首层同名生成的决策行）。
     UploadConflicts {
