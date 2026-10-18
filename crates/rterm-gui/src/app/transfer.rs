@@ -1450,10 +1450,8 @@ fn run_folder_job(job: Job, client: Arc<SftpClient>) -> Task<Event> {
             let mut settled = seed;
             let mut inflight: HashMap<String, u64> = HashMap::new();
             let mut total = 0u64;
-            let mut speed_ema = 0.0f64;
-            let mut last = Instant::now();
-            let mut last_bytes = settled;
-            let mut last_report = last;
+            let mut est = SpeedEstimator::new();
+            let mut last_report = Instant::now();
             let mut reported = settled;
             let mut first = true;
             while let Some(ev) = job_rx.next().await {
@@ -1495,15 +1493,7 @@ fn run_folder_job(job: Job, client: Arc<SftpClient>) -> Task<Event> {
                         inflight.insert(rel, transferred);
                         let agg = settled.saturating_add(inflight.values().sum::<u64>());
                         let now = Instant::now();
-                        let dt = now.saturating_duration_since(last).as_secs_f64();
-                        let inst = if dt > 1e-6 && agg >= last_bytes {
-                            (agg - last_bytes) as f64 / dt
-                        } else {
-                            speed_ema
-                        };
-                        speed_ema = speed_ema * 0.7 + inst * 0.3;
-                        last = now;
-                        last_bytes = agg;
+                        let speed = est.observe(agg, now);
                         let due = first
                             || (total > 0 && agg == total)
                             || now.saturating_duration_since(last_report) >= REPORT_INTERVAL
@@ -1514,7 +1504,7 @@ fn run_folder_job(job: Job, client: Arc<SftpClient>) -> Task<Event> {
                             reported = agg;
                             let _ = output
                                 .send(Event::Emit(Box::new(Message::Progress(
-                                    tab_id, tid, agg, total, speed_ema,
+                                    tab_id, tid, agg, total, speed,
                                 ))))
                                 .await;
                         }
@@ -1545,7 +1535,7 @@ fn run_folder_job(job: Job, client: Arc<SftpClient>) -> Task<Event> {
             if result.is_ok() && total > 0 {
                 let _ = output
                     .send(Event::Emit(Box::new(Message::Progress(
-                        tab_id, tid, total, total, speed_ema,
+                        tab_id, tid, total, total, est.ema,
                     ))))
                     .await;
             }
@@ -1830,6 +1820,63 @@ async fn run_folder_file(
     }
 }
 
+/// 速率采样窗：不足一窗的回调只累计、不产速率。逐回调的瞬时值两头都不可信——写请求被
+/// 客户端流水线吞下时 Δt 是微秒级，停摆恢复时 Δ 字节是积压量；满窗平均把两者都摊回真实吞吐。
+const SPEED_WINDOW: Duration = Duration::from_secs(1);
+
+/// 平均速率估计：每个满 [`SPEED_WINDOW`] 的回调给出窗口平均，经 EMA（α=0.3）平滑。
+///
+/// 首样本只立基线：续传轮首个回调携带的是上一轮的已传前缀，折进速率会顶出 GB/s 级荒谬值。
+/// 首个满窗样本直接采信（冷启动不必从 0 爬），其后平滑；字节回退（文件夹失败出账）
+/// 只重置窗口不产负速率。
+struct SpeedEstimator {
+    /// 当前窗口的起点时刻。
+    anchor: Instant,
+    /// 当前窗口起点的累计字节。
+    anchor_bytes: u64,
+    /// 平滑后的速率（字节/秒）；采信首窗前恒为 0。
+    ema: f64,
+    /// 是否已立基线。
+    primed: bool,
+}
+
+impl SpeedEstimator {
+    /// 建表即起表：基线由首个 `observe` 样本确立。
+    fn new() -> Self {
+        Self {
+            anchor: Instant::now(),
+            anchor_bytes: 0,
+            ema: 0.0,
+            primed: false,
+        }
+    }
+
+    /// 观察一个累计字节样本；满窗时推进一个窗口平均，否则原样返回当前平滑值。
+    fn observe(&mut self, transferred: u64, now: Instant) -> f64 {
+        if !self.primed {
+            self.primed = true;
+            self.anchor = now;
+            self.anchor_bytes = transferred;
+            return 0.0;
+        }
+        let dt = now.saturating_duration_since(self.anchor).as_secs_f64();
+        if dt < SPEED_WINDOW.as_secs_f64() {
+            return self.ema;
+        }
+        if transferred >= self.anchor_bytes {
+            let inst = (transferred - self.anchor_bytes) as f64 / dt;
+            self.ema = if self.ema > 0.0 {
+                self.ema * 0.7 + inst * 0.3
+            } else {
+                inst
+            };
+        }
+        self.anchor = now;
+        self.anchor_bytes = transferred;
+        self.ema
+    }
+}
+
 /// 运行单个传输任务（上传 / 下载），以 `Task::stream` 把进度与完成事件流回流模块。
 ///
 /// `job.client` 弃而不用——权威客户端已由 `pump` 解析传入；带文件夹运行时的作业转
@@ -1859,25 +1906,15 @@ fn run_transfer(job: Job, client: Arc<SftpClient>) -> Task<Event> {
             // 下方转发循环必然退出——若发送端滞留在外层作用域，通道永不关闭，`TransferDone` 就
             // 永远发不出，前序传输卡在 Active 并冻住其后所有排队项。
             //
-            // EMA 每次回调都更新，但只在满足节流条件时才跨线程上报（核心层每 64 KiB 回调一次，
-            // 绝大多数是同一帧内被覆盖的中间值）。终值必须放行，否则进度条停在 99%。
-            let mut last = Instant::now();
-            let mut last_bytes = 0u64;
-            let mut speed_ema = 0.0f64;
-            let mut last_report = last;
+            // 平滑见 `SpeedEstimator`；只在满足节流条件时才跨线程上报（核心层每 64 KiB 回调
+            // 一次，绝大多数是同一帧内被覆盖的中间值）。终值必须放行，否则进度条停在 99%。
+            let mut est = SpeedEstimator::new();
+            let mut last_report = Instant::now();
             let mut reported_bytes = 0u64;
             let mut first = true;
             let cb = move |_name: &str, transferred: u64, total: u64| {
                 let now = Instant::now();
-                let dt = now.saturating_duration_since(last).as_secs_f64();
-                let inst = if dt > 1e-6 {
-                    (transferred.saturating_sub(last_bytes)) as f64 / dt
-                } else {
-                    speed_ema
-                };
-                speed_ema = speed_ema * 0.7 + inst * 0.3;
-                last = now;
-                last_bytes = transferred;
+                let speed = est.observe(transferred, now);
 
                 let due = first
                     || transferred == total
@@ -1889,7 +1926,7 @@ fn run_transfer(job: Job, client: Arc<SftpClient>) -> Task<Event> {
                 first = false;
                 last_report = now;
                 reported_bytes = transferred;
-                let _ = prog_tx.try_send((transferred, total, speed_ema));
+                let _ = prog_tx.try_send((transferred, total, speed));
             };
 
             // 在独立 tokio 任务里跑真实上传 / 下载。
@@ -4115,6 +4152,66 @@ mod tests {
         assert!(
             matches!(&events[..], [Event::Emit(m)] if matches!(**m, Message::CleanupDone(1, None))),
             "文件夹行的清理应走逐项在途清理并以 CleanupDone 收尾"
+        );
+    }
+
+    /// 窗口平均：不满窗的流水线突发不产速率；满窗把积压摊回真实吞吐；稳态读数不漂移。
+    #[test]
+    fn speed_estimator_reports_windowed_average() {
+        let t0 = Instant::now();
+        let mut est = SpeedEstimator::new();
+        let mib = 1024u64 * 1024;
+        assert_eq!(est.observe(0, t0), 0.0, "首样本只立基线");
+        // 写请求被流水线吞下：100 KiB 挤在 0.1 s（瞬时约 1 GB/s）——不满窗不得带偏读数。
+        assert_eq!(
+            est.observe(100 * 1024, t0 + Duration::from_millis(100)),
+            0.0
+        );
+        // 满 1 s 的窗口平均：积压量摊满整窗 = 1 MiB/s，首窗直接采信。
+        let first = est.observe(mib, t0 + Duration::from_secs(1));
+        assert!(
+            (first - mib as f64).abs() < 1.0,
+            "首窗应给出窗口平均，实测 {first}"
+        );
+        for i in 2..=6u64 {
+            est.observe(i * mib, t0 + Duration::from_secs(i));
+        }
+        assert!(
+            est.ema > 0.5 * mib as f64 && est.ema < 1.5 * mib as f64,
+            "稳态读数漂移过大：{}",
+            est.ema
+        );
+        // 停摆边界：一次回调积压满 5 s 的量、于 t=11 s 报告——窗口平均无 GB/s 尖峰。
+        let stalled = est.observe(11 * mib, t0 + Duration::from_secs(11));
+        assert!(
+            stalled < 2.0 * mib as f64,
+            "停摆恢复不得尖峰，实测 {stalled}"
+        );
+    }
+
+    /// 续传前缀只立基线、不进速率；字节回退只重置窗口，之后增量从新锚点算。
+    #[test]
+    fn speed_estimator_baseline_and_negative_sample() {
+        let t0 = Instant::now();
+        let mut est = SpeedEstimator::new();
+        let resumed = 300u64 * 1024 * 1024;
+        assert_eq!(
+            est.observe(resumed, t0 + Duration::from_millis(200)),
+            0.0,
+            "续传前缀不得折成起步速率"
+        );
+        let low = est.observe(resumed + 1024, t0 + Duration::from_millis(1200));
+        assert!(
+            low < 1024.0 * 1.01,
+            "首窗只该计入窗口内的 1 KiB，实测 {low}"
+        );
+        let before = est.ema;
+        let after = est.observe(resumed - 1024 * 1024, t0 + Duration::from_millis(2300));
+        assert_eq!(after, before, "负增量应被跳过而非拉平");
+        let rebound = est.observe(resumed + 2048, t0 + Duration::from_millis(3400));
+        assert!(
+            rebound > 0.0 && rebound < 1.5 * 1024.0 * 1024.0,
+            "出账字节不得被记回后续增量，实测 {rebound}"
         );
     }
 }
