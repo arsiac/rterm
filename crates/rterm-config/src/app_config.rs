@@ -391,12 +391,18 @@ pub struct FilesConfig {
     /// 「本地编辑」用的编辑器命令：按空白符拆成程序+参数、副本路径追加为末参；空 = 系统默认程序。
     #[serde(default)]
     pub editor: Option<String>,
+    /// 本地编辑缓存的保留天数：启动时清理更早的日期目录；0 = 不自动清理。
+    #[serde(default = "default_edit_cache_days")]
+    pub edit_cache_days: u32,
 }
 
 impl Default for FilesConfig {
-    /// 文件段默认值：不指定编辑器（用系统默认程序）。
+    /// 文件段默认值：不指定编辑器（用系统默认程序）、缓存保留 7 天。
     fn default() -> Self {
-        Self { editor: None }
+        Self {
+            editor: None,
+            edit_cache_days: default_edit_cache_days(),
+        }
     }
 }
 
@@ -537,7 +543,7 @@ pub struct AppConfig {
     /// `[transfer]` 段：文件传输设置。
     #[serde(default)]
     pub transfer: TransferConfig,
-    /// `[files]` 段：文件管理相关设置（本地编辑器等）。
+    /// `[files]` 段：文件管理相关设置（本地编辑器、编辑缓存保留期）。
     #[serde(default)]
     pub files: FilesConfig,
     /// `[appearance]` 段：程序外观与界面语言设置。
@@ -565,6 +571,11 @@ fn default_timeout() -> u64 {
 /// SSH 保活间隔默认值：20 秒（与历史硬编码一致）。
 fn default_keepalive() -> u64 {
     20
+}
+
+/// 本地编辑缓存保留天数默认值：7 天（0 表示不自动清理）。
+fn default_edit_cache_days() -> u32 {
+    7
 }
 
 /// SSH 保活判死次数默认值：2（比 russh 默认的 3 更快发现半开连接）。
@@ -982,6 +993,18 @@ mod tests {
 
     /// 串行化会改写全局状态根（`paths::set_test_root`）的测试。
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `[files]` 缺 `edit_cache_days` 键（或整段缺失）时必须回退默认 7 天：
+    /// `#[serde(default)]` 对 u32 会落 0（= 关闭清理），那会让老配置静默失去自动清理。
+    #[test]
+    fn edit_cache_days_defaults_to_seven_when_absent() {
+        let with_files: AppConfig = toml::from_str("[files]\neditor = \"vim\"\n").expect("解析");
+        assert_eq!(with_files.files.edit_cache_days, 7);
+        let without_files: AppConfig = toml::from_str("").expect("解析");
+        assert_eq!(without_files.files.edit_cache_days, 7);
+        let explicit: AppConfig = toml::from_str("[files]\nedit_cache_days = 0\n").expect("解析");
+        assert_eq!(explicit.files.edit_cache_days, 0);
+    }
 
     #[test]
     fn remembered_size_requires_valid_positive_values() {

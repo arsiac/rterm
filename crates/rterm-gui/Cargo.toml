@@ -11,6 +11,7 @@ iced.workspace = true
 iced_widget.workspace = true
 iced_aw.workspace = true
 alacritty_terminal.workspace = true
+chrono.workspace = true
 anyhow.workspace = true
 iced_core.workspace = true
 iced_graphics.workspace = true

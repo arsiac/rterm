@@ -148,7 +148,8 @@ pub fn log_dir() -> PathBuf {
 
 /// 远程编辑的本地缓存目录：缓存目录下的 `remote_edit` 子目录。
 ///
-/// 「本地编辑」把远端文件下载到此再交给外部编辑器，保存后回传；不自动清理——未回传的副本可能是用户改动的唯一镜像，位置由 GUI 在发起编辑时经 toast 告知。
+/// 「本地编辑」把远端文件下载到此再交给外部编辑器，保存后回传；按发起日期分子目录，
+/// GUI 启动时按保留期清理旧目录（进行中的会话目录豁免），位置在发起时经 toast 告知。
 pub fn remote_edit_dir() -> Option<PathBuf> {
     cache_dir().map(|d| d.join("remote_edit"))
 }

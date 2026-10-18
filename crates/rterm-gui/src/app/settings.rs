@@ -165,6 +165,8 @@ pub enum Message {
     RetryAttemptsPersist,
     /// 修改“外部编辑器”设置（携带输入框最新文本；空串表示用系统默认程序）。
     Editor(String),
+    /// 修改“编辑缓存保留天数”设置（携带输入框最新文本；0 = 不自动清理）。
+    EditCacheDays(String),
     /// 修改“终端字号”设置（携带滑块最新值）。
     FontSize(f32),
     /// 修改“程序主题”设置（携带主题标识，如 `dark` / `light`）。
@@ -243,6 +245,8 @@ pub enum Event {
     RetryAttemptsPersist,
     /// 写回“外部编辑器”配置（携带命令串，空串规范化为 `None` = 系统默认程序）。
     Editor(Option<String>),
+    /// 写回“编辑缓存保留天数”配置（携带天数；0 = 不自动清理）。
+    EditCacheDays(u32),
     /// 写回“终端字号”配置（携带滑块值），并热替换到所有已打开的终端标签。
     FontSize(f32),
     /// 写回“程序主题”配置（携带主题标识）。
@@ -360,6 +364,11 @@ impl State {
                 let editor = (!trimmed.is_empty()).then(|| trimmed.to_string());
                 Task::done(Event::Editor(editor))
             }
+            // 非法输入（含空串）不发射：文本框绑定配置值，下一次渲染自然回显原值。
+            Message::EditCacheDays(text) => match text.trim().parse::<u32>() {
+                Ok(days) => Task::done(Event::EditCacheDays(days)),
+                Err(_) => Task::none(),
+            },
             Message::FontSize(size) => Task::done(Event::FontSize(size)),
             Message::Theme(theme) => Task::done(Event::Theme(theme)),
             Message::UiFont(text) => Task::done(Event::UiFont(text)),

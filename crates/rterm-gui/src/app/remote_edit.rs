@@ -24,16 +24,19 @@
 //! - **回传旁路覆盖确认**：同名探测只挂在选择器分支；远端被他人改动的风险由回传前的
 //!   指纹比对单独拦截。
 //! - **核层零改动**：下载 / 上传 / 指纹全部复用 `rterm-core` 既有接口。
-//! - **缓存不自动清理**：未回传的副本可能是用户改动的唯一镜像；位置在发起时经 toast 告知。
+//! - **缓存自动清理**：副本按发起日期分子目录，启动时清理超过保留期的旧目录
+//!   （逐会话删、进行中的会话豁免，`[files].edit_cache_days`，0 = 关闭）。启动-only
+//!   决定了运行中的实例永不被清理打扰，位置在发起时经 toast 告知。
 
 use std::collections::HashMap;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use chrono::NaiveDate;
 use futures::SinkExt;
 use iced::Task;
-use log::info;
+use log::{debug, info, warn};
 use rterm_core::{Fingerprint, SftpClient};
 
 use crate::app::transfer::FailureKind;
@@ -326,6 +329,14 @@ impl State {
     /// 构造空状态。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 当前活跃编辑会话的会话 id 快照（启动清理的豁免名单）。
+    pub(crate) fn live_session_ids(&self) -> Vec<String> {
+        self.sessions
+            .keys()
+            .map(|(session_id, _)| session_id.clone())
+            .collect()
     }
 
     /// 结束某标签的全部编辑会话：中止轮询流并移除会话。
@@ -934,17 +945,104 @@ pub(crate) fn evaluate_poll(
     }
 }
 
-/// 编辑缓存路径：`<remote_edit_dir>/<会话>/<远端树镜像>`。
-///
-/// 镜像而非哈希目录：用户在缓存里能直接看出哪个文件是哪台机器上的哪个路径；输出对同一编辑键确定（续用缓存才成立）。
+/// 编辑缓存路径：`<remote_edit_dir>/<发起日期>/<会话>/<远端树镜像>`，日期段即清理分组单位。
+/// 镜像而非哈希目录：用户在缓存里能直接辨认哪个文件是哪台机器上的哪个路径；各段经
+/// [`sanitize_segment`] 净化（远端路径与会话 id 均可能不可信）；同键同日确定，跨日下载新副本。
 pub(crate) fn edit_cache_path(session_id: &str, remote_path: &str) -> PathBuf {
     let root = rterm_config::paths::remote_edit_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("rterm-remote-edit"));
-    let mut path = root.join(sanitize_segment(session_id));
+    let mut path = root
+        .join(today_dir_name())
+        .join(sanitize_segment(session_id));
     for seg in remote_path.split('/').filter(|s| !s.is_empty()) {
         path = path.join(sanitize_segment(seg));
     }
     path
+}
+
+/// 今天的日期目录名（本地时区 `YYYY-MM-DD`）。
+fn today_dir_name() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// 解析日期目录名：严格的 `YYYY-MM-DD`；非法名（含旧布局残留）返回 `None`。
+fn parse_date_dir(name: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(name, "%Y-%m-%d").ok()
+}
+
+/// 日期目录是否超过保留期：目录日期早于 `今天 - keep_days` 即删，`keep_days = 0` 恒不删
+/// （调用方与判据双重保证，杜绝误配置瞬间清空缓存）。边界取「早于」：保留 7 天时，
+/// 第 8 天及更早的目录被清，恰好第 7 天的保留。
+fn day_dir_expired(name: &str, today: NaiveDate, keep_days: u32) -> bool {
+    if keep_days == 0 {
+        return false;
+    }
+    match parse_date_dir(name) {
+        Some(date) => date < today - chrono::Duration::days(keep_days as i64),
+        None => false,
+    }
+}
+
+/// 启动清理：删除超过保留期的日期目录，进行中的会话子目录豁免。
+///
+/// 只跑一次：彼时会话表为空，「豁免」是防御性不变量；多实例看不到彼此的会话，属已知
+/// 限制。单个目录删除失败只记警告，不影响启动与其他目录。
+pub(crate) async fn sweep_expired_edit_cache(keep_days: u32, live_sessions: Vec<String>) {
+    if keep_days == 0 {
+        return;
+    }
+    let Some(root) = rterm_config::paths::remote_edit_dir() else {
+        return;
+    };
+    let mut entries = match tokio::fs::read_dir(&root).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            debug!(
+                "edit cache sweep: cache dir not readable ({}): {e}",
+                root.display()
+            );
+            return;
+        }
+    };
+    let today = chrono::Local::now().date_naive();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if day_dir_expired(&name, today, keep_days) {
+            sweep_expired_date_dir(&entry.path(), &name, &live_sessions).await;
+        }
+    }
+}
+
+/// 清理一个过期日期目录：逐会话子目录删除，活跃会话豁免；删空后连日期目录一起收走。
+async fn sweep_expired_date_dir(dir: &Path, name: &str, live_sessions: &[String]) {
+    let mut children = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            warn!("edit cache sweep: failed to read {name}: {e}");
+            return;
+        }
+    };
+    let mut kept_any = false;
+    while let Ok(Some(child)) = children.next_entry().await {
+        let child_name = child.file_name().to_string_lossy().to_string();
+        // 豁免精确到会话：同一天里别人的过期副本照删，进行中的会话一个不碰。
+        if live_sessions
+            .iter()
+            .any(|s| sanitize_segment(s) == child_name)
+        {
+            kept_any = true;
+            debug!("edit cache sweep: keeping {name}/{child_name} (live edit session)");
+            continue;
+        }
+        match tokio::fs::remove_dir_all(child.path()).await {
+            Ok(()) => info!("edit cache sweep: removed stale cache dir {name}/{child_name}"),
+            Err(e) => warn!("edit cache sweep: failed to remove {name}/{child_name}: {e}"),
+        }
+    }
+    // 全部删空才收走日期目录本身；仍有活跃会话时留着（删除对非空目录报错，忽略即可）。
+    if !kept_any {
+        let _ = tokio::fs::remove_dir(dir).await;
+    }
 }
 
 /// 净化单个路径分量：分隔符 / 控制字符 / `.` / `..` 一律替换为 `_`，其余原样保留
@@ -1018,6 +1116,88 @@ mod tests {
         let b = edit_cache_path("sess-1", "/home/u/notes.txt");
         assert_eq!(a, b);
         assert!(a.ends_with("sess-1/home/u/notes.txt"), "{a:?}");
+    }
+
+    /// 缓存路径带当天日期段：启动清理按日期目录分组才成立。
+    #[test]
+    fn cache_path_contains_today_dir() {
+        let path = edit_cache_path("sess-1", "/home/u/notes.txt");
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert!(
+            path.components().any(|c| c.as_os_str() == today.as_str()),
+            "路径应含当天日期段：{path:?}"
+        );
+    }
+
+    /// 日期目录清理判据矩阵：过期删、恰好保留期留、更新留、非法名不动、0 天不跑。
+    #[test]
+    fn day_dir_expired_matrix() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 18).expect("固定日期");
+        // 保留 7 天：第 8 天及更早删，恰好第 7 天与更新留。
+        assert!(day_dir_expired("2026-10-10", today, 7));
+        assert!(day_dir_expired("2026-01-01", today, 7));
+        assert!(!day_dir_expired("2026-10-11", today, 7));
+        assert!(!day_dir_expired("2026-10-17", today, 7));
+        // 非法名（旧布局残留、乱码）原样不动。
+        assert!(!day_dir_expired("sess-123", today, 7));
+        assert!(!day_dir_expired("2026-13-40", today, 7));
+        // 0 天 = 关闭清理，任何目录都不删。
+        assert!(!day_dir_expired("2026-01-01", today, 0));
+    }
+
+    /// 启动清理集成：过期目录逐会话删、活跃会话豁免、全空的过期目录整体收走、
+    /// 当天与非日期目录不动。
+    #[test]
+    fn sweep_removes_stale_dirs_and_keeps_live_sessions() {
+        let _guard = crate::app::STATE_ROOT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("rterm_edit_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let root = tmp.join("cache").join("remote_edit");
+        let today = chrono::Local::now().date_naive();
+        let old = (today - chrono::Duration::days(30))
+            .format("%Y-%m-%d")
+            .to_string();
+        let ancient = (today - chrono::Duration::days(60))
+            .format("%Y-%m-%d")
+            .to_string();
+        let today_dir = today.format("%Y-%m-%d").to_string();
+        for dir in [
+            root.join(&old).join("sess-live").join("home/u"),
+            root.join(&old).join("sess-dead").join("home/u"),
+            root.join(&ancient).join("sess-gone").join("home/u"),
+            root.join(&today_dir).join("sess-now").join("home/u"),
+            root.join("not-a-date").join("sess-x"),
+        ] {
+            std::fs::create_dir_all(&dir).expect("创建缓存目录");
+            std::fs::write(dir.join("notes.txt"), b"x").expect("写副本");
+        }
+        rterm_config::paths::set_test_root(Some(tmp.clone()));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("临时 tokio 运行时");
+        runtime.block_on(sweep_expired_edit_cache(7, vec!["sess-live".to_string()]));
+
+        assert!(
+            root.join(&old).join("sess-live").exists(),
+            "活跃会话副本必须保留"
+        );
+        assert!(
+            !root.join(&old).join("sess-dead").exists(),
+            "同日里的过期会话必须删除"
+        );
+        assert!(
+            !root.join(&ancient).exists(),
+            "全部过期的日期目录应整体收走"
+        );
+        assert!(root.join(&today_dir).exists(), "当天目录必须保留");
+        assert!(root.join("not-a-date").exists(), "非日期目录必须保留");
+
+        rterm_config::paths::set_test_root(None);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 不同键（不同会话 / 不同远端文件）路径互异。

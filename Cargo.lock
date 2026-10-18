@@ -5172,6 +5172,7 @@ version = "0.7.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "chrono",
  "fontdb 0.24.0",
  "futures",
  "iced",

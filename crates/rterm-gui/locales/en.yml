@@ -33,6 +33,8 @@ settings:
   editor_label: External editor
   editor_placeholder: Leave empty for the system default program
   editor_help: Command used to open remote files for local editing (right-click a file in the file manager). It is split on whitespace into program and arguments, and the local copy path is appended as the last argument. Quoted paths inside arguments are not supported; leave empty to use the system default program.
+  edit_cache_days_label: Edit cache retention (days)
+  edit_cache_days_help: Local edit copies are grouped by day and stale ones are removed on startup; 0 keeps them until you delete them manually.
   scrollback: Scrollback lines (0 = none)
   scrollback_note: Applies only to newly opened terminal tabs.
   log_level: Log level

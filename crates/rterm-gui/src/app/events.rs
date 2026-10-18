@@ -516,6 +516,12 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             contexts::save_config(app);
             Task::none()
         }
+        settings::Event::EditCacheDays(days) => {
+            // 下一次启动清理时生效：运行中不清理，故无需热应用。
+            app.config.files.edit_cache_days = days;
+            contexts::save_config(app);
+            Task::none()
+        }
         settings::Event::FontSize(v) => {
             app.config.terminal.font_size = v;
             contexts::save_config(app);

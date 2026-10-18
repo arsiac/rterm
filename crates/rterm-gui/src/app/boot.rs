@@ -166,7 +166,21 @@ pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
         .update(updates::Message::CheckOnStartup, &updates_ctx)
         .map(Message::UpdatesEvent);
 
-    (app, check_task)
+    // 启动清理本地编辑缓存：过期日期目录逐会话删、删空后连目录收走（0 = 关闭）。
+    // 彼时会话表为空，快照仅作防御性不变量传参（见 sweep 文档）。
+    let sweep_task = if app.config.files.edit_cache_days > 0 {
+        Task::perform(
+            remote_edit::sweep_expired_edit_cache(
+                app.config.files.edit_cache_days,
+                app.remote_edit.live_session_ids(),
+            ),
+            |_| Message::Noop,
+        )
+    } else {
+        Task::none()
+    };
+
+    (app, Task::batch([check_task, sweep_task]))
 }
 
 /// 会话文件不可用（存在但读不出）的提示文案：外层给出文件路径，内层按原因取对应文案。

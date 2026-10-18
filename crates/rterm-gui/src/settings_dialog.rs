@@ -373,6 +373,10 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
     )
     .on_input(|s| Message::Settings(settings::Message::Editor(s)))
     .style(crate::ui::text_input_style);
+    // 编辑缓存保留天数：0 = 不自动清理（回退到手工管理）。
+    let cache_days_input = text_input("7", &app.config.files.edit_cache_days.to_string())
+        .on_input(|s| Message::Settings(settings::Message::EditCacheDays(s)))
+        .style(crate::ui::text_input_style);
     column![
         crate::ui::section_title(t!("settings.sub_connection")),
         crate::ui::field_label(t!("settings.connect_timeout")),
@@ -400,6 +404,9 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
         crate::ui::field_label(t!("settings.editor_label")),
         editor_input,
         crate::ui::hint_text(t!("settings.editor_help")),
+        crate::ui::field_label(t!("settings.edit_cache_days_label")),
+        cache_days_input,
+        crate::ui::hint_text(t!("settings.edit_cache_days_help")),
     ]
     .spacing(10)
     .into()
