@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use iced::{Subscription, Task};
 
+use crate::app::remote_edit::EditKey;
 use crate::app::tasks::{
     apply_upload_decisions, build_conflict_rows, ensure_remote_dir, join_path, new_dir_targets,
     open_sftp_task, parent_path, resolve_and_list_task, upload_conflicts, valid_rename_name,
@@ -210,6 +211,10 @@ pub enum Message {
     SftpCopyPath(String),
     /// 复制远端条目的文件名到系统剪贴板（携带文件名，含扩展名）。
     SftpCopyName(String),
+    /// 右键「本地编辑」：把该远端文件下载到编辑缓存并用外部编辑器打开，保存后自动回传。
+    ///
+    /// 只对文件有效；实际会话由 `app::remote_edit` 持有，本模块只解析目标并上行 [`Event::EditLocal`]。
+    SftpEditLocal(String),
     /// 跳转到终端当前所在目录（由路由层读取活动终端 cwd 后转 [`SftpCd`] 处理，
     /// 模块自身不持有终端访问权，故此处仅作占位、不在此分支消费）。
     SftpGotoTerminalDir,
@@ -254,6 +259,30 @@ pub enum Event {
     StartDownload(String, std::path::PathBuf),
     /// 上行请求启动一个**目录**下载作业（携带远端名称与本地作业根完整路径）。
     StartDownloadFolder(String, std::path::PathBuf),
+    /// 上行请求发起一次「本地编辑」（携带标签 id + 会话 id + 远端绝对路径 + 展示名），
+    /// 由父层转交 `app::remote_edit` 模块建立编辑会话（下载到缓存 → 编辑器 → 轮询回传）。
+    EditLocal {
+        /// 发起编辑的标签 id。
+        tab_id: u64,
+        /// 会话 id（编辑键的一半）。
+        session_id: String,
+        /// 远端绝对路径（编辑键的另一半）。
+        remote_path: String,
+        /// 展示用的远端文件名。
+        name: String,
+    },
+    /// 编辑冲突框「覆盖」：按当前副本回传（携带编辑键）。
+    EditConflictOverwrite(EditKey),
+    /// 编辑冲突框「取消」：不覆盖远端，接受外部改动（携带编辑键）。
+    EditConflictCancel(EditKey),
+    /// 回传确认框「回传」：用户拍板把本地副本上传回远端（携带编辑键）。
+    ///
+    /// 与冲突框「覆盖」的区别：那次问「要不要丢他人的改动」（点下即授权），这里只授权「传这一版」。
+    EditConfirmUpload(EditKey),
+    /// 回传确认框「取消」/ Esc：暂不回传这一版（携带编辑键）。
+    ///
+    /// 模块收到后把本地基准对齐到当前水位，该版本不再回传；用户再次保存会重新询问。
+    EditConfirmDismiss(EditKey),
     /// 请求父层把键盘焦点交还终端。
     ///
     /// 内联输入态（重命名 / 新建文件夹）退出后焦点已离开文件管理器；焦点态属父层，
@@ -536,12 +565,30 @@ impl State {
                 if tab.renaming.take().is_some() || tab.creating_dir.take().is_some() {
                     // 退出内联输入态：焦点已离开文件管理器，交还终端（焦点态在父层）。
                     Task::done(Event::FocusTerminal)
-                } else if let Some(SftpDialog::UploadConflicts { .. }) = tab.dialog.take() {
-                    // 取消一批冲突＝该批整批不入队；排队的下一批（若有）接上弹出。
-                    tab.dialog = tab.queued_conflicts.pop_front();
-                    Task::none()
+                } else if let Some(dialog) = tab.dialog.take() {
+                    match dialog {
+                        SftpDialog::UploadConflicts { .. } => {
+                            // 取消一批冲突＝该批整批不入队；排队的下一批（若有）接上弹出。
+                            tab.dialog = tab.queued_conflicts.pop_front();
+                            Task::none()
+                        }
+                        // 取消编辑冲突框＝不覆盖远端：把决定告知编辑会话（它会把本地基准
+                        // 与远端指纹都对齐，避免下一轮重复弹框）。
+                        SftpDialog::EditConflict {
+                            session_id,
+                            remote_path,
+                            name: _,
+                        } => Task::done(Event::EditConflictCancel((session_id, remote_path))),
+                        // 取消回传确认框＝暂不回传这一版。必须显式处理：本 match 有 catch-all，
+                        // 漏 arm 会静默丢弃——会话不知道框已关，下一轮确认框重开，每轮刷屏。
+                        SftpDialog::EditUploadConfirm {
+                            session_id,
+                            remote_path,
+                            name: _,
+                        } => Task::done(Event::EditConfirmDismiss((session_id, remote_path))),
+                        _ => Task::none(),
+                    }
                 } else {
-                    tab.dialog = None;
                     Task::none()
                 }
             }
@@ -663,6 +710,20 @@ impl State {
                     }
                     // 属性框为只读信息框，确认仅关闭。
                     SftpDialog::Properties { .. } => Task::none(),
+                    // 编辑冲突框「覆盖」：用户拍板按当前副本回传（重取指纹由编辑会话决定
+                    // 不再做——用户已知情）。
+                    SftpDialog::EditConflict {
+                        session_id,
+                        remote_path,
+                        name: _,
+                    } => Task::done(Event::EditConflictOverwrite((session_id, remote_path))),
+                    // 回传确认框「回传」：用户拍板上传这一版（与冲突框「覆盖」同构，
+                    // 但授权只到「传这一版」——指纹一致分支的常规路径）。
+                    SftpDialog::EditUploadConfirm {
+                        session_id,
+                        remote_path,
+                        name: _,
+                    } => Task::done(Event::EditConfirmUpload((session_id, remote_path))),
                 }
             }
             Message::SftpDeleteConfirm(name, is_dir) => {
@@ -788,6 +849,35 @@ impl State {
                     iced::clipboard::write::<Event>(name),
                     Task::done(Event::Toast(ToastKind::Success, t!("app.copied_name"))),
                 ])
+            }
+            Message::SftpEditLocal(name) => {
+                // 解析目标：会话 id + 远端绝对路径。目录没有本地编辑语义（菜单只对文件
+                // 展示该项，此处按条目类型复核，防快照过期后点到目录上）。
+                let Some(tab) = self.per_tab.get(&active_tab) else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
+                };
+                let Some(session_id) = tab.session.clone() else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
+                };
+                let is_dir = tab
+                    .entries
+                    .iter()
+                    .find(|e| e.name == name)
+                    .map(|e| e.is_dir)
+                    .unwrap_or(false);
+                if is_dir {
+                    return Task::done(Event::Toast(
+                        ToastKind::Error,
+                        t!("remote_edit.only_files"),
+                    ));
+                }
+                let remote_path = join_path(&tab.path, &name);
+                Task::done(Event::EditLocal {
+                    tab_id: active_tab,
+                    session_id,
+                    remote_path,
+                    name,
+                })
             }
             Message::SftpNoop => Task::none(),
             // 占位：实际跳转由路由层读取活动终端 cwd 后转 `SftpCd` 完成，模块不消费。

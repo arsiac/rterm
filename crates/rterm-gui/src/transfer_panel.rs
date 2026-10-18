@@ -617,6 +617,7 @@ mod tests {
             resume: None,
             keep_staging: false,
             folder: None,
+            edit: None,
         }
     }
 

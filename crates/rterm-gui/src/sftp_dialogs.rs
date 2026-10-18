@@ -1,12 +1,14 @@
 //! SFTP 文件管理面板的模态对话框。
 //!
-//! 面板内统一为“标题 / 分隔线 / 正文 / 确认·取消按钮”结构，经
-//! [`crate::modal::overlay_wrap_dismissable`] 叠加为窗口级模态。所有对话框经 [`view`] 分发，
+//! 面板内统一为“标题 / 分隔线 / 正文 / 确认·取消按钮”结构，多数对话框经
+//! [`crate::modal::overlay_wrap_dismissable`]（单击遮罩关闭）叠加为窗口级模态；
+//! 回传确认框经 [`crate::modal::overlay_wrap`]（遮罩只拦截、不关闭，防误触丢失回传），
+//! 分流依据见 [`SftpDialog::backdrop_dismissable`]。所有对话框经 [`view`] 分发，
 //! 由 [`App`] 的 `sftp.dialog` 状态驱动。
 
 use crate::app::tasks::apply_upload_decisions;
 use crate::icons::Icon;
-use crate::modal::overlay_wrap_dismissable;
+use crate::modal::{overlay_wrap, overlay_wrap_dismissable};
 use crate::t;
 use crate::theme;
 
@@ -36,13 +38,21 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
             upload_conflicts_dialog(items, rows, 1 + view.queued_conflicts.len())
         }
         SftpDialog::Properties { entry, path } => properties_dialog(entry, path),
+        SftpDialog::EditConflict { name, .. } => edit_conflict_dialog(name),
+        SftpDialog::EditUploadConfirm { name, .. } => edit_upload_confirm_dialog(name),
     };
-    // 属性框无取消动作，遮罩单击对齐其「关闭」按钮；确认框对齐「取消」。
-    let close = match dialog {
-        SftpDialog::Properties { .. } => Message::SftpDialogConfirm,
-        _ => Message::SftpCancelDialog,
-    };
-    Some(overlay_wrap_dismissable(content, close))
+    if dialog.backdrop_dismissable() {
+        // 属性框无取消动作，遮罩单击对齐其「关闭」按钮；其余对齐「取消」。
+        let close = match dialog {
+            SftpDialog::Properties { .. } => Message::SftpDialogConfirm,
+            _ => Message::SftpCancelDialog,
+        };
+        Some(overlay_wrap_dismissable(content, close))
+    } else {
+        // 回传确认框：遮罩单击只拦截、不关闭（取消是静默的，误触代价最高），
+        // 关闭途径只剩「回传 / 取消」按钮与 Esc。
+        Some(overlay_wrap(content))
+    }
 }
 
 /// 单文件删除确认弹窗。
@@ -79,6 +89,30 @@ fn delete_tree_dialog<'a>(name: &str, probe: &DeleteProbe) -> Element<'a, Messag
         .spacing(10),
         t!("sftp.delete"),
         true,
+    )
+}
+
+/// 远程编辑回传冲突弹窗：编辑期间远端被外部改动，覆盖 / 取消。
+///
+/// 与下载覆盖框同形但语义相反：这里覆盖丢的是**他人**对服务端那份的改动，故用危险色确认钮。
+fn edit_conflict_dialog<'a>(name: &str) -> Element<'a, Message> {
+    dialog_panel(
+        t!("remote_edit.conflict_title"),
+        column![text(t!("remote_edit.conflict_body", name => name)).size(14),],
+        t!("sftp.overwrite"),
+        true,
+    )
+}
+
+/// 远程编辑回传确认弹窗：本地副本有修改、远端无外部冲突，回传前请用户拍板。
+///
+/// 确认色而非危险色：被覆盖的是用户自己下载编辑的那份；取消（按钮 / Esc）＝暂不回传，语义写进正文。
+fn edit_upload_confirm_dialog<'a>(name: &str) -> Element<'a, Message> {
+    dialog_panel(
+        t!("remote_edit.confirm_title"),
+        column![text(t!("remote_edit.confirm_body", name => name)).size(14),],
+        t!("remote_edit.confirm_upload"),
+        false,
     )
 }
 

@@ -8,6 +8,7 @@ use crate::app::hostkey;
 use crate::app::masterpw;
 use crate::app::panes;
 use crate::app::paste;
+use crate::app::remote_edit;
 use crate::app::search;
 use crate::app::session;
 use crate::app::session_io;
@@ -137,6 +138,13 @@ pub enum Message {
     Paste(paste::Message),
     /// 粘贴确认模块上行事件：放行的粘贴交父层编码并写入终端。
     PasteEvent(paste::Event),
+
+    // ===== 远程文件本地编辑（路由）=====
+    /// 远程编辑模块内部消息：发起 / 远端探测 / 轮询观测 / 下载与回传结果 /
+    /// 冲突框决策 / 终止，由父层经此变体路由进 `app::remote_edit` 模块。
+    RemoteEdit(remote_edit::Message),
+    /// 远程编辑模块上行事件（toast / 下载 / 回传 / 冲突框 / 自回路），由父层落地。
+    RemoteEditEvent(remote_edit::Event),
 
     // ===== 终端内搜索（路由）=====
     /// 终端内搜索模块内部消息：搜索条开关 / 查询 / 上下跳转 / 两个匹配开关，

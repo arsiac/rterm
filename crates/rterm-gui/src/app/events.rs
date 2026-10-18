@@ -5,10 +5,11 @@ use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
 use crate::app::{
-    masterpw, paste, search, session, session_io, settings, sftp, snippets, tabs, transfer,
-    updates, window,
+    masterpw, paste, remote_edit, search, session, session_io, settings, sftp, snippets, tabs,
+    transfer, updates, window,
 };
 use crate::message::Message;
+use crate::state::SftpDialog;
 use crate::t;
 use crate::vault_keyring;
 use crate::widget::term::actions::Action;
@@ -38,6 +39,8 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
             let mut tasks = Vec::with_capacity(closed.len());
             for tab_id in closed {
                 app.paste.remove_for_tab(tab_id);
+                // 同关标签：删除会话会移除其全部标签，编辑会话随宿主一起终止。
+                app.remote_edit.end_for_tab(tab_id);
                 tasks.push(close_tab_transfers(app, tab_id));
             }
             Task::batch(tasks)
@@ -131,6 +134,9 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
             app.hostkey.remove_for_tab(tab_id);
             app.paste.remove_for_tab(tab_id);
             app.search.remove_for_tab(tab_id);
+            // 该标签发起的本地编辑会话一并终止：回传的宿主（队列与客户端）随标签消失，
+            // 编辑缓存副本按既定策略保留，由用户从缓存目录取回或重新发起。
+            app.remote_edit.end_for_tab(tab_id);
             close_tab_transfers(app, tab_id)
         }
         // 转发终端部件事件给父层（父层拥有的 widget 交互逻辑）。
@@ -199,6 +205,38 @@ pub(crate) fn apply_sftp_event(app: &mut App, e: sftp::Event) -> Task<Message> {
                 .update(transfer::Message::Upload(tab_id, paths), &ctx)
                 .map(Message::TransferEvent)
         }
+        // 右键「本地编辑」：转交给远程编辑模块发起会话（下载到缓存 → 编辑器 → 轮询回传）。
+        sftp::Event::EditLocal {
+            tab_id,
+            session_id,
+            remote_path,
+            name,
+        } => Task::done(Message::RemoteEdit(remote_edit::Message::Start {
+            tab_id,
+            session_id,
+            remote_path,
+            name,
+        })),
+        // 冲突框「覆盖 / 取消」：SFTP 模块只拥有对话框生命周期，决定本身归编辑会话。
+        sftp::Event::EditConflictOverwrite(key) => Task::done(Message::RemoteEdit(
+            remote_edit::Message::ConflictOverwrite { key },
+        )),
+        sftp::Event::EditConflictCancel(key) => {
+            Task::done(Message::RemoteEdit(remote_edit::Message::ConflictCancel {
+                key,
+            }))
+        }
+        // 回传确认框「回传 / 取消」：同上，SFTP 只持有对话框，决定归编辑会话。
+        sftp::Event::EditConfirmUpload(key) => {
+            Task::done(Message::RemoteEdit(remote_edit::Message::ConfirmUpload {
+                key,
+            }))
+        }
+        sftp::Event::EditConfirmDismiss(key) => {
+            Task::done(Message::RemoteEdit(remote_edit::Message::ConfirmDismiss {
+                key,
+            }))
+        }
         sftp::Event::StartDownload(name, local) => {
             let tab_id = app.tabs.active().unwrap_or(0);
             let ctx = contexts::transfer_ctx(app);
@@ -231,10 +269,107 @@ pub(crate) fn apply_transfer_event(app: &mut App, e: transfer::Event) -> Task<Me
         // 上传成功：刷新对应标签的 SFTP 目录——经 `Message::Sftp` 派发给 SFTP 模块，
         // 由父层中转，传输模块绝不直接写 SFTP 视图。
         transfer::Event::RefreshDir(tab_id) => app.sftp.refresh(tab_id).map(Message::SftpEvent),
+        // 远程编辑的取回 / 回传完成：转投编辑会话模块（它据此更新基准或收尾）。
+        transfer::Event::EditDownloadDone(key, ok) => {
+            Task::done(Message::RemoteEdit(remote_edit::Message::DownloadDone {
+                key,
+                ok,
+            }))
+        }
+        transfer::Event::EditUploadDone(key, failure) => {
+            Task::done(Message::RemoteEdit(remote_edit::Message::UploadDone {
+                key,
+                failure,
+            }))
+        }
         // 自回路：把内部消息派发回传输模块自身，形成「进度 / 完成 → 下一传输」闭环。
         transfer::Event::Emit(m) => {
             let ctx = contexts::transfer_ctx(app);
             app.transfer.update(*m, &ctx).map(Message::TransferEvent)
+        }
+    }
+}
+
+/// 落地 `remote_edit::Event`：toast / 下载与回传入队（转传输模块）/ 冲突框（写 SFTP
+/// 视图对话框槽位）/ 自回路。
+pub(crate) fn apply_remote_edit_event(app: &mut App, e: remote_edit::Event) -> Task<Message> {
+    match e {
+        remote_edit::Event::Toast(kind, msg) => {
+            contexts::set_toast(app, kind, msg);
+            Task::none()
+        }
+        // 取回 / 回传入队：转传输模块执行（`.part` 暂存、重试、进度全部沿用队列语义）。
+        remote_edit::Event::StartEditDownload {
+            tab_id,
+            key,
+            local,
+            remote,
+        } => {
+            let ctx = contexts::transfer_ctx(app);
+            app.transfer
+                .update(
+                    transfer::Message::EditDownload(tab_id, key, remote, local),
+                    &ctx,
+                )
+                .map(Message::TransferEvent)
+        }
+        remote_edit::Event::StartEditUpload {
+            tab_id,
+            key,
+            local,
+            remote,
+        } => {
+            let ctx = contexts::transfer_ctx(app);
+            app.transfer
+                .update(
+                    transfer::Message::EditUpload(tab_id, key, local, remote),
+                    &ctx,
+                )
+                .map(Message::TransferEvent)
+        }
+        // 冲突框落在发起编辑那个标签的 SFTP 对话框槽位（父写子，规则允许）；槽位被占时不覆盖，
+        // 会话的冲突状态未置，下一轮轮询会自然重试，不会把这次冲突悄悄吞掉。
+        remote_edit::Event::RequestConflict { tab_id, key, name } => {
+            if let Some(view) = app.sftp.tab_mut(tab_id)
+                && view.dialog.is_none()
+            {
+                view.dialog = Some(SftpDialog::EditConflict {
+                    session_id: key.0,
+                    remote_path: key.1,
+                    name,
+                });
+            }
+            Task::none()
+        }
+        // 回传确认框：与冲突框同一槽位、同一「占用即跳过、下轮重试」策略（不排队——
+        // 排队是 UploadConflicts 批量决策的特例）。跳过安全：`seen` 保持触发水位，下轮重新上行。
+        remote_edit::Event::RequestUploadConfirm { tab_id, key, name } => {
+            let mut tasks: Vec<Task<Message>> = Vec::new();
+            if let Some(view) = app.sftp.tab_mut(tab_id)
+                && view.dialog.is_none()
+            {
+                view.dialog = Some(SftpDialog::EditUploadConfirm {
+                    session_id: key.0,
+                    remote_path: key.1,
+                    name,
+                });
+                // 观众多半不在盯 rterm——他们刚在外部编辑器里保存完。请求「信息级」注意拉回注意力：
+                // Windows 闪任务栏、macOS dock 弹一次、X11 置 urgency hint；Wayland 下 winit 静默 no-op。
+                if let Some(id) = app.window.id() {
+                    tasks.push(iced::window::request_user_attention(
+                        id,
+                        Some(iced::window::UserAttention::Informational),
+                    ));
+                }
+            }
+            Task::batch(tasks)
+        }
+        // 自回路：把内部消息派发回远程编辑模块自身，形成「探测 / 观测 / 收尾」闭环。
+        remote_edit::Event::Emit(m) => {
+            let ctx = contexts::remote_edit_ctx(app);
+            app.remote_edit
+                .update(*m, &ctx)
+                .map(Message::RemoteEditEvent)
         }
     }
 }
@@ -372,6 +507,12 @@ pub(crate) fn apply_settings_event(app: &mut App, e: settings::Event) -> Task<Me
             Task::none()
         }
         settings::Event::RetryAttemptsPersist => {
+            contexts::save_config(app);
+            Task::none()
+        }
+        settings::Event::Editor(editor) => {
+            // 本地编辑器命令：下次发起「本地编辑」时经 remote_edit 上下文读取，无需热应用。
+            app.config.files.editor = editor;
             contexts::save_config(app);
             Task::none()
         }

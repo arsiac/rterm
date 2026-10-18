@@ -385,6 +385,21 @@ impl TransferConfig {
     }
 }
 
+/// `[files]` 段：文件管理相关设置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesConfig {
+    /// 「本地编辑」用的编辑器命令：按空白符拆成程序+参数、副本路径追加为末参；空 = 系统默认程序。
+    #[serde(default)]
+    pub editor: Option<String>,
+}
+
+impl Default for FilesConfig {
+    /// 文件段默认值：不指定编辑器（用系统默认程序）。
+    fn default() -> Self {
+        Self { editor: None }
+    }
+}
+
 /// `[appearance]` 段：程序外观与界面语言设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearanceConfig {
@@ -503,8 +518,9 @@ impl Default for WindowConfig {
 /// 应用级偏好配置（`config.toml` 根结构）。
 ///
 /// 除运行时字段外均可在 GUI 设置弹窗中修改并即时持久化。各功能域拆分为独立子段
-/// （见 [`ConnectionConfig`] / [`TerminalConfig`] / [`TransferConfig`] / [`AppearanceConfig`] /
-/// [`LoggingConfig`] / [`UpdatesConfig`] / [`SecurityConfig`] / [`WindowConfig`]）。
+/// （见 [`ConnectionConfig`] / [`TerminalConfig`] / [`TransferConfig`] / [`FilesConfig`] /
+/// [`AppearanceConfig`] / [`LoggingConfig`] / [`UpdatesConfig`] / [`SecurityConfig`] /
+/// [`WindowConfig`]）。
 /// 文件路径在构造时确定并跳过序列化，因此不写入配置文件；`last_check_unix` 等由程序
 /// 内部写回、不出现在设置界面。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -521,6 +537,9 @@ pub struct AppConfig {
     /// `[transfer]` 段：文件传输设置。
     #[serde(default)]
     pub transfer: TransferConfig,
+    /// `[files]` 段：文件管理相关设置（本地编辑器等）。
+    #[serde(default)]
+    pub files: FilesConfig,
     /// `[appearance]` 段：程序外观与界面语言设置。
     #[serde(default)]
     pub appearance: AppearanceConfig,
@@ -645,6 +664,7 @@ impl Default for AppConfig {
             connection: ConnectionConfig::default(),
             terminal: TerminalConfig::default(),
             transfer: TransferConfig::default(),
+            files: FilesConfig::default(),
             appearance: AppearanceConfig::default(),
             logging: LoggingConfig::default(),
             updates: UpdatesConfig::default(),
@@ -753,6 +773,8 @@ impl From<LegacyAppConfig> for AppConfig {
             },
             // 旧版没有传输段：一律取默认值（并发 3）。
             transfer: TransferConfig::default(),
+            // 旧版没有文件段：一律取默认值（不指定编辑器）。
+            files: FilesConfig::default(),
             appearance: AppearanceConfig {
                 theme: l.theme,
                 ui_font: l.ui_font,

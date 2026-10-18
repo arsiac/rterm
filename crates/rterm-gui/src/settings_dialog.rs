@@ -327,7 +327,8 @@ fn general_pane(app: &App) -> Element<'_, Message> {
 }
 
 /// “连接与传输”分类
-/// 连接超时、SSH 保活间隔与判死次数、最大并发传输数、失败自动重试次数。
+/// 连接超时、SSH 保活间隔与判死次数、最大并发传输数、失败自动重试次数，
+/// 以及「文件」子区的外部编辑器（远程文件本地编辑用）。
 fn connection_pane(app: &App) -> Element<'_, Message> {
     let timeout_input = text_input("30", &app.config.connection.timeout.to_string())
         .on_input(|s| Message::Settings(settings::Message::ConnectTimeout(s)))
@@ -365,6 +366,13 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
     .step(1.0_f32)
     .on_release(Message::Settings(settings::Message::RetryAttemptsPersist));
     let retry_value = text(app.config.transfer.retry_attempts.to_string()).size(13);
+    // 外部编辑器：空串 = 系统默认程序。存的是配置里的规范值（None 时回显空串）。
+    let editor_input = text_input(
+        &t!("settings.editor_placeholder"),
+        app.config.files.editor.as_deref().unwrap_or(""),
+    )
+    .on_input(|s| Message::Settings(settings::Message::Editor(s)))
+    .style(crate::ui::text_input_style);
     column![
         crate::ui::section_title(t!("settings.sub_connection")),
         crate::ui::field_label(t!("settings.connect_timeout")),
@@ -388,6 +396,10 @@ fn connection_pane(app: &App) -> Element<'_, Message> {
             .spacing(12)
             .align_y(iced::alignment::Vertical::Center),
         crate::ui::hint_text(t!("settings.retry_attempts_hint")),
+        crate::ui::section_title(t!("settings.sub_files")),
+        crate::ui::field_label(t!("settings.editor_label")),
+        editor_input,
+        crate::ui::hint_text(t!("settings.editor_help")),
     ]
     .spacing(10)
     .into()

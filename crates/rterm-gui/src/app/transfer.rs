@@ -71,6 +71,7 @@ use std::time::{Duration, Instant};
 use iced::{Subscription, Task};
 
 use crate::app::folder_job::{self, Step};
+use crate::app::remote_edit::EditKey;
 use crate::app::tasks::{ensure_remote_dir, join_path, parent_path};
 use crate::i18n::localize_error;
 use crate::state::{
@@ -200,6 +201,19 @@ struct Job {
     retry_attempts: u32,
 }
 
+/// 下载行的作用域：单文件行（可带远程编辑键）或目录作业行。
+///
+/// 二者互斥由类型保证：目录下载没有「编辑键」，本地编辑下载没有目录运行时。
+enum DownloadScope {
+    /// 单文件行；`edit` 为远程编辑发起时带的编辑键（普通下载为 `None`）。
+    File {
+        /// 远程编辑键（[`crate::app::remote_edit::EditKey`]）。
+        edit: Option<EditKey>,
+    },
+    /// 目录作业行，带枚举运行时。
+    Folder(FolderRuntime),
+}
+
 /// 由一条传输记录 + 其所属标签构造 [`Job`]。
 fn job_from(tab_id: u64, t: &Transfer) -> Job {
     Job {
@@ -290,6 +304,7 @@ impl State {
                         resume: None,
                         keep_staging: false,
                         folder,
+                        edit: None,
                     };
                     self.per_tab.entry(tab_id).or_default().push(transfer);
                 }
@@ -309,7 +324,14 @@ impl State {
                 let remote = join_path(&ctx.remote_dir, &name);
                 // `local` 已是完整本地目标路径（SFTP 模块在唤起下载时已 `dir.join(name)` 拼好），
                 // 此处不可再拼接一次，否则目标会变成 `…/name/name` 导致写入失败。
-                self.enqueue_download(tab_id, remote, local, client, None, ctx)
+                self.enqueue_download(
+                    tab_id,
+                    remote,
+                    local,
+                    client,
+                    DownloadScope::File { edit: None },
+                    ctx,
+                )
             }
             Message::DownloadFolder(tab_id, name, local) => {
                 let Some(client) = ctx.client.clone() else {
@@ -321,7 +343,42 @@ impl State {
                     enumerating: true,
                     ..Default::default()
                 };
-                self.enqueue_download(tab_id, remote, local, client, Some(runtime), ctx)
+                self.enqueue_download(
+                    tab_id,
+                    remote,
+                    local,
+                    client,
+                    DownloadScope::Folder(runtime),
+                    ctx,
+                )
+            }
+            Message::EditDownload(tab_id, key, remote, local) => {
+                // 客户端按会话自己的标签现取：编辑会话的标签可能已不是活动标签。
+                let Some(client) = ctx.client_for(tab_id).or_else(|| ctx.client.clone()) else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
+                };
+                // `remote` / `local` 均原样使用（语义见变体文档）；无文件夹运行时。
+                self.enqueue_download(
+                    tab_id,
+                    remote,
+                    local,
+                    client,
+                    DownloadScope::File { edit: Some(key) },
+                    ctx,
+                )
+            }
+            Message::EditUpload(tab_id, key, local, remote) => {
+                // 同上：客户端按会话自己的标签现取，缺了才回退活动标签那份。
+                let Some(client) = ctx.client_for(tab_id).or_else(|| ctx.client.clone()) else {
+                    return Task::done(Event::Toast(ToastKind::Error, t!("sftp.not_connected")));
+                };
+                if !self.push_edit_upload(tab_id, key, local, remote, client) {
+                    return Task::batch([
+                        self.pump(ctx),
+                        Task::done(Event::Toast(ToastKind::Error, t!("transfer.queue_full"))),
+                    ]);
+                }
+                self.pump(ctx)
             }
             Message::Progress(tab_id, tid, transferred, total, speed) => {
                 if let Some(tab) = self.per_tab.get_mut(&tab_id)
@@ -364,9 +421,13 @@ impl State {
                 self.abort_handles.remove(&tid);
                 // 标记完成 / 失败；上传成功需刷新当前目录以显示新文件（经父层转发给 SFTP 模块）。
                 let mut relist = false;
+                // 本 arm 结束时统一 batch 出去的任务：额度泵 + 清理 + 重试 + 编辑行终态回流。
+                let mut tasks: Vec<Task<Event>> = Vec::new();
                 // 需自动重试时记下「退避时长 + 作业参数」；最终失败时改记「待清理的作业」。
                 let mut retry: Option<(Duration, u64)> = None;
                 let mut cleanup: Option<Job> = None;
+                // 失败分类先取：`result` 随后被 move 进 match，而编辑行的终态回流还要用它。
+                let failure_kind = result.as_ref().err().map(|f| f.kind);
                 if let Some(tab) = self.per_tab.get_mut(&tab_id)
                     && let Some(t) = tab.iter_mut().find(|t| t.id == tid)
                     // 仅在仍在 `Active` 时落地结果：若该行已被用户手动重试置回 `Queued`，
@@ -415,8 +476,33 @@ impl State {
                     if let Some(fr) = &mut t.folder {
                         fr.inflight.clear();
                     }
+                    // 远程编辑行：终态才回流。`WaitingRetry` 是自动重试的中间态，
+                    // 此刻回流会让编辑会话把一次抖动当成一轮失败提前计数。
+                    if let Some(key) = t.edit.clone() {
+                        let is_upload = matches!(t.direction, TransferDirection::Upload);
+                        match t.status {
+                            TransferStatus::Done => {
+                                let event = if is_upload {
+                                    Event::EditUploadDone(key, None)
+                                } else {
+                                    Event::EditDownloadDone(key, true)
+                                };
+                                tasks.push(Task::done(event));
+                            }
+                            TransferStatus::Error => {
+                                let event = if is_upload {
+                                    Event::EditUploadDone(key, failure_kind)
+                                } else {
+                                    Event::EditDownloadDone(key, failure_kind.is_none())
+                                };
+                                tasks.push(Task::done(event));
+                            }
+                            // WaitingRetry：还要重试，不回流。
+                            _ => {}
+                        }
+                    }
                 }
-                let mut tasks = vec![self.pump(ctx)];
+                tasks.push(self.pump(ctx));
                 // I5：同靶还有存活行时不删。刻意放在 `pump` **之后**判：那一步可能刚启动同靶排队项。
                 if let Some(job) = cleanup
                     && !self.target_busy(&job_target(&job), Some(job.tid))
@@ -853,14 +939,14 @@ impl State {
 
     /// 入队一个下载传输并启动调度（本地已存在同名由调用方先弹覆盖框，此处直接写入）。
     ///
-    /// 行名取 `remote` 的末段；`folder` 带运行时即为一棵树的作业行（目录下载），`None` 为单文件行。
+    /// `scope` 决定这是目录作业行还是单文件行（远程编辑发起的下载带编辑键）。
     fn enqueue_download(
         &mut self,
         tab_id: u64,
         remote: String,
         local: PathBuf,
         client: Arc<SftpClient>,
-        folder: Option<FolderRuntime>,
+        scope: DownloadScope,
         ctx: &Ctx,
     ) -> Task<Event> {
         if !self.has_queue_capacity(tab_id) {
@@ -876,6 +962,11 @@ impl State {
             .unwrap_or(&remote)
             .to_string();
         let tid = self.next_transfer_id();
+        // 目录运行时与编辑键互斥（见 [`DownloadScope`]）：单文件行才可能带编辑键。
+        let (folder, edit) = match scope {
+            DownloadScope::File { edit } => (None, edit),
+            DownloadScope::Folder(runtime) => (Some(runtime), None),
+        };
         let transfer = Transfer {
             id: tid,
             direction: TransferDirection::Download,
@@ -895,9 +986,54 @@ impl State {
             resume: None,
             keep_staging: false,
             folder,
+            edit,
         };
         self.per_tab.entry(tab_id).or_default().push(transfer);
         self.pump(ctx)
+    }
+
+    /// 入队一个单文件上传行（远程编辑回传专用）：远端路径原样使用，行上带编辑键，
+    /// 完成后经 [`Event::EditUploadDone`] 回流。返回 `false` 表示队列已满（未入队）。
+    fn push_edit_upload(
+        &mut self,
+        tab_id: u64,
+        key: EditKey,
+        local: PathBuf,
+        remote: String,
+        client: Arc<SftpClient>,
+    ) -> bool {
+        if !self.has_queue_capacity(tab_id) {
+            return false;
+        }
+        let name = Path::new(&local)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| remote.clone());
+        let tid = self.next_transfer_id();
+        self.per_tab.entry(tab_id).or_default().push(Transfer {
+            id: tid,
+            direction: TransferDirection::Upload,
+            name,
+            local,
+            remote,
+            transferred: 0,
+            total: 0,
+            status: TransferStatus::Queued,
+            attempts: 0,
+            not_before: None,
+            partial: None,
+            error: None,
+            speed: 0.0,
+            client: Some(client),
+            // 新入队的行没有续传基准：远端 `x.part` 若是别的文件留下的，无从判断，
+            // `resume_offset` 会据此从 0 开始并顺手截断它。
+            resume: None,
+            keep_staging: false,
+            // 编辑回传的本地源一定是普通文件（缓存里的单份副本），不可能是文件夹作业。
+            folder: None,
+            edit: Some(key),
+        });
+        true
     }
 
     /// 订阅：当前为占位（内部异步结果由 `run_transfer` 的流式任务产生，
@@ -925,6 +1061,14 @@ pub enum Message {
     ///
     /// 一行 = 一棵树：入队即带「枚举中」运行时，远端游树由作业执行体在 worker 里完成。
     DownloadFolder(u64, String, PathBuf),
+    /// 远程编辑取回：把远端文件下载到本地编辑缓存（标签 id + 编辑键 + 远端绝对路径 + 本地路径）。
+    ///
+    /// 远端路径**原样使用**：会话发起时已捕获完整路径，不按活动目录再拼；完成经 [`Event::EditDownloadDone`] 回流。
+    EditDownload(u64, EditKey, String, PathBuf),
+    /// 远程编辑回传：把本地副本上传回原远端路径（标签 id + 编辑键 + 本地路径 + 远端绝对路径）。
+    ///
+    /// 路径同样原样使用；完成经 [`Event::EditUploadDone`] 回流编辑会话，供它更新回传基准。
+    EditUpload(u64, EditKey, PathBuf, String),
     /// 传输进度（携带标签 id + 传输任务 id + 已传字节 + 总字节 + 瞬时速度字节/秒）。
     Progress(u64, u64, u64, u64, f64),
     /// 本轮尝试的元信息（标签 id + 任务 id + 源端指纹 + 起始偏移），由 worker 在拉起核心层
@@ -1102,6 +1246,12 @@ pub enum Event {
     Toast(ToastKind, String),
     /// 上传成功：请求父层刷新对应标签的 SFTP 目录（携带标签 id），由父层转发给 SFTP 模块。
     RefreshDir(u64),
+    /// 远程编辑取回完成（携带编辑键与成败）：由父层转投编辑会话模块。
+    EditDownloadDone(EditKey, bool),
+    /// 远程编辑回传完成（携带编辑键与失败分类；`None` = 成功）：由父层转投编辑会话模块。
+    ///
+    /// 只在**终态**发射：自动重试期间的中间失败不发射，否则编辑会话会把一次抖动当成一轮失败提前计数。
+    EditUploadDone(EditKey, Option<FailureKind>),
     /// 自回路：把一条模块内部消息经父层派发回 `State::update`。
     ///
     /// 写操作（进度 / 传输完成）完成后需重新进入模块自身，但模块 `update` 只能经 `Event` 上行、
@@ -2196,6 +2346,7 @@ mod tests {
             resume: None,
             keep_staging: false,
             folder: None,
+            edit: None,
         }
     }
 

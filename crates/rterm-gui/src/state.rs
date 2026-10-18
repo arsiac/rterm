@@ -2,6 +2,7 @@
 //!
 //! 这些类型保存于 [`App`](crate::app::App) 中，驱动三栏布局与各类面板的交互。
 
+use crate::app::remote_edit::EditKey;
 use crate::message::ResizeSender;
 use crate::widget::term::Terminal;
 use rterm_core::{
@@ -129,6 +130,38 @@ pub enum SftpDialog {
         /// 完整远端路径。
         path: String,
     },
+    /// 远程编辑回传冲突确认：编辑期间远端被外部改动，覆盖 / 取消。
+    ///
+    /// 与 [`Self::OverwriteDownload`] 的区别：那问的是「本地已有同名文件」，这里问的是
+    /// 「服务端那份已不是下载时的内容」——覆盖丢的是他人的改动。
+    EditConflict {
+        /// 编辑会话所属会话 id（与 `remote_path` 合成编辑键，确认 / 取消据此回流）。
+        session_id: String,
+        /// 编辑的远端绝对路径。
+        remote_path: String,
+        /// 展示用的远端文件名。
+        name: String,
+    },
+    /// 远程编辑回传确认：检测到本地修改、指纹比对无冲突后，回传前请用户拍板。
+    ///
+    /// 与冲突框的分工：那次问「要不要丢他人的改动」（覆盖即授权），这里问「要不要回传这一版」；取消（按钮 / Esc，遮罩不关框）则暂不回传，再次保存重新询问。
+    EditUploadConfirm {
+        /// 编辑会话所属会话 id（与 `remote_path` 合成编辑键，确认 / 取消据此回流）。
+        session_id: String,
+        /// 编辑的远端绝对路径。
+        remote_path: String,
+        /// 展示用的远端文件名。
+        name: String,
+    },
+}
+
+impl SftpDialog {
+    /// 单击遮罩空白处是否关闭本框（即 `modal::overlay_wrap_dismissable` 的关闭语义）。
+    ///
+    /// 仅回传确认框抗遮罩：其「取消」静默无痕迹，误触即「保存了但没回传」；其余对话框保持既有行为。
+    pub fn backdrop_dismissable(&self) -> bool {
+        !matches!(self, Self::EditUploadConfirm { .. })
+    }
 }
 
 /// 目录整树删除前的计数探测态。
@@ -275,6 +308,8 @@ pub struct Transfer {
     pub keep_staging: bool,
     /// 文件夹作业行的运行时状态（`None` = 普通单文件行），见 [`FolderRuntime`]。
     pub folder: Option<FolderRuntime>,
+    /// 远程编辑会话键（`Some` = 该行是「本地编辑」的取回 / 回传，完成后经专用事件回流）。
+    pub edit: Option<EditKey>,
 }
 
 /// 文件夹作业行（一行 = 一棵树）的运行时状态，执行体见 `app::transfer::run_folder_job`。
@@ -378,5 +413,73 @@ impl SftpView {
     /// 构造空的文件管理视图。
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upload_confirm() -> SftpDialog {
+        SftpDialog::EditUploadConfirm {
+            session_id: "sess-1".to_string(),
+            remote_path: "/home/u/notes.txt".to_string(),
+            name: "notes.txt".to_string(),
+        }
+    }
+
+    /// 回传确认框是唯一抗遮罩关闭的对话框：它的「取消」静默无痕迹，
+    /// 误触一次就是「保存了但没回传」的静默数据分歧。
+    #[test]
+    fn edit_upload_confirm_resists_backdrop_click() {
+        assert!(!upload_confirm().backdrop_dismissable());
+    }
+
+    /// 边界钉死：「不影响其他弹窗」——冲突框与其余对话框一律保持
+    /// 「单击遮罩关闭」的既有行为，将来误改会立刻红。
+    #[test]
+    fn other_dialogs_stay_backdrop_dismissable() {
+        let others = [
+            SftpDialog::DeleteFile {
+                name: "a.txt".to_string(),
+            },
+            SftpDialog::DeleteTree {
+                name: "dir".to_string(),
+                probe: DeleteProbe::Counting,
+            },
+            SftpDialog::OverwriteDownload {
+                name: "a.txt".to_string(),
+                local: std::path::PathBuf::from("/tmp/a.txt"),
+                transfer_id: 1,
+                is_folder: false,
+            },
+            SftpDialog::UploadConflicts {
+                items: Vec::new(),
+                rows: Vec::new(),
+            },
+            SftpDialog::Properties {
+                entry: FileEntry {
+                    name: "a.txt".to_string(),
+                    is_dir: false,
+                    size: 1,
+                    modified: None,
+                    permissions: None,
+                    user: None,
+                    group: None,
+                },
+                path: "/home/u/a.txt".to_string(),
+            },
+            SftpDialog::EditConflict {
+                session_id: "sess-1".to_string(),
+                remote_path: "/home/u/notes.txt".to_string(),
+                name: "notes.txt".to_string(),
+            },
+        ];
+        for dialog in &others {
+            assert!(
+                dialog.backdrop_dismissable(),
+                "该对话框应保持遮罩可关：{dialog:?}"
+            );
+        }
     }
 }

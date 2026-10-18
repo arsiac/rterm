@@ -9,6 +9,7 @@ pub(crate) mod hostkey;
 pub(crate) mod masterpw;
 pub(crate) mod panes;
 pub(crate) mod paste;
+pub(crate) mod remote_edit;
 pub(crate) mod routing;
 pub(crate) mod search;
 pub(crate) mod session;
@@ -100,6 +101,8 @@ pub struct App {
     /// 粘贴确认模块状态：待确认的大量粘贴与标签级豁免记录。三条粘贴入口在此收口，
     /// 达阈值者弹窗询问。模块经 `Message::Paste` 接收意图、经 `Message::PasteEvent` 回写父状态。
     pub paste: paste::State,
+    /// 远程文件本地编辑模块状态：编辑会话表（右键「本地编辑」发起，保存后经确认框回传）。
+    pub remote_edit: remote_edit::State,
     /// 终端内搜索模块状态：搜索条开关、查询串与匹配开关。入口为 Ctrl+Shift+F（终端聚焦时）
     /// 与终端右键菜单「查找」。模块经 `Message::Search` 接收意图、经 `Message::SearchEvent`
     /// 由父层落地后端命令与焦点，自身绝不修改 `App`。

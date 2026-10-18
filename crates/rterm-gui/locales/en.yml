@@ -29,6 +29,10 @@ settings:
   max_concurrent_hint: Takes effect immediately — raising it starts more queued transfers at once, while lowering it never interrupts transfers in progress and converges once they finish.
   retry_attempts: Automatic retries on failure
   retry_attempts_hint: Only transient failures (network blips, timeouts, dropped channels) are retried automatically, with exponential backoff (1.5s up to 8s); 0 disables automatic retries. Cancellations and permission errors are never retried.
+  sub_files: Files
+  editor_label: External editor
+  editor_placeholder: Leave empty for the system default program
+  editor_help: Command used to open remote files for local editing (right-click a file in the file manager). It is split on whitespace into program and arguments, and the local copy path is appended as the last argument. Quoted paths inside arguments are not supported; leave empty to use the system default program.
   scrollback: Scrollback lines (0 = none)
   scrollback_note: Applies only to newly opened terminal tabs.
   log_level: Log level
@@ -289,6 +293,7 @@ sftp:
   copy_name: Copy name
   copy_path: Copy path
   properties: Properties
+  edit_local: Edit locally
   delete_title: Delete confirmation
   delete_confirm: Delete %{kind} "%{name}"? This cannot be undone.
   delete_tree_counting: 'Counting contents…'
@@ -336,6 +341,24 @@ sftp:
   prop_owner: Owner
   prop_group: Group
   prop_path: Path
+remote_edit:
+  only_files: Only files can be edited locally.
+  already_editing: "%{name} is already open for local editing."
+  started: '"%{name}" opened in the local editor. The copy is at %{path}; saves are uploaded back automatically.'
+  too_large: '"%{name}" exceeds the %{limit} local editing limit; use Download instead.'
+  probe_failed: 'Failed to read remote file info for "%{name}": %{err}'
+  cache_failed: 'Failed to prepare the edit cache directory: %{err}'
+  download_failed: Failed to fetch the file into the edit cache.
+  spawn_failed: Could not launch the editor (%{err}). The copy is at %{path}; save it there and it will still be uploaded back.
+  no_channel: SFTP channel unavailable — the upload is paused and resumes automatically once the channel is back.
+  conflict_title: Remote file changed
+  conflict_body: '"%{name}" on the server changed after you started editing. Overwriting discards those external changes.'
+  confirm_title: Upload back to the server?
+  confirm_body: '"%{name}" has local changes. Upload them back to the server? Choosing Cancel skips this version; saving the file again will ask once more.'
+  confirm_upload: Upload
+  confirm_dismissed: 'Upload skipped for now. Save the file again to be asked once more. Copy: %{path}'
+  upload_canceled: 'Upload canceled. Save the file again to retry. Copy: %{path}'
+  upload_stopped: 'Automatic upload kept failing and is paused for now; save the file again to retry. Copy: %{path}'
 hostkey:
   unknown_title: Unknown host
   unknown_body: This host's identity has not been verified yet. Please confirm the following information matches the server you expect.

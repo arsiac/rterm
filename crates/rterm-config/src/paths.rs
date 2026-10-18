@@ -146,6 +146,13 @@ pub fn log_dir() -> PathBuf {
         .join("logs")
 }
 
+/// 远程编辑的本地缓存目录：缓存目录下的 `remote_edit` 子目录。
+///
+/// 「本地编辑」把远端文件下载到此再交给外部编辑器，保存后回传；不自动清理——未回传的副本可能是用户改动的唯一镜像，位置由 GUI 在发起编辑时经 toast 告知。
+pub fn remote_edit_dir() -> Option<PathBuf> {
+    cache_dir().map(|d| d.join("remote_edit"))
+}
+
 /// 将状态根重定向到指定目录，仅供测试使用。
 ///
 /// 设置后 [`config_dir`] / [`cache_dir`] 改为在 `<root>/config`、`<root>/cache` 下解析，

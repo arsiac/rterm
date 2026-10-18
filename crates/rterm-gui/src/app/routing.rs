@@ -135,6 +135,14 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.paste.update(m, &ctx).map(Message::PasteEvent)
         }
         Message::PasteEvent(e) => events::apply_paste_event(app, e),
+        // 远程文件本地编辑模块：路由进模块自身 `update`，上行事件经 `Message::RemoteEditEvent` 回收。
+        Message::RemoteEdit(m) => {
+            let ctx = contexts::remote_edit_ctx(app);
+            app.remote_edit
+                .update(m, &ctx)
+                .map(Message::RemoteEditEvent)
+        }
+        Message::RemoteEditEvent(e) => events::apply_remote_edit_event(app, e),
         // 终端内搜索模块：路由进模块自身 `update`，上行事件经 `Message::SearchEvent` 落地。
         Message::Search(m) => app.search.update(m).map(Message::SearchEvent),
         Message::SearchEvent(e) => events::apply_search_event(app, e),

@@ -1,7 +1,8 @@
 //! 父状态到子模块的只读上下文适配层，以及父状态的通用写入动作。
 
 use crate::app::{
-    App, masterpw, paste, session, session_io, settings, snippets, tabs, transfer, updates, window,
+    App, masterpw, paste, remote_edit, session, session_io, settings, snippets, tabs, transfer,
+    updates, window,
 };
 use crate::state::{SftpView, ToastKind};
 use crate::t;
@@ -166,6 +167,16 @@ pub(crate) fn transfer_ctx(app: &App) -> transfer::Ctx {
         clients: app.sftp.live_clients().collect(),
         max_concurrent: app.config.transfer.max_concurrent,
         retry_attempts: app.config.transfer.retry_attempts,
+    }
+}
+
+/// 组装远程编辑模块所需的只读上下文（各标签此刻的 SFTP 客户端 + 外部编辑器命令）。
+///
+/// 每次 `update` 前重建：会话重建后同一标签会换上新客户端，编辑会话的回传与指纹比对都要用它。
+pub(crate) fn remote_edit_ctx(app: &App) -> remote_edit::Ctx {
+    remote_edit::Ctx {
+        clients: app.sftp.live_clients().collect(),
+        editor: app.config.files.editor.clone(),
     }
 }
 

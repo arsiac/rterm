@@ -163,6 +163,8 @@ pub enum Message {
     RetryAttempts(f32),
     /// 提交“失败自动重试次数”设置（滑块释放时触发，仅落盘）。
     RetryAttemptsPersist,
+    /// 修改“外部编辑器”设置（携带输入框最新文本；空串表示用系统默认程序）。
+    Editor(String),
     /// 修改“终端字号”设置（携带滑块最新值）。
     FontSize(f32),
     /// 修改“程序主题”设置（携带主题标识，如 `dark` / `light`）。
@@ -239,6 +241,8 @@ pub enum Event {
     RetryAttempts(u32),
     /// 把当前“失败自动重试次数”落盘（滑块释放后调用）。
     RetryAttemptsPersist,
+    /// 写回“外部编辑器”配置（携带命令串，空串规范化为 `None` = 系统默认程序）。
+    Editor(Option<String>),
     /// 写回“终端字号”配置（携带滑块值），并热替换到所有已打开的终端标签。
     FontSize(f32),
     /// 写回“程序主题”配置（携带主题标识）。
@@ -349,6 +353,13 @@ impl State {
                 Task::done(Event::RetryAttempts(n as u32))
             }
             Message::RetryAttemptsPersist => Task::done(Event::RetryAttemptsPersist),
+            // 空串（含纯空白）规范化为 None：配置里存空串与不存等价，统一成一种形态，
+            // 免得使用方到处判空。
+            Message::Editor(text) => {
+                let trimmed = text.trim();
+                let editor = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                Task::done(Event::Editor(editor))
+            }
             Message::FontSize(size) => Task::done(Event::FontSize(size)),
             Message::Theme(theme) => Task::done(Event::Theme(theme)),
             Message::UiFont(text) => Task::done(Event::UiFont(text)),
