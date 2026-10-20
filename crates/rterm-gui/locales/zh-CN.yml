@@ -444,6 +444,7 @@ activity:
   files: 文件
   transfers: 传输
   snippets: 常用命令
+  forwards: 端口转发
   collapse_sidebar: 收起侧边栏
   expand_sidebar: 展开侧边栏
 app:
@@ -535,3 +536,42 @@ errors:
     kdf: 密钥派生失败（加密头中的 KDF 参数非法）
     cipher: 加解密失败——数据可能被篡改或密钥不匹配
     envelope: 密文信封格式损坏（base64 或长度非法）
+
+forward:
+  menu_entry: "端口转发…"
+  add: 添加规则
+  kind: 类型
+  kind_local: "本地 (-L)"
+  kind_remote: "远程 (-R)"
+  kind_dynamic: "动态 (SOCKS5)"
+  kind_short_local: L
+  kind_short_remote: R
+  kind_short_dynamic: D
+  dynamic_hint: SOCKS5 代理
+  bind_address: 绑定地址
+  bind_placeholder: "127.0.0.1"
+  target_placeholder: "127.0.0.1"
+  bind_port: 绑定端口
+  target_host: 目标主机
+  target_port: 目标端口
+  new: 新建
+  edit: 编辑
+  delete: 删除
+  save: 保存
+  empty: 未选择会话
+  empty_hint: 连接一个会话，或右键会话选择「端口转发…」来管理规则。
+  no_rules: 暂无转发规则
+  no_rules_hint: 添加规则即可在该会话上转发端口。
+  status_starting: 启动中…
+  status_active: "%{count} 个连接"
+  status_failed: 失败
+  status_stopped: 已停止
+  status_offline: 未连接（仅编辑配置）
+  error_port: 绑定端口须为 1-65535。
+  error_target_port: 目标端口须为 1-65535。
+  failed_bind: "转发绑定 %{addr}:%{port} 失败：%{detail}"
+  failed_remote_denied: "服务端拒绝远程转发 %{addr}:%{port}（检查 GatewayPorts）"
+  failed_invalid: "规则不合法：%{detail}"
+  persist_failed: "保存转发规则失败：%{err}"
+  readonly: 解锁保险库后才能编辑转发规则。
+

@@ -39,8 +39,6 @@ pub enum Icon {
     ListBar,
     /// 多个文件夹
     FolderMultiple,
-    /// 带禁止符号的文件夹
-    FolderJunk,
     /// 文件夹
     Folder,
     /// 文件夹 + 向上箭头
@@ -107,6 +105,8 @@ pub enum Icon {
     CommandLine,
     /// 闪电
     Flash,
+    /// 双向水平箭头（端口转发；由 transfer-2-fill 顺时针旋转 90° 派生）
+    ArrowSwap,
 }
 
 impl Icon {
@@ -115,7 +115,6 @@ impl Icon {
         match self {
             Icon::ListBar => svg_bytes!("list-bar-16-filled"),
             Icon::FolderMultiple => svg_bytes!("folder-multiple-16-filled"),
-            Icon::FolderJunk => svg_bytes!("folder-junk-24-filled"),
             Icon::Folder => svg_bytes!("folder-16-filled"),
             Icon::FolderArrowUp => svg_bytes!("folder-arrow-up-16-filled"),
             Icon::Document => svg_bytes!("document-16-filled"),
@@ -134,6 +133,7 @@ impl Icon {
             Icon::ChevronUp => svg_bytes!("chevron-up-16-filled"),
             Icon::MoreVertical => svg_bytes!("more-vertical-16-filled"),
             Icon::Transfer => svg_bytes!("transfer-2-fill"),
+            Icon::ArrowSwap => svg_bytes!("arrow-swap-fill"),
             Icon::Checkmark => svg_bytes!("checkmark-16-filled"),
             Icon::Warning => svg_bytes!("warning-16-filled"),
             Icon::PanelLeftContract => svg_bytes!("panel-left-contract-16-filled"),

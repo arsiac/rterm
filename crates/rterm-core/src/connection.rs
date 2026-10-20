@@ -4,12 +4,14 @@
 //! 打开多个通道：交互式 shell 通道（供终端标签页桥接）与 sftp 子系统通道
 //! （供文件管理面板使用）。
 
+use crate::forward::{ForwardRouter, IncomingRemote};
 use crate::terminal_bridge::PtySize;
 use crate::{CoreError, CoreErrorKind, host_key};
 use log::debug;
 use rterm_config::{AuthMethod, JumpHost, SessionConfig};
+use russh::Channel;
 use russh::Pty;
-use russh::client::{self, Config, Handle, Handler};
+use russh::client::{self, ChannelOpenHandle, Config, Handle, Handler, Msg};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -156,6 +158,8 @@ pub(crate) struct ClientHandler {
     port: u16,
     /// 未知 / 变更密钥时向 GUI 发送确认请求；接收端被丢弃意味着无人能确认，按拒绝处理。
     prompt_tx: mpsc::Sender<(HostKeyPrompt, HostKeyReply)>,
+    /// 远程转发的回送连接路由表；仅目标跳持有（跳板跳为 `None`，不参与转发）。
+    forward_router: Option<ForwardRouter>,
 }
 
 impl Handler for ClientHandler {
@@ -233,6 +237,37 @@ impl Handler for ClientHandler {
             }
         }
     }
+
+    /// 服务端回送的远程转发连接：按 (connected_address, connected_port) 路由给
+    /// 对应规则的接收端；无注册条目（未启用远程转发 / 规则已移除）时拒绝通道。
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        let sender = self
+            .forward_router
+            .as_ref()
+            .and_then(|r| r.lookup(connected_address, connected_port));
+        let Some(sender) = sender else {
+            debug!(
+                "forward: rejecting unexpected forwarded-tcpip to {connected_address}:{connected_port}"
+            );
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        };
+        reply.accept().await;
+        // 接收端消失（规则刚被移除）时通道随 send 失败关闭。
+        let _ = sender.send(IncomingRemote { channel }).await;
+        Ok(())
+    }
 }
 
 /// 一条已建立的 SSH 连接。
@@ -249,6 +284,9 @@ pub struct SshConnection {
     /// 仅用于 [`Self::disconnect`] 显式断开整条链与诊断；russh 会话任务不靠句柄续命，
     /// 任一跳死亡都会让目标流 EOF、目标会话收尾，[`Self::is_closed`] 随之转真。
     jumps: Vec<Handle<ClientHandler>>,
+    /// 远程转发（-R）回送连接的路由表：转发引擎按 (bind_addr, bind_port) 注册接收端，
+    /// 目标跳的客户端回调把服务端回送的 forwarded-tcpip 通道送进来。
+    forward_router: ForwardRouter,
 }
 
 /// 组装 russh 客户端配置：保活间隔与判死次数由宿主传入，其余取 russh 默认。
@@ -355,11 +393,13 @@ async fn establish_hop(
     secrets: &SessionSecrets,
     ssh_config: &Arc<Config>,
     prompt_tx: mpsc::Sender<(HostKeyPrompt, HostKeyReply)>,
+    forward_router: Option<ForwardRouter>,
 ) -> Result<Handle<ClientHandler>, CoreError> {
     let handler = ClientHandler {
         host: endpoint.host.to_string(),
         port: endpoint.port,
         prompt_tx,
+        forward_router,
     };
     let mut handle = match prev {
         None => client::connect(
@@ -431,19 +471,23 @@ impl SshConnection {
                 &hop.secrets,
                 &ssh_config,
                 prompt_tx.clone(),
+                None,
             )
             .await
             .map_err(|e| hop_error(index, &hop.config.host, e))?;
             jump_handles.push(handle);
         }
 
-        // 目标主机：经最后一跳转发（无跳板机时即直连）。
+        // 目标主机：经最后一跳转发（无跳板机时即直连）。远程转发的回送连接经
+        // 该跳的客户端回调进入路由表。
+        let forward_router = ForwardRouter::new();
         let handle = establish_hop(
             jump_handles.last(),
             Endpoint::from(config),
             secrets,
             &ssh_config,
             prompt_tx,
+            Some(forward_router.clone()),
         )
         .await?;
 
@@ -451,6 +495,7 @@ impl SshConnection {
         Ok(Self {
             handle: Arc::new(AsyncMutex::new(handle)),
             jumps: jump_handles,
+            forward_router,
         })
     }
 
@@ -464,6 +509,16 @@ impl SshConnection {
     pub async fn is_closed(&self) -> bool {
         let handle = self.handle.lock().await;
         handle.is_closed()
+    }
+
+    /// 内部 russh 句柄的克隆引用（crate 内转发引擎开通道 / 注册远程转发用）。
+    pub(crate) fn ssh_handle(&self) -> Arc<AsyncMutex<Handle<ClientHandler>>> {
+        self.handle.clone()
+    }
+
+    /// 远程转发回送连接的路由表句柄（crate 内转发引擎注册 / 注销用）。
+    pub(crate) fn forward_router(&self) -> ForwardRouter {
+        self.forward_router.clone()
     }
 
     /// 主动断开这条连接（向服务端发送断开原因后关闭传输）。

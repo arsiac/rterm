@@ -375,6 +375,7 @@ mod tests {
             group: None,
             jumps: Vec::new(),
             startup_command: None,
+            forwards: Vec::new(),
         }
     }
 
@@ -559,6 +560,7 @@ mod tests {
             group: None,
             jumps: vec![jump],
             startup_command: None,
+            forwards: Vec::new(),
         }
     }
 
@@ -799,6 +801,7 @@ mod tests {
             group: None,
             jumps: Vec::new(),
             startup_command: None,
+            forwards: Vec::new(),
         };
         let dropped =
             export_sessions_with_credentials(&path, &[agent_only], &local, &Vault::for_export("e"))

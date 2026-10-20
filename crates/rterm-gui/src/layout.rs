@@ -9,6 +9,8 @@ use crate::App;
 use crate::activity_bar;
 use crate::app::panes;
 use crate::app::updates;
+use crate::forwards_dialog;
+use crate::forwards_panel;
 use crate::icons::Icon;
 use crate::message::Message;
 use crate::session_panel;
@@ -34,6 +36,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 CenterView::Files => sftp_panel::view(app).map(Message::Sftp),
                 CenterView::Transfers => transfer_panel::view(app).map(Message::Transfer),
                 CenterView::Snippets => snippet_panel::view(app).map(Message::Snippets),
+                CenterView::Forwards => forwards_panel::view(app).map(Message::Forwards),
             }
         } else {
             terminal_pane::view(app)
@@ -114,6 +117,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // 常用命令新建 / 编辑弹窗：与会话编辑器同为列表之上的编辑层。
     if let Some(dialog) = crate::snippet_dialog::view(app) {
         layers.push(dialog.map(Message::Snippets));
+    }
+    // 端口转发规则新建 / 编辑弹窗：与片段编辑弹窗同层。
+    if let Some(dialog) = forwards_dialog::view(app) {
+        layers.push(dialog.map(Message::Forwards));
     }
     // 快速命令弹窗（Ctrl+Shift+P）：轻量浮层，压在编辑器之上、粘贴确认与主密码之下。
     if let Some(dialog) = crate::snippet_palette::view(app) {

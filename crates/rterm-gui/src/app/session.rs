@@ -133,6 +133,9 @@ pub struct EditorDraft {
     pub startup_command: String,
     /// 跳板链草稿（由外到内，与保存后的 [`SessionConfig::jumps`] 同序）。
     pub jumps: Vec<JumpDraft>,
+    /// 端口转发规则（编辑器暂不提供编辑入口，打开 / 保存原样携带，
+    /// 避免保存会话时静默丢弃规则；管理入口见 `app::forwards`）。
+    pub forwards: Vec<rterm_config::ForwardRule>,
     /// 分组字段的自动补全状态（候选池 + 当前文本），由打开编辑器时按现有会话分组填充。
     ///
     /// 用 [`Rc`] 包裹以规避 `iced_autocomplete::State` 的 `Clone` 不确定性与生命周期：
@@ -161,6 +164,7 @@ impl EditorDraft {
             group: String::new(),
             startup_command: String::new(),
             jumps: Vec::new(),
+            forwards: Vec::new(),
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: None,
@@ -194,6 +198,7 @@ impl EditorDraft {
             group: cfg.group.clone().unwrap_or_default(),
             startup_command: cfg.startup_command.clone().unwrap_or_default(),
             jumps: cfg.jumps.iter().map(JumpDraft::from_config).collect(),
+            forwards: cfg.forwards.clone(),
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: Some(cfg.auth.clone()),
@@ -248,6 +253,7 @@ impl EditorDraft {
                 Some(self.startup_command.clone())
             },
             jumps,
+            forwards: self.forwards.clone(),
         })
     }
 
@@ -422,6 +428,27 @@ impl State {
         }
         Ok(())
     }
+
+    /// 写入某会话的端口转发规则并落盘（存储不可用时仅改内存态，不落盘）。
+    ///
+    /// 会话不存在（并发中被删除等）视为成功：无内存可改，也无从落盘。
+    pub fn set_forwards(
+        &mut self,
+        session_id: &str,
+        forwards: Vec<rterm_config::ForwardRule>,
+        header: &rterm_crypto::CryptoHeader,
+    ) -> Result<(), String> {
+        let Some(cfg) = self.sessions.iter_mut().find(|s| s.id == session_id) else {
+            return Ok(());
+        };
+        cfg.forwards = forwards;
+        if let Some(store) = self.store.as_ref() {
+            store
+                .save(&self.sessions, header)
+                .map_err(|e| t!("app.save_failed", err => e))?;
+        }
+        Ok(())
+    }
 }
 
 /// 模块内部消息：会话列表与编辑器的 UI 意图。
@@ -476,6 +503,9 @@ pub enum Message {
     /// 打开某会话的文件管理（携带会话 id），右键菜单「打开文件管理」触发：
     /// 经 `Event::OpenFiles` 上行，由父层打开对应标签的 SFTP。
     OpenFiles(String),
+    /// 打开某会话的端口转发管理（携带会话 id），右键菜单「端口转发…」触发：
+    /// 经 `Event::OpenForwards` 上行，由父层设置作用域并切换到转发面板。
+    OpenForwards(String),
     /// 切换工具栏「更多」dropdown显隐。
     ToggleMoreMenu,
     /// 会话列表过滤词变更（携带输入框最新文本）。
@@ -508,6 +538,8 @@ pub enum Event {
     Connect(String),
     /// 打开某会话的文件管理（携带会话 id）：父层据此打开对应标签的 SFTP 面板。
     OpenFiles(String),
+    /// 打开某会话的端口转发管理（携带会话 id）：父层据此设置作用域并切换到转发面板。
+    OpenForwards(String),
     /// 某会话被删除（携带会话 id）：父层关闭该会话的全部终端标签。
     SessionDeleted(String),
     /// 写回状态栏提示（携带文案，`None` 表示清除）。
@@ -718,6 +750,10 @@ impl State {
                 // 右键「打开文件管理」：打开 SFTP 由父层经 `Event::OpenFiles` 处理。
                 Task::done(Event::OpenFiles(id))
             }
+            Message::OpenForwards(id) => {
+                // 右键「端口转发…」：作用域设置与导航由父层经 `Event::OpenForwards` 处理。
+                Task::done(Event::OpenForwards(id))
+            }
             Message::ToggleMoreMenu => {
                 self.show_more_menu = !self.show_more_menu;
                 Task::none()
@@ -868,6 +904,7 @@ mod tests {
             group: Some("prod".into()),
             jumps: Vec::new(),
             startup_command: None,
+            forwards: Vec::new(),
         }
     }
 
@@ -883,6 +920,7 @@ mod tests {
             group: group.map(str::to_string),
             jumps: Vec::new(),
             startup_command: None,
+            forwards: Vec::new(),
         }
     }
 

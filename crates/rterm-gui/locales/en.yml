@@ -444,6 +444,7 @@ activity:
   files: Files
   transfers: Transfers
   snippets: Snippets
+  forwards: Port forwarding
   collapse_sidebar: Collapse sidebar
   expand_sidebar: Expand sidebar
 app:
@@ -535,3 +536,42 @@ errors:
     kdf: Key derivation failed (invalid KDF parameters in the crypto header)
     cipher: Encryption or decryption failed — the data may be corrupted or the key does not match
     envelope: Malformed ciphertext envelope (invalid base64 or length)
+
+forward:
+  menu_entry: "Port forwarding…"
+  add: "Add rule"
+  kind: Type
+  kind_local: "Local (-L)"
+  kind_remote: "Remote (-R)"
+  kind_dynamic: "Dynamic (SOCKS5)"
+  kind_short_local: L
+  kind_short_remote: R
+  kind_short_dynamic: D
+  dynamic_hint: SOCKS5 proxy
+  bind_address: "Bind address"
+  bind_placeholder: "127.0.0.1"
+  target_placeholder: "127.0.0.1"
+  bind_port: "Bind port"
+  target_host: "Target host"
+  target_port: "Target port"
+  new: New
+  edit: Edit
+  delete: Delete
+  save: Save
+  empty: "No session selected"
+  empty_hint: "Connect a session or right-click one to manage its forwarding rules."
+  no_rules: "No forwarding rules"
+  no_rules_hint: "Add a rule to forward ports over this session."
+  status_starting: starting…
+  status_active: "%{count} connection(s)"
+  status_failed: failed
+  status_stopped: stopped
+  status_offline: "offline (edit only)"
+  error_port: "Bind port must be 1-65535."
+  error_target_port: "Target port must be 1-65535."
+  failed_bind: "Forward failed to bind %{addr}:%{port}: %{detail}"
+  failed_remote_denied: "Server refused remote forward %{addr}:%{port} (GatewayPorts?)"
+  failed_invalid: "Invalid rule: %{detail}"
+  persist_failed: "Failed to save forwarding rules: %{err}"
+  readonly: "Unlock the vault to edit forwarding rules."
+

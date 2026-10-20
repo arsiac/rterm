@@ -5,6 +5,7 @@ pub(crate) mod connect;
 pub(crate) mod contexts;
 pub(crate) mod events;
 pub(crate) mod folder_job;
+pub(crate) mod forwards;
 pub(crate) mod hostkey;
 pub(crate) mod masterpw;
 pub(crate) mod panes;
@@ -111,6 +112,10 @@ pub struct App {
     /// 模块经 `Message::Snippets` 接收意图、经 `Message::SnippetsEvent` 回写父状态（写入终端 /
     /// toast / 状态栏），自身绝不修改 `App`。
     pub snippets: snippets::State,
+    /// 端口转发模块状态：作用域会话、规则编辑弹窗草稿与各标签的运行时行状态。
+    /// 模块经 `Message::Forwards` 接收意图、经 `Message::ForwardsEvent` 回写父状态（会话持久化 /
+    /// 引擎同步 / toast / 导航），自身绝不修改 `App`。
+    pub forwards: forwards::State,
     /// 状态栏提示。
     pub status: Option<String>,
     /// toast 通知管理器：所有全局提示（导入 / 导出结果、连接状态、SFTP 反馈等）经

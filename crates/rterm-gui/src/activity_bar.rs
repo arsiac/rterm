@@ -67,6 +67,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
         t!("activity.snippets"),
         Message::SwitchCenter(CenterView::Snippets),
     );
+    // 端口转发按钮：切换到转发管理面板（与“会话 / 文件 / 传输 / 常用命令”并列）。
+    // 转发依附终端标签自己的 SSH 连接，与“文件管理”同规：未连接任何会话时禁用。
+    let forwards_btn = activity_button(
+        Icon::ArrowSwap,
+        app.center == CenterView::Forwards,
+        any_connected,
+        t!("activity.forwards"),
+        Message::SwitchCenter(CenterView::Forwards),
+    );
     // 设置入口固定在活动栏最底部：用可拉伸空白把上方按钮与设置入口分隔开。
     // 高亮取「设置 / 快捷键弹窗打开」或「菜单展开」，与 `session_panel` 的下拉触发按钮一致。
     let settings_btn = settings_menu(
@@ -83,6 +92,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         files_btn,
         transfer_btn,
         snippets_btn,
+        forwards_btn,
         vertical(),
         settings_btn
     ]
@@ -162,12 +172,11 @@ fn activity_button(
     tooltip_label: impl Into<String>,
     on_press: Message,
 ) -> Element<'static, Message> {
-    // 禁用时改用带禁止符号的 folder-junk 图标灰显，作为不可用状态提示；
-    // 启用时恢复传入的正常图标（如 FolderMultiple）。
+    // 禁用时保留当前图标、整体置灰（低对比灰），作为不可用状态提示。
     let icon_svg = if enabled {
         icon.svg(ACTIVITY_ICON_SIZE)
     } else {
-        Icon::FolderJunk.svg_with_color(ACTIVITY_ICON_SIZE, DISABLED_ICON_COLOR)
+        icon.svg_with_color(ACTIVITY_ICON_SIZE, DISABLED_ICON_COLOR)
     };
     let btn = button(icon_svg)
         .on_press_maybe(if enabled { Some(on_press) } else { None })

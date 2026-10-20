@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::app::connect;
 use crate::app::contexts;
 use crate::app::{
-    events, hostkey, masterpw, panes, paste, search, session, session_io, settings, sftp,
+    events, forwards, hostkey, masterpw, panes, paste, search, session, session_io, settings, sftp,
     shortcuts, snippets, tabs, window,
 };
 use crate::message::Message;
@@ -152,6 +152,21 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.snippets.update(m, &ctx).map(Message::SnippetsEvent)
         }
         Message::SnippetsEvent(e) => events::apply_snippets_event(app, e),
+        // 端口转发模块：路由进模块自身 `update`，上行事件经 `Message::ForwardsEvent` 落地；
+        // 引擎句柄抵达属父层标签状态，不经模块，直接在路由处落地。
+        Message::Forwards(m) => match m {
+            forwards::Message::HandleArrived { tab_id, handle } => {
+                if let Some(tab) = app.tabs.tab_mut(tab_id) {
+                    tab.forwards = Some(handle);
+                }
+                Task::none()
+            }
+            m => {
+                let ctx = contexts::forwards_ctx(app);
+                app.forwards.update(m, &ctx).map(Message::ForwardsEvent)
+            }
+        },
+        Message::ForwardsEvent(e) => events::apply_forwards_event(app, e),
         // 设置弹窗模块：路由进模块自身 `update`，上行事件经 `Message::SettingsEvent` 回收。
         Message::Settings(m) => {
             // 到达即收起活动栏菜单（点菜单项 / 按 OpenSettings 快捷键都会走到这里）。
@@ -371,6 +386,12 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.snippets
             .update(snippets::Message::CancelEdit, &ctx)
             .map(Message::SnippetsEvent)
+    } else if app.forwards.editor.is_some() {
+        // 转发规则编辑弹窗：Esc 丢弃草稿。
+        let ctx = contexts::forwards_ctx(app);
+        app.forwards
+            .update(forwards::Message::CancelEdit, &ctx)
+            .map(Message::ForwardsEvent)
     } else if let Some(tab_id) = app.tabs.active() {
         app.sftp
             .update(sftp::Message::SftpCancelDialog, tab_id)

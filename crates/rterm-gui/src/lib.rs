@@ -7,6 +7,8 @@ pub mod activity_bar;
 pub mod app;
 pub mod bash_highlight;
 pub mod font;
+pub mod forwards_dialog;
+pub mod forwards_panel;
 pub mod host_key_dialog;
 pub mod i18n;
 pub mod icons;

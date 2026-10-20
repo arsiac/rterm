@@ -781,6 +781,7 @@ mod tests {
             title: String::new(),
             bell_flash: None,
             banner_flash: None,
+            forwards: None,
         }
     }
 

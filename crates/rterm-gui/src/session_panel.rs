@@ -292,6 +292,11 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
                 Message::OpenFiles(id.clone()),
             ));
         }
+        // 端口转发管理无需连接即可编辑规则（引擎只在连接上生效），故不做状态限制。
+        actions = actions.push(menu_entry(
+            t!("forward.menu_entry"),
+            Message::OpenForwards(id.clone()),
+        ));
         crate::ui::menu_container(actions)
     };
 

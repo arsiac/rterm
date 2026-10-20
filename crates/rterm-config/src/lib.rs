@@ -30,7 +30,7 @@ pub use app_config::{
 };
 pub use error::ConfigError;
 pub use keybindings::{Chord, ChordKey, Keybindings, Keymap};
-pub use session::{AuthMethod, JumpHost, SessionConfig, new_id};
+pub use session::{AuthMethod, ForwardKind, ForwardRule, JumpHost, SessionConfig, new_id};
 pub use snippets::{MAX_NAME_CHARS, MAX_TEXT_BYTES, Snippet, SnippetIssue, Snippets};
 pub use store::{
     EXPORT_FORMAT, SessionStore, SessionsFileMeta, SessionsFileProblem, SessionsFileState,

@@ -150,6 +150,9 @@ pub enum Event {
     ScrollTo(f32),
     /// 断开态下的重连请求（回车 / 横幅按钮 / 覆盖层重试）：父层在本标签上原地重建连接。
     ReconnectTab(u64, String),
+    /// 标签已移除：父层收走其转发引擎（clear 终止监听并向服务端注销远程转发）。
+    /// 句柄由标签模块在移除标签前收进本事件（移除后无处可取）。
+    ClearForwards(u64, Arc<rterm_core::ForwardHandle>),
     /// 自回路：把模块内部消息派发回自身（SwitchTab 复用 SelectTab）。
     Emit(Box<Message>),
 }
@@ -248,6 +251,7 @@ impl State {
             title,
             bell_flash: None,
             banner_flash: None,
+            forwards: None,
         });
         self.active_tab = Some(tab_id);
         tab_id
@@ -386,10 +390,15 @@ impl State {
         let mut events = vec![Event::RemoveHostKeyForTab(tab_id)];
         // 请求该标签的桥接停止，让核心层 pump 尽快退出（释放服务端管道句柄，
         // 进而使 win_io 后台读/写线程退出），避免关标签后进程残留。
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
-            && let Some(bridge) = &tab.bridge
-        {
-            bridge.request_stop();
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            if let Some(bridge) = &tab.bridge {
+                bridge.request_stop();
+            }
+            // 收走转发引擎句柄随事件上行：clear 终止全部监听任务并向服务端
+            // 注销远程转发（标签移除后无处可取，必须在此捕获）。
+            if let Some(handle) = tab.forwards.take() {
+                events.push(Event::ClearForwards(tab_id, handle));
+            }
         }
         // 本标签若有暂停在主机密钥弹窗上的握手，一并按拒绝处理，
         // 否则弹窗仍会挂在队列里等待一个已被关闭的连接（由父层执行清理）。
@@ -420,12 +429,18 @@ impl State {
     /// 窗口关闭时 `App` 会整体 drop，标签未必逐个走 `CloseTab`；此处显式通知所有 pump，
     /// 避免后台任务与进程残留。返回空任务（窗口本身由 iced 默认行为关闭）。
     fn window_closing(&mut self) -> Task<Event> {
+        let mut events = Vec::new();
         for tab in self.tabs.iter_mut() {
             if let Some(bridge) = &tab.bridge {
                 bridge.request_stop();
             }
+            // 窗口关闭时标签不会逐个走 CloseTab：在此收走各标签的转发引擎句柄，
+            // 由父层 clear（远程转发同时向服务端注销）。
+            if let Some(handle) = tab.forwards.take() {
+                events.push(Event::ClearForwards(tab.id, handle));
+            }
         }
-        Task::none()
+        Task::batch(events.into_iter().map(Task::done).collect::<Vec<_>>())
     }
     fn terminal_opened(&mut self, tab_id: u64, result: BridgeResult, ctx: &Ctx) -> Task<Event> {
         match result {

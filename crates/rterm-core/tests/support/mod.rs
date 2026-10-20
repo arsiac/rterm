@@ -13,7 +13,7 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Error as AnyhowError;
@@ -269,12 +269,26 @@ pub(crate) struct TestSsh {
     forwards: Arc<AtomicU32>,
     /// 各条 TCP 桥泵任务的中止柄，供用例掐断隧道。
     bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+    /// 客户端注册的远程转发（-R）监听任务（sshd 语义），供断言注销生效。
+    remote_forwards: Arc<Mutex<HashMap<(String, u32), tokio::task::AbortHandle>>>,
+    /// 置位后拒绝一切 tcpip_forward 请求。
+    remote_denied: Arc<AtomicBool>,
 }
 
 #[allow(dead_code)]
 impl TestSsh {
     /// 在 127.0.0.1 的随机端口上启动一个接受密码认证的 SSH 服务端。
     pub(crate) async fn start() -> Self {
+        Self::start_with(false).await
+    }
+
+    /// 同 [`TestSsh::start`](Self::start)，但拒绝一切远程转发注册
+    /// （模拟 sshd 的 GatewayPorts 关闭 / AllowTcpForwarding no）。
+    pub(crate) async fn start_denying_remote() -> Self {
+        Self::start_with(true).await
+    }
+
+    async fn start_with(remote_denied: bool) -> Self {
         let config = Arc::new(russh::server::Config {
             keys: vec![
                 PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
@@ -292,6 +306,9 @@ impl TestSsh {
         let pty_modes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let forwards = Arc::new(AtomicU32::new(0));
         let bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>> = Arc::new(Mutex::new(Vec::new()));
+        let remote_forwards: Arc<Mutex<HashMap<(String, u32), tokio::task::AbortHandle>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let remote_denied = Arc::new(AtomicBool::new(remote_denied));
         let accept = {
             let config = Arc::clone(&config);
             let root = std::env::temp_dir().join(format!("rterm-ssh-{}", std::process::id()));
@@ -301,6 +318,8 @@ impl TestSsh {
             let pty_modes = Arc::clone(&pty_modes);
             let forwards = Arc::clone(&forwards);
             let bridges = Arc::clone(&bridges);
+            let remote_forwards = Arc::clone(&remote_forwards);
+            let remote_denied = Arc::clone(&remote_denied);
             tokio::spawn(async move {
                 loop {
                     let Ok((stream, _)) = listener.accept().await else {
@@ -315,6 +334,8 @@ impl TestSsh {
                         Arc::clone(&pty_modes),
                         Arc::clone(&forwards),
                         Arc::clone(&bridges),
+                        Arc::clone(&remote_forwards),
+                        Arc::clone(&remote_denied),
                     );
                     tokio::spawn(async move {
                         if let Err(e) = russh::server::run_stream(config, stream, session).await {
@@ -332,6 +353,8 @@ impl TestSsh {
             pty_modes,
             forwards,
             bridges,
+            remote_forwards,
+            remote_denied,
         }
     }
 
@@ -404,6 +427,7 @@ impl TestSsh {
             group: None,
             jumps: Vec::new(),
             startup_command: None,
+            forwards: Vec::new(),
         }
     }
 
@@ -511,6 +535,10 @@ struct SshSession {
     forwards: Arc<AtomicU32>,
     /// 各条 TCP 桥泵任务的中止柄（仅供 [`TestSsh::kill_bridges`] 掐断隧道）。
     bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+    /// 客户端注册的远程转发（-R）监听任务，按 (address, port) 索引（sshd 语义）。
+    remote_forwards: Arc<Mutex<HashMap<(String, u32), tokio::task::AbortHandle>>>,
+    /// 置位后拒绝一切 tcpip_forward 请求（模拟服务端 GatewayPorts 关闭 / 禁止转发）。
+    remote_denied: Arc<AtomicBool>,
 }
 
 impl SshSession {
@@ -523,11 +551,14 @@ impl SshSession {
             None,
             Arc::new(AtomicU32::new(0)),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
     /// 同 [`SshSession::new`]，但把 shell 通道、输入记录位与转发计数 / 桥柄寄存到宿主的共享槽位。
     #[allow(dead_code)] // 仅终端桥接与跳板机测试走这条构造
+    #[allow(clippy::too_many_arguments)] // 测试夹具的显式槽位注入，逐参命名胜过强行聚包
     fn with_shell_slot(
         faults: Arc<Faults>,
         root: PathBuf,
@@ -536,6 +567,8 @@ impl SshSession {
         pty_modes: PtyModeLog,
         forwards: Arc<AtomicU32>,
         bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+        remote_forwards: Arc<Mutex<HashMap<(String, u32), tokio::task::AbortHandle>>>,
+        remote_denied: Arc<AtomicBool>,
     ) -> Self {
         Self::build(
             faults,
@@ -545,9 +578,12 @@ impl SshSession {
             Some(pty_modes),
             forwards,
             bridges,
+            remote_forwards,
+            remote_denied,
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // 测试夹具的显式槽位注入，逐参命名胜过强行聚包
     fn build(
         faults: Arc<Faults>,
         root: PathBuf,
@@ -556,6 +592,8 @@ impl SshSession {
         pty_modes: Option<PtyModeLog>,
         forwards: Arc<AtomicU32>,
         bridges: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+        remote_forwards: Arc<Mutex<HashMap<(String, u32), tokio::task::AbortHandle>>>,
+        remote_denied: Arc<AtomicBool>,
     ) -> Self {
         Self {
             faults,
@@ -566,6 +604,8 @@ impl SshSession {
             pty_modes,
             forwards,
             bridges,
+            remote_forwards,
+            remote_denied,
         }
     }
 }
@@ -716,6 +756,86 @@ impl russh::server::Handler for SshSession {
         });
         self.bridges.lock().await.push(bridge.abort_handle());
         Ok(())
+    }
+
+    /// sshd 语义的远程转发注册：bind 一个真实 TcpListener，每条入站连接经
+    /// `channel_open_forwarded_tcpip` 回送给客户端。被 `remote_denied` 置位或
+    /// bind 失败（端口被占）时回 false（客户端会收到 RequestDenied）。
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        if self.remote_denied.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, *port as u16)).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                log::debug!("test ssh: tcpip_forward bind {address}:{port} failed: {e}");
+                return Ok(false);
+            }
+        };
+        let bound = u32::from(listener.local_addr().expect("bound addr").port());
+        *port = bound;
+        let handle = session.handle();
+        let address = address.to_string();
+        let task_address = address.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut tcp, peer)) = listener.accept().await else {
+                    break;
+                };
+                let handle = handle.clone();
+                let address = task_address.clone();
+                tokio::spawn(async move {
+                    match handle
+                        .channel_open_forwarded_tcpip(
+                            address,
+                            bound,
+                            peer.ip().to_string(),
+                            peer.port() as u32,
+                        )
+                        .await
+                    {
+                        Ok(channel) => {
+                            let mut chan = channel.into_stream();
+                            let _ = tokio::io::copy_bidirectional(&mut chan, &mut tcp).await;
+                        }
+                        Err(e) => {
+                            log::debug!("test ssh: forwarded channel open failed: {e}");
+                        }
+                    }
+                });
+            }
+        });
+        self.remote_forwards
+            .lock()
+            .await
+            .insert((address, bound), task.abort_handle());
+        Ok(true)
+    }
+
+    /// sshd 语义的远程转发注销：停掉 accept 循环并释放端口。
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        match self
+            .remote_forwards
+            .lock()
+            .await
+            .remove(&(address.to_string(), port))
+        {
+            Some(task) => {
+                task.abort();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 }
 

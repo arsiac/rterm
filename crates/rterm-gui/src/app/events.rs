@@ -5,11 +5,11 @@ use crate::app::connect;
 use crate::app::contexts;
 use crate::app::terminal_bridge;
 use crate::app::{
-    masterpw, paste, remote_edit, search, session, session_io, settings, sftp, snippets, tabs,
-    transfer, updates, window,
+    forwards, masterpw, paste, remote_edit, search, session, session_io, settings, sftp, snippets,
+    tabs, transfer, updates, window,
 };
 use crate::message::Message;
-use crate::state::SftpDialog;
+use crate::state::{SftpDialog, ToastKind};
 use crate::t;
 use crate::vault_keyring;
 use crate::widget::term::actions::Action;
@@ -35,13 +35,30 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
             // 关闭该会话的全部终端标签（标签各自持有的连接随标签 drop 释放）。
             // 标签被整体移除，不会逐个走 `tabs::Event::RemoveHostKeyForTab`，故这里按返回值
             // 补发传输清理，否则被关标签的队列记录与并发额度都会残留。
+            // 转发引擎同理：先收走各标签的句柄（整体移除后无处可取），逐个 clear
+            // （远程转发同时向服务端注销）并清理面板的运行时行状态。
+            let handles: Vec<(u64, std::sync::Arc<rterm_core::ForwardHandle>)> = app
+                .tabs
+                .list()
+                .iter()
+                .filter(|t| t.session_id == id)
+                .filter_map(|t| t.forwards.clone().map(|h| (t.id, h)))
+                .collect();
             let closed = connect::close_session_tabs(app, &id);
             let mut tasks = Vec::with_capacity(closed.len());
             for tab_id in closed {
                 app.paste.remove_for_tab(tab_id);
                 // 同关标签：删除会话会移除其全部标签，编辑会话随宿主一起终止。
                 app.remote_edit.end_for_tab(tab_id);
+                app.forwards.remove_for_tab(tab_id);
                 tasks.push(close_tab_transfers(app, tab_id));
+            }
+            for (tab_id, handle) in handles {
+                tasks.push(Task::perform(
+                    async move { handle.clear().await },
+                    move |_| Message::Noop,
+                ));
+                let _ = tab_id;
             }
             Task::batch(tasks)
         }
@@ -65,6 +82,86 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
                 session::FileFlow::Export => session_io::Message::BeginExport,
             };
             Task::done(Message::SessionIo(msg))
+        }
+        // 右键「端口转发…」：转交转发模块设置作用域并打开面板（经 OpenPanel 落地导航）。
+        session::Event::OpenForwards(id) => {
+            Task::done(Message::Forwards(forwards::Message::ScopeTo(id)))
+        }
+    }
+}
+
+/// 落地 `forwards::Event`：把转发模块上行的规则变更写回会话存储并同步各标签的
+/// 转发引擎，其余 toast / 导航由父层直接落地。
+pub(crate) fn apply_forwards_event(app: &mut App, e: forwards::Event) -> Task<Message> {
+    match e {
+        forwards::Event::Toast(kind, msg) => {
+            contexts::set_toast(app, kind, msg);
+            Task::none()
+        }
+        forwards::Event::OpenPanel(id) => {
+            app.forwards.scope = Some(id);
+            app.center = crate::state::CenterView::Forwards;
+            Task::none()
+        }
+        forwards::Event::SessionForwardsChanged {
+            session_id,
+            forwards,
+        } => {
+            // (a) 变更前快照：引擎逐索引 diff 要拿它对照「旧清单里有哪些规则」。
+            let old = app
+                .session
+                .sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .map(|s| s.forwards.clone())
+                .unwrap_or_default();
+            // (b) 持久化到会话存储（编辑入口已在保险库未解锁时拦下，这里仅为防御）。
+            if let Some(vault) = app.vault.as_ref() {
+                let header = vault.header().clone();
+                if let Err(err) = app
+                    .session
+                    .set_forwards(&session_id, forwards.clone(), &header)
+                {
+                    contexts::set_toast(
+                        app,
+                        ToastKind::Error,
+                        t!("forward.persist_failed", err => err),
+                    );
+                }
+            }
+            // (c) 引擎同步：对该会话全部已连接且带引擎的标签按 old / new 逐索引 diff——
+            // 相等跳过、仅旧有→remove_rule、仅新有或内容不同→apply_rule。增量 API 保证
+            // 存量连接自然排空、新规则即刻生效。
+            let mut tasks: Vec<Task<Message>> = Vec::new();
+            for tab in app.tabs.list().iter().filter(|t| {
+                t.session_id == session_id
+                    && t.status == rterm_core::ConnectionStatus::Connected
+                    && t.forwards.is_some()
+            }) {
+                let Some(handle) = tab.forwards.clone() else {
+                    continue;
+                };
+                let len = old.len().max(forwards.len());
+                for i in 0..len {
+                    let old_rule = old.get(i);
+                    let new_rule = forwards.get(i);
+                    if old_rule == new_rule {
+                        continue;
+                    }
+                    let handle = handle.clone();
+                    let rule = new_rule.cloned();
+                    tasks.push(Task::perform(
+                        async move {
+                            match rule {
+                                Some(rule) => handle.apply_rule(i, &rule).await,
+                                None => handle.remove_rule(i).await,
+                            }
+                        },
+                        |_| Message::Noop,
+                    ));
+                }
+            }
+            Task::batch(tasks)
         }
     }
 }
@@ -116,10 +213,12 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
         }
         // 自动打开该会话的 SFTP：委托 `open_files`（挑标签 / 切导航态 / 建通道）。
         tabs::Event::OpenSftp(id) => connect::open_files(app, &id).map(Message::Sftp),
-        // 为已连接标签拉起终端桥接（标签 / 连接生命周期属父层，不在标签模块内）。
-        tabs::Event::OpenTerminalBridge(tab_id, conn) => {
-            terminal_bridge::open_terminal_bridge(app, tab_id, conn)
-        }
+        // 为已连接标签拉起终端桥接（标签 / 连接生命周期属父层，不在标签模块内）；
+        // 桥接就绪即按会话当前规则在同一连接上拉起转发引擎。
+        tabs::Event::OpenTerminalBridge(tab_id, conn) => Task::batch([
+            terminal_bridge::open_terminal_bridge(app, tab_id, conn),
+            forwards::start_for_tab(app, tab_id),
+        ]),
         // 重连请求（回车 / 横幅按钮 / 覆盖层重试）：在发起请求的标签上原地重建连接、
         // 不新开标签；结果回流到同一标签：已有终端走原地换接，尚无终端（首连失败）走新建。
         tabs::Event::ReconnectTab(tab_id, session_id) => {
@@ -137,7 +236,15 @@ pub(crate) fn apply_tabs_event(app: &mut App, e: tabs::Event) -> Task<Message> {
             // 该标签发起的本地编辑会话一并终止：回传的宿主（队列与客户端）随标签消失，
             // 编辑缓存副本按既定策略保留，由用户从缓存目录取回或重新发起。
             app.remote_edit.end_for_tab(tab_id);
+            // 转发面板的运行时行状态一并清理（引擎收尾由 ClearForwards 分支执行）。
+            app.forwards.remove_for_tab(tab_id);
             close_tab_transfers(app, tab_id)
+        }
+        // 标签已移除（关标签 / 关窗口）：收走其转发引擎——clear 会终止全部监听任务
+        // 并向服务端注销远程转发，确保不残留。句柄由标签模块在移除前收进事件。
+        tabs::Event::ClearForwards(tab_id, handle) => {
+            app.forwards.remove_for_tab(tab_id);
+            Task::perform(async move { handle.clear().await }, |_| Message::Noop)
         }
         // 转发终端部件事件给父层（父层拥有的 widget 交互逻辑）。
         tabs::Event::TerminalEvent(ev) => terminal_bridge::handle_terminal_event(app, ev),

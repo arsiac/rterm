@@ -4,6 +4,7 @@
 //! 终端标签与终端部件事件、中心 ↔ 右栏分隔（`pane_grid` 拖拽及窗口缩放时按比例重算），
 //! 以及 SFTP 文件操作。
 
+use crate::app::forwards;
 use crate::app::hostkey;
 use crate::app::masterpw;
 use crate::app::panes;
@@ -159,6 +160,13 @@ pub enum Message {
     Snippets(snippets::Message),
     /// 命令片段模块上行事件（写入终端 / toast / 状态栏），由父层收到后落地。
     SnippetsEvent(snippets::Event),
+
+    // ===== 端口转发（路由）=====
+    /// 端口转发模块内部消息：规则列表的启停 / 删除 / 编辑意图、作用域切换与引擎事件流，
+    /// 由父层经此变体路由进 `app::forwards` 模块。
+    Forwards(forwards::Message),
+    /// 端口转发模块上行事件（会话规则落盘 / toast / 打开面板），由父层收到后落地。
+    ForwardsEvent(forwards::Event),
 
     // ===== 更新检查（路由）=====
     /// 更新检查模块内部消息：启动自动检查 / 立即检查 / 检查结果 / 打开发布页 / 关闭横幅，

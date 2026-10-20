@@ -50,6 +50,94 @@ pub struct JumpHost {
     pub auth: AuthMethod,
 }
 
+/// 端口转发类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardKind {
+    /// 本地转发（`ssh -L`）：客户端监听 `bind`，每条连接由**服务端**连向 `target`。
+    Local,
+    /// 远程转发（`ssh -R`）：**服务端**监听 `bind`，连接送回客户端后由客户端连向 `target`。
+    Remote,
+    /// 动态转发（`ssh -D`，SOCKS5）：客户端监听 `bind`，目的地址来自每条连接的 SOCKS 请求。
+    Dynamic,
+}
+
+/// 一条端口转发规则，随会话配置持久化。
+///
+/// `forwards` 列表中的规则在连接建立时按 `enabled` 自动启动（见 rterm-core
+/// 的转发引擎）；已连接会话上也可通过引擎的增量 API 临时增减 / 启停。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardRule {
+    /// 转发类型。
+    pub kind: ForwardKind,
+    /// 监听（Local / Dynamic）或声明（Remote）的绑定地址；留空表示 `127.0.0.1`。
+    #[serde(default)]
+    pub bind_address: String,
+    /// 监听 / 声明的绑定端口（1..=65535，不允许 0）。
+    pub bind_port: u16,
+    /// 目的主机：Local / Remote 留空（或 `None`）按 `127.0.0.1` 处理，Dynamic 恒为 `None`。
+    #[serde(default)]
+    pub target_host: Option<String>,
+    /// 目的端口：Local / Remote 必填，Dynamic 恒为 `None`。
+    #[serde(default)]
+    pub target_port: Option<u16>,
+    /// 启停状态；停用的规则不随连接自动建立，状态随会话持久化。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl ForwardRule {
+    /// 生效的绑定地址：留空（或纯空白）按 `127.0.0.1` 处理。
+    pub fn bind_addr(&self) -> &str {
+        let addr = self.bind_address.trim();
+        if addr.is_empty() { "127.0.0.1" } else { addr }
+    }
+
+    /// 目的主机（去除首尾空白；`None` 或空白视为未填）。
+    pub fn target_host_trimmed(&self) -> Option<&str> {
+        self.target_host
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+    }
+
+    /// 生效的目的主机：Local / Remote 留空（或纯空白）按 `127.0.0.1` 处理。
+    pub fn target_addr(&self) -> &str {
+        self.target_host_trimmed().unwrap_or("127.0.0.1")
+    }
+
+    /// 结构完整性校验（端口范围与 Local / Remote 的目的字段约束）。
+    ///
+    /// 在编辑器保存与转发引擎启动前各兜一道底；返回的静态文案面向日志（英文），
+    /// 用户可见的逐字段提示由 GUI 编辑器自行产出。
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.bind_port == 0 {
+            return Err("bind port must be between 1 and 65535");
+        }
+        match self.kind {
+            ForwardKind::Dynamic => {
+                if self.target_host_trimmed().is_some() || self.target_port.is_some() {
+                    Err("dynamic forwarding must not carry a fixed target")
+                } else {
+                    Ok(())
+                }
+            }
+            ForwardKind::Local | ForwardKind::Remote => {
+                if self.target_port.is_none() {
+                    Err("local/remote forwarding requires a target port")
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// ForwardRule::enabled 的 serde 缺省值（规则默认启用）。
+fn default_true() -> bool {
+    true
+}
+
 /// 单个 SSH 会话连接配置。
 ///
 /// 该结构可序列化，持久化于 `~/.config/rterm/sessions.toml`。
@@ -78,6 +166,9 @@ pub struct SessionConfig {
     /// 是否真正下发还取决于 [`TerminalConfig::run_startup_command`](crate::TerminalConfig::run_startup_command)。
     #[serde(default)]
     pub startup_command: Option<String>,
+    /// 端口转发规则（随会话持久化）；连接建立时仅自动启动 enabled 的规则。
+    #[serde(default)]
+    pub forwards: Vec<ForwardRule>,
 }
 
 impl SessionConfig {
@@ -225,6 +316,7 @@ mod tests {
             group: None,
             jumps: vec![jump("bastion-a"), jump("bastion-b")],
             startup_command: None,
+            forwards: Vec::new(),
         }
     }
 
@@ -420,6 +512,7 @@ mod tests {
                 auth: AuthMethod::Agent,
             }],
             startup_command: None,
+            forwards: Vec::new(),
         };
 
         let (rekeyed, dropped) = cfg.rekeyed(&vault, &vault);
@@ -429,5 +522,124 @@ mod tests {
             other => panic!("认证方式不应改变，实际 {other:?}"),
         }
         assert!(matches!(rekeyed.jumps[0].auth, AuthMethod::Agent));
+    }
+
+    /// 构造覆盖三种转发类型的规则清单。
+    fn sample_forwards() -> Vec<ForwardRule> {
+        vec![
+            ForwardRule {
+                kind: ForwardKind::Local,
+                bind_address: String::new(),
+                bind_port: 5432,
+                target_host: Some("db.internal".into()),
+                target_port: Some(5432),
+                enabled: true,
+            },
+            ForwardRule {
+                kind: ForwardKind::Remote,
+                bind_address: "0.0.0.0".into(),
+                bind_port: 8080,
+                target_host: Some("localhost".into()),
+                target_port: Some(80),
+                enabled: false,
+            },
+            ForwardRule {
+                kind: ForwardKind::Dynamic,
+                bind_address: String::new(),
+                bind_port: 1080,
+                target_host: None,
+                target_port: None,
+                enabled: true,
+            },
+        ]
+    }
+
+    /// 转发规则随 serde 往返；enabled 缺省为 true；旧文件（删掉该键）读出为空表。
+    #[test]
+    fn forwards_round_trip_and_default_to_empty_on_legacy_files() {
+        let vault = Vault::new("test-master");
+        let cfg = SessionConfig {
+            forwards: sample_forwards(),
+            ..session_with_jumps(&vault)
+        };
+
+        let toml = toml::to_string(&cfg).expect("serialize");
+        let back: SessionConfig = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(back.forwards, cfg.forwards);
+        assert!(!back.forwards[1].enabled, "显式停用须原样往返");
+
+        // 单条规则缺省 enabled：删掉该键后读出 true。
+        let rule_toml = toml::to_string(&sample_forwards()[0]).expect("serialize rule");
+        let mut value: toml::Value = toml::from_str(&rule_toml).expect("parse rule");
+        value
+            .as_table_mut()
+            .expect("rule is a table")
+            .remove("enabled");
+        let rule: ForwardRule =
+            toml::from_str(&toml::to_string(&value).expect("re-serialize")).expect("load rule");
+        assert!(rule.enabled, "enabled 缺省必须为 true");
+
+        // 旧文件不含 forwards 键：读出为空表（无需迁移）。
+        let mut value: toml::Value = toml::from_str(&toml).expect("parse back");
+        value
+            .as_table_mut()
+            .expect("session is a table")
+            .remove("forwards");
+        let legacy = toml::to_string(&value).expect("re-serialize legacy file");
+        let legacy_cfg: SessionConfig =
+            toml::from_str(&legacy).expect("legacy config must still load");
+        assert!(legacy_cfg.forwards.is_empty(), "缺省 forwards 必须为空表");
+    }
+
+    /// bind_address 留空 / 空白按 127.0.0.1 处理，非空原样保留。
+    #[test]
+    fn bind_addr_defaults_to_loopback_when_blank() {
+        let mut rule = sample_forwards()[0].clone();
+        assert_eq!(rule.bind_addr(), "127.0.0.1", "留空 = 回环");
+        rule.bind_address = "   ".into();
+        assert_eq!(rule.bind_addr(), "127.0.0.1", "纯空白同样视为回环");
+        rule.bind_address = "0.0.0.0".into();
+        assert_eq!(rule.bind_addr(), "0.0.0.0");
+    }
+
+    /// validate：端口 0 拒绝；Local/Remote 必须带目的；Dynamic 必须不带。
+    #[test]
+    fn validate_rejects_incomplete_rules() {
+        let local = sample_forwards()[0].clone();
+        assert_eq!(local.validate(), Ok(()));
+
+        // bind_port 0。
+        let zero_port = ForwardRule {
+            bind_port: 0,
+            ..local.clone()
+        };
+        assert!(zero_port.validate().is_err());
+
+        // Local 目的主机留空 / 纯空白 = 127.0.0.1，仍然合法。
+        let mut no_host = local.clone();
+        no_host.target_host = None;
+        assert_eq!(no_host.validate(), Ok(()));
+        assert_eq!(no_host.target_addr(), "127.0.0.1");
+        let mut blank_host = local.clone();
+        blank_host.target_host = Some("   ".into());
+        assert_eq!(blank_host.validate(), Ok(()));
+        assert_eq!(blank_host.target_addr(), "127.0.0.1", "纯空白同样视为回环");
+        let mut explicit = local.clone();
+        explicit.target_host = Some("  db.internal  ".into());
+        assert_eq!(
+            explicit.target_addr(),
+            "db.internal",
+            "非空目的主机去除首尾空白"
+        );
+        // Local 缺目的端口仍然非法。
+        let mut no_port = local;
+        no_port.target_port = None;
+        assert!(no_port.validate().is_err());
+
+        // Dynamic 带目的即非法。
+        let mut dyn_rule = sample_forwards()[2].clone();
+        assert_eq!(dyn_rule.validate(), Ok(()));
+        dyn_rule.target_host = Some("localhost".into());
+        assert!(dyn_rule.validate().is_err());
     }
 }

@@ -13,6 +13,7 @@
 
 pub mod connection;
 pub mod error;
+pub mod forward;
 pub mod host_key;
 pub mod model;
 pub mod sftp;
@@ -20,6 +21,7 @@ pub mod terminal_bridge;
 
 pub use connection::{HopSpec, HostKeyPrompt, HostKeyReply, SessionSecrets, SshConnection};
 pub use error::{CoreError, CoreErrorKind, ErrorClass};
+pub use forward::{ForwardEngine, ForwardEvent, ForwardFailure, ForwardHandle, RuleEvent};
 pub use model::{ConnectionStatus, FileEntry};
 pub use sftp::{Fingerprint, RemovalReport, ResumeAt, SftpClient};
 pub use terminal_bridge::{

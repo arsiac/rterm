@@ -25,6 +25,8 @@ pub enum CenterView {
     Transfers,
     /// 命令片段管理面板（片段清单与编辑弹窗）。
     Snippets,
+    /// 端口转发管理面板（规则清单与编辑弹窗）。
+    Forwards,
 }
 
 /// 终端当前目录（cwd）共享容器别名，与 `rterm_core::terminal_bridge::CwdTracker` 同构，
@@ -77,6 +79,12 @@ pub struct TerminalTab {
     /// 断开态下用户键入被拦下（非回车）时由标签模块置位、短延时后清除；
     /// 序号语义同 [`Self::bell_flash`]——旧提示的到期消息不得提前熄灭新一轮的闪烁。
     pub banner_flash: Option<u64>,
+    /// 该标签连接上的端口转发引擎句柄（重连时替换、关标签时 `clear`）。
+    ///
+    /// 桥接就绪后由父层经 `ForwardsMessage::HandleArrived` 写入；重连会先清掉旧引擎再
+    /// 按会话当前规则重建，关闭标签 / 会话时经 `tabs::Event::ClearForwards` 主动收尾
+    /// （`clear` 同时向服务端注销远程转发）。
+    pub forwards: Option<Arc<rterm_core::ForwardHandle>>,
 }
 
 /// 待确认的主机密钥弹窗（连接握手暂停期间挂起，渲染与决策均取队首）。
