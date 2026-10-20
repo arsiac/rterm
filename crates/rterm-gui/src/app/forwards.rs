@@ -103,23 +103,39 @@ pub struct State {
     pub pending_delete: Option<usize>,
 }
 
+/// 规则刚交给引擎时的行状态：启用者等事件，禁用者直接呈已停止（引擎不会启动它）。
+fn initial_status(rule: &ForwardRule) -> RowStatus {
+    if rule.enabled {
+        RowStatus::Starting
+    } else {
+        RowStatus::Stopped
+    }
+}
+
 impl State {
     /// 引擎已在某标签上带 count 条规则启动：把该标签运行时初始化为全「启动中」。
     pub fn note_handle(&mut self, tab_id: u64, rules: &[ForwardRule]) {
-        self.runtime.insert(
-            tab_id,
-            rules
-                .iter()
-                .map(|rule| {
-                    if rule.enabled {
-                        RowStatus::Starting
-                    } else {
-                        // 禁用规则不会被引擎启动、收不到任何事件，直接呈已停止。
-                        RowStatus::Stopped
-                    }
-                })
-                .collect(),
-        );
+        self.runtime
+            .insert(tab_id, rules.iter().map(initial_status).collect());
+    }
+
+    /// 按新清单重排该标签的行状态：未变者沿用旧状态，变了的重置等引擎事件。
+    ///
+    /// 引擎事件按下标回填，行号不对齐会让新增规则永远收不到事件（停在「启动中」）。
+    pub fn realign(&mut self, tab_id: u64, old: &[ForwardRule], new: &[ForwardRule]) {
+        let Some(rows) = self.runtime.get_mut(&tab_id) else {
+            return;
+        };
+        // 先算好新向量再整体替换：闭包里只读旧行，避免同处借用冲突。
+        let next: Vec<RowStatus> = new
+            .iter()
+            .enumerate()
+            .map(|(i, rule)| match rows.get(i) {
+                Some(row) if old.get(i) == Some(rule) => row.clone(),
+                _ => initial_status(rule),
+            })
+            .collect();
+        *rows = next;
     }
 
     /// 标签已关闭 / 即将重建：丢弃其运行时行状态。
@@ -507,5 +523,92 @@ pub(crate) fn start_for_tab(app: &mut App, tab_id: u64) -> Task<TopMessage> {
     match clear_old {
         Some(clear) => Task::batch([clear, stream]),
         None => stream,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造一条本地转发规则（固定目的，便于相等比较）。
+    fn rule(port: u16, enabled: bool) -> ForwardRule {
+        ForwardRule {
+            kind: ForwardKind::Local,
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: port,
+            target_host: Some("db.internal".to_string()),
+            target_port: Some(5432),
+            enabled,
+        }
+    }
+
+    fn event(rule_index: usize, event: RuleEvent) -> ForwardEvent {
+        ForwardEvent { rule_index, event }
+    }
+
+    #[test]
+    fn realign_gives_new_rule_a_row_that_receives_events() {
+        let mut state = State::default();
+        let old = [rule(8080, true)];
+        state.note_handle(7, &old);
+        state.apply_runtime(7, &event(0, RuleEvent::Listening));
+        assert_eq!(state.runtime[&7][0], RowStatus::Listening { conns: 0 });
+
+        // 连接途中新增一条规则：必须补出一行，否则新下标的事件全部越界丢弃。
+        let new = [rule(8080, true), rule(9090, true)];
+        state.realign(7, &old, &new);
+        assert_eq!(
+            state.runtime[&7],
+            vec![RowStatus::Listening { conns: 0 }, RowStatus::Starting]
+        );
+
+        state.apply_runtime(7, &event(1, RuleEvent::Listening));
+        assert_eq!(state.runtime[&7][1], RowStatus::Listening { conns: 0 });
+    }
+
+    #[test]
+    fn realign_drops_trailing_row_and_keeps_unchanged_status() {
+        let mut state = State::default();
+        let old = [rule(8080, true), rule(9090, true)];
+        state.note_handle(7, &old);
+        state.apply_runtime(7, &event(0, RuleEvent::Connections(2)));
+
+        let new = [rule(8080, true)];
+        state.realign(7, &old, &new);
+        assert_eq!(state.runtime[&7], vec![RowStatus::Listening { conns: 2 }]);
+    }
+
+    #[test]
+    fn realign_resets_shifted_rule_because_engine_restarts_it() {
+        let mut state = State::default();
+        let old = [rule(8080, true), rule(9090, true)];
+        state.note_handle(7, &old);
+        state.apply_runtime(7, &event(1, RuleEvent::Listening));
+
+        // 删首条后引擎按下标重放：新 0 号是重新启动的规则，回到「启动中」等事件。
+        let new = [rule(9090, true)];
+        state.realign(7, &old, &new);
+        assert_eq!(state.runtime[&7], vec![RowStatus::Starting]);
+    }
+
+    #[test]
+    fn realign_marks_disabled_new_rule_as_stopped() {
+        let mut state = State::default();
+        let old = [rule(8080, true)];
+        state.note_handle(7, &old);
+
+        let new = [rule(8080, true), rule(9090, false)];
+        state.realign(7, &old, &new);
+        assert_eq!(
+            state.runtime[&7],
+            vec![RowStatus::Starting, RowStatus::Stopped]
+        );
+    }
+
+    #[test]
+    fn realign_ignores_tabs_without_engine() {
+        let mut state = State::default();
+        state.realign(9, &[], &[rule(8080, true)]);
+        assert!(state.runtime.is_empty());
     }
 }

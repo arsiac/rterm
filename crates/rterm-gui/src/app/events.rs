@@ -129,18 +129,23 @@ pub(crate) fn apply_forwards_event(app: &mut App, e: forwards::Event) -> Task<Me
                     );
                 }
             }
-            // (c) 引擎同步：对该会话全部已连接且带引擎的标签按 old / new 逐索引 diff——
-            // 相等跳过、仅旧有→remove_rule、仅新有或内容不同→apply_rule。增量 API 保证
-            // 存量连接自然排空、新规则即刻生效。
+            // (c) 引擎同步：对会话内已连接标签按 old / new 逐索引 diff——相等跳过、旧有→
+            // remove_rule、新有或内容不同→apply_rule（增量 API 让存量桥自然排空）。先收齐标签：
+            // 循环体要改 app.forwards，不能同时借用标签列表。
+            let targets: Vec<(u64, std::sync::Arc<rterm_core::ForwardHandle>)> = app
+                .tabs
+                .list()
+                .iter()
+                .filter(|t| {
+                    t.session_id == session_id
+                        && t.status == rterm_core::ConnectionStatus::Connected
+                })
+                .filter_map(|t| t.forwards.clone().map(|h| (t.id, h)))
+                .collect();
             let mut tasks: Vec<Task<Message>> = Vec::new();
-            for tab in app.tabs.list().iter().filter(|t| {
-                t.session_id == session_id
-                    && t.status == rterm_core::ConnectionStatus::Connected
-                    && t.forwards.is_some()
-            }) {
-                let Some(handle) = tab.forwards.clone() else {
-                    continue;
-                };
+            for (tab_id, handle) in targets {
+                // 行状态按新清单重排：新增规则才有行承载后续事件。
+                app.forwards.realign(tab_id, &old, &forwards);
                 let len = old.len().max(forwards.len());
                 for i in 0..len {
                     let old_rule = old.get(i);
