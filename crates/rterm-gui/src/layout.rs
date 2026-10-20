@@ -114,6 +114,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::session_panel::editor_overlay(app) {
         layers.push(dialog.map(Message::Session));
     }
+    if let Some(dialog) = crate::session_panel::confirm_delete_overlay(app) {
+        layers.push(dialog.map(Message::Session));
+    }
     // 常用命令新建 / 编辑弹窗：与会话编辑器同为列表之上的编辑层。
     if let Some(dialog) = crate::snippet_dialog::view(app) {
         layers.push(dialog.map(Message::Snippets));

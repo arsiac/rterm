@@ -176,6 +176,8 @@ session:
   edit: Edit
   copy: Duplicate
   delete: Delete
+  delete_title: Delete session
+  delete_confirm: Delete session "%{name}"? This cannot be undone.
   open_files: Open file manager
   ungrouped: Ungrouped
   empty_title: No sessions yet

@@ -176,6 +176,8 @@ session:
   edit: 编辑
   copy: 复制
   delete: 删除
+  delete_title: 删除会话
+  delete_confirm: 确定删除会话「%{name}」吗？此操作不可恢复。
   open_files: 打开文件管理
   ungrouped: 未分组
   empty_title: 暂无会话

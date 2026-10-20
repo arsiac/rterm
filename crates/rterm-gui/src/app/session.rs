@@ -373,6 +373,8 @@ pub struct State {
     pub filter: String,
     /// 会话编辑器中的草稿（无则未编辑）。
     pub editor: Option<EditorDraft>,
+    /// 待确认删除的会话 id（`None` 表示当前未弹出删除确认框）。
+    pub pending_delete: Option<String>,
 }
 
 impl State {
@@ -387,6 +389,7 @@ impl State {
             show_more_menu: false,
             filter: String::new(),
             editor: None,
+            pending_delete: None,
         }
     }
 
@@ -462,8 +465,12 @@ pub enum Message {
     EditSession(String),
     /// 复制已有会话（携带会话 id）：副本名称追加数字后缀，凭据信封原样克隆。
     DuplicateSession(String),
-    /// 删除会话（携带会话 id）。
-    DeleteSession(String),
+    /// 请求删除会话（携带会话 id）：仅置待确认状态并弹出确认框，不直接删除。
+    RequestDeleteSession(String),
+    /// 确认删除会话：从待确认状态取出 id 执行实际删除。
+    ConfirmDeleteSession,
+    /// 取消删除会话：撤销待确认状态并关闭确认框。
+    CancelDeleteSession,
     /// 保存当前编辑器中的会话。
     SaveSession,
     /// 取消编辑。
@@ -598,7 +605,22 @@ impl State {
                 };
                 Task::done(Event::Status(Some(status)))
             }
-            Message::DeleteSession(id) => {
+            Message::RequestDeleteSession(id) => {
+                self.pending_delete = Some(id);
+                Task::none()
+            }
+            Message::ConfirmDeleteSession => {
+                let id = match self.pending_delete.take() {
+                    Some(id) => id,
+                    None => return Task::none(),
+                };
+                // 被删会话若正处选中/悬浮态，清理残留指针（原删除分支缺失此步）。
+                if self.selected_session.as_deref() == Some(id.as_str()) {
+                    self.selected_session = None;
+                }
+                if self.hovered_session.as_deref() == Some(id.as_str()) {
+                    self.hovered_session = None;
+                }
                 // 从列表移除会话；标签关闭由父层经 `Event::SessionDeleted` 处理。
                 self.sessions.retain(|s| s.id != id);
                 let mut tasks = vec![Task::done(Event::SessionDeleted(id))];
@@ -606,6 +628,10 @@ impl State {
                     tasks.push(Task::done(Event::Status(Some(e))));
                 }
                 Task::batch(tasks)
+            }
+            Message::CancelDeleteSession => {
+                self.pending_delete = None;
+                Task::none()
             }
             Message::SaveSession => {
                 // 凭据信封必须由保险库加密为明文后再落盘（core 层不持有主密钥）。

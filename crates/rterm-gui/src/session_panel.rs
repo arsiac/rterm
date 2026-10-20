@@ -10,7 +10,7 @@ use crate::t;
 use crate::App;
 use crate::app::session::{EditorDraft, JumpDraft, Message, SessionField};
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
-use crate::ui::menu_entry;
+use crate::ui::{DialogBtnStyle, DialogButton, dialog_panel, menu_entry};
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
@@ -283,7 +283,10 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
             menu_entry(t!("session.connect"), Message::ConnectSession(id.clone())),
             menu_entry(t!("session.edit"), Message::EditSession(id.clone())),
             menu_entry(t!("session.copy"), Message::DuplicateSession(id.clone())),
-            menu_entry(t!("session.delete"), Message::DeleteSession(id.clone())),
+            menu_entry(
+                t!("session.delete"),
+                Message::RequestDeleteSession(id.clone()),
+            ),
         ])
         .spacing(2);
         if status == ConnectionStatus::Connected {
@@ -361,6 +364,43 @@ pub fn editor_overlay(app: &App) -> Option<Element<'_, Message>> {
     Some(crate::modal::overlay_wrap_dismissable(
         panel.into(),
         Message::CancelEdit,
+    ))
+}
+
+/// 删除会话确认弹窗层：存在待确认删除 id 时返回遮罩层，否则 `None`。
+/// 复用 `dialog_panel` + `overlay_wrap_dismissable`，与 SFTP 删除确认弹窗同源。
+pub fn confirm_delete_overlay(app: &App) -> Option<Element<'_, Message>> {
+    let id = app.session.pending_delete.as_ref()?;
+    let name = app
+        .session
+        .sessions
+        .iter()
+        .find(|s| &s.id == id)
+        .map(|s| s.name.clone())
+        .unwrap_or_default();
+    let body: Element<'_, Message> =
+        column![text(t!("session.delete_confirm", name => name)).size(14),]
+            .spacing(8)
+            .into();
+    let panel = dialog_panel(
+        t!("session.delete_title"),
+        body,
+        None,
+        360.0,
+        Some(DialogButton {
+            label: t!("common.cancel").to_string(),
+            on_press: Message::CancelDeleteSession,
+            style: DialogBtnStyle::Neutral,
+        }),
+        DialogButton {
+            label: t!("session.delete").to_string(),
+            on_press: Message::ConfirmDeleteSession,
+            style: DialogBtnStyle::Emphasis { danger: true },
+        },
+    );
+    Some(crate::modal::overlay_wrap_dismissable(
+        panel,
+        Message::CancelDeleteSession,
     ))
 }
 
