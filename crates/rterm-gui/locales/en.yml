@@ -118,6 +118,8 @@ snippet:
   send_all: Send (all sessions)
   copy: Duplicate
   delete: Delete
+  delete_title: Delete snippet
+  delete_confirm: Delete snippet "%{name}"? This cannot be undone.
   save: Save
   move_up: Move up
   move_down: Move down

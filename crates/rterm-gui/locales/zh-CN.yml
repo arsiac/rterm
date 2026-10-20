@@ -118,6 +118,8 @@ snippet:
   send_all: 发送（所有会话）
   copy: 复制
   delete: 删除
+  delete_title: 删除常用命令
+  delete_confirm: 确定删除常用命令「%{name}」吗？此操作不可恢复。
   save: 保存
   move_up: 上移
   move_down: 下移

@@ -7,7 +7,9 @@ use crate::t;
 use crate::App;
 use crate::app::snippets::Message;
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
-use crate::ui::{menu_entry, menu_entry_disabled, menu_separator};
+use crate::ui::{
+    DialogBtnStyle, DialogButton, dialog_panel, menu_entry, menu_entry_disabled, menu_separator,
+};
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
@@ -18,7 +20,43 @@ use rterm_core::ConnectionStatus;
 /// 操作按钮图标尺寸（像素），与其它面板的列表操作一致。
 const ACTION_ICON_SIZE: f32 = ICON_SIZE;
 
-/// 命令片段面板（中心视图之一，与“会话 / 文件 / 传输”并列切换）。
+/// 删除片段确认弹窗层：仅当存在待确认删除下标时返回遮罩层，否则 `None`。
+/// 复用 `dialog_panel` + `overlay_wrap_dismissable`，与会话删除确认弹窗同源。
+pub fn confirm_delete_overlay(app: &App) -> Option<Element<'_, Message>> {
+    let idx = app.snippets.pending_delete?;
+    let name = app
+        .snippets
+        .items
+        .get(idx)
+        .map(|s| s.name.clone())
+        .unwrap_or_default();
+    let body: Element<'_, Message> =
+        column![text(t!("snippet.delete_confirm", name => name)).size(14),]
+            .spacing(8)
+            .into();
+    let panel = dialog_panel(
+        t!("snippet.delete_title"),
+        body,
+        None,
+        360.0,
+        Some(DialogButton {
+            label: t!("common.cancel").to_string(),
+            on_press: Message::CancelDeleteSnippet,
+            style: DialogBtnStyle::Neutral,
+        }),
+        DialogButton {
+            label: t!("snippet.delete").to_string(),
+            on_press: Message::ConfirmDeleteSnippet,
+            style: DialogBtnStyle::Emphasis { danger: true },
+        },
+    );
+    Some(crate::modal::overlay_wrap_dismissable(
+        panel,
+        Message::CancelDeleteSnippet,
+    ))
+}
+
+/// 命令片段面板（中心视图之一，与"会话 / 文件 / 传输"并列切换）。
 pub fn view(app: &App) -> Element<'_, Message> {
     let state = &app.snippets;
     let can_edit = state.can_edit();
@@ -225,7 +263,7 @@ fn snippet_menu(
     actions.push(menu_item(
         t!("snippet.delete"),
         can_edit,
-        Message::DeleteSnippet(idx),
+        Message::RequestDeleteSnippet(idx),
     ));
     crate::ui::menu_container(MeasuredColumn::with_children(actions))
 }

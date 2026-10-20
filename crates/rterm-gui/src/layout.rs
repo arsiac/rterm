@@ -121,6 +121,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::snippet_dialog::view(app) {
         layers.push(dialog.map(Message::Snippets));
     }
+    if let Some(dialog) = crate::snippet_panel::confirm_delete_overlay(app) {
+        layers.push(dialog.map(Message::Snippets));
+    }
     // 端口转发规则新建 / 编辑弹窗：与片段编辑弹窗同层。
     if let Some(dialog) = forwards_dialog::view(app) {
         layers.push(dialog.map(Message::Forwards));

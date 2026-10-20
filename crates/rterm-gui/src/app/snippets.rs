@@ -115,6 +115,8 @@ pub struct State {
     pub editor: Option<EditorDraft>,
     /// 快速命令弹窗（Ctrl+Shift+P）的交互态。
     pub palette: Palette,
+    /// 待确认删除的片段下标（`None` 表示当前未弹出删除确认框）。
+    pub pending_delete: Option<usize>,
 }
 
 /// 快速命令弹窗的交互态：过滤词与命中集内的高亮位置。
@@ -144,6 +146,7 @@ impl State {
             hovered: None,
             selected: None,
             editor: None,
+            pending_delete: None,
             palette: Palette {
                 open: false,
                 query: String::new(),
@@ -221,7 +224,15 @@ impl State {
                     Err(task) => task,
                 }
             }
-            Message::DeleteSnippet(idx) => {
+            Message::RequestDeleteSnippet(idx) => {
+                self.pending_delete = Some(idx);
+                Task::none()
+            }
+            Message::ConfirmDeleteSnippet => {
+                let idx = match self.pending_delete.take() {
+                    Some(idx) => idx,
+                    None => return Task::none(),
+                };
                 if idx >= self.items.len() {
                     return Task::none();
                 }
@@ -234,6 +245,10 @@ impl State {
                     }
                     Err(task) => task,
                 }
+            }
+            Message::CancelDeleteSnippet => {
+                self.pending_delete = None;
+                Task::none()
             }
             Message::EditorName(name) => {
                 if let Some(draft) = self.editor.as_mut() {
@@ -667,8 +682,12 @@ pub enum Message {
     EditSnippet(usize),
     /// 复制已有片段（携带清单下标）：副本名称追加数字后缀。
     DuplicateSnippet(usize),
-    /// 删除片段（携带清单下标），即时删除、不二次确认。
-    DeleteSnippet(usize),
+    /// 请求删除片段（携带清单下标）：仅置待确认状态并弹出确认框，不直接删除。
+    RequestDeleteSnippet(usize),
+    /// 确认删除片段：从待确认状态取出下标执行实际删除。
+    ConfirmDeleteSnippet,
+    /// 取消删除片段：撤销待确认状态并关闭确认框。
+    CancelDeleteSnippet,
     /// 把片段上移一位（携带清单下标）。
     MoveUp(usize),
     /// 把片段下移一位（携带清单下标）。
@@ -930,7 +949,8 @@ mod tests {
         assert_eq!(s.selected, Some(3));
 
         // 删除：其后选中 / 编辑目标前移。
-        let _ = s.update(Message::DeleteSnippet(0), &ctx);
+        let _ = s.update(Message::RequestDeleteSnippet(0), &ctx);
+        let _ = s.update(Message::ConfirmDeleteSnippet, &ctx);
         assert_eq!(names(&s), ["uno", "three", "two 2"]);
 
         // 新实例从盘读回，内容与顺序一致。
