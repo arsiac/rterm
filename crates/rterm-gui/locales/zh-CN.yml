@@ -561,6 +561,8 @@ forward:
   new: 新建
   edit: 编辑
   delete: 删除
+  delete_title: 删除转发规则
+  delete_confirm: 确定删除转发规则「%{name}」吗？此操作不可恢复。
   save: 保存
   empty: 未选择会话
   empty_hint: 连接一个会话，或右键会话选择「端口转发…」来管理规则。

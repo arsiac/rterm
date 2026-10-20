@@ -99,6 +99,8 @@ pub struct State {
     pub editor: Option<RuleDraft>,
     /// 各标签的规则行运行时状态（按下标对齐会话 forwards 列表；仅已连接标签有条目）。
     pub runtime: HashMap<u64, Vec<RowStatus>>,
+    /// 待确认删除的规则下标（`None` 表示当前未弹出删除确认框）。
+    pub pending_delete: Option<usize>,
 }
 
 impl State {
@@ -150,7 +152,21 @@ impl State {
     pub fn update(&mut self, msg: Message, ctx: &Ctx) -> Task<Event> {
         match msg {
             Message::ToggleRule(idx) => self.toggle_rule(idx, ctx),
-            Message::RemoveRule(idx) => self.remove_rule(idx, ctx),
+            Message::RequestDeleteRule(idx) => {
+                self.pending_delete = Some(idx);
+                Task::none()
+            }
+            Message::ConfirmDeleteRule => {
+                let idx = match self.pending_delete.take() {
+                    Some(idx) => idx,
+                    None => return Task::none(),
+                };
+                self.remove_rule(idx, ctx)
+            }
+            Message::CancelDeleteRule => {
+                self.pending_delete = None;
+                Task::none()
+            }
             Message::StartEdit(index) => {
                 self.editor = Some(match index {
                     Some(i) => ctx
@@ -373,8 +389,12 @@ impl std::fmt::Display for KindOption {
 pub enum Message {
     /// 切换某条规则的启停（携带规则下标）。
     ToggleRule(usize),
-    /// 删除某条规则（携带规则下标），即时删除、不二次确认。
-    RemoveRule(usize),
+    /// 请求删除某条规则（携带规则下标）：仅置待确认状态并弹出确认框，不直接删除。
+    RequestDeleteRule(usize),
+    /// 确认删除规则：从待确认状态取出下标执行实际删除。
+    ConfirmDeleteRule,
+    /// 取消删除规则：撤销待确认状态并关闭确认框。
+    CancelDeleteRule,
     /// 打开编辑弹窗：`None` 新建，`Some(i)` 编辑第 i 条规则。
     StartEdit(Option<usize>),
     /// 编辑器类型字段变更（携带 ForwardKind 的类型名，见 `KindOption`）。

@@ -128,6 +128,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = forwards_dialog::view(app) {
         layers.push(dialog.map(Message::Forwards));
     }
+    if let Some(dialog) = crate::forwards_panel::confirm_delete_overlay(app) {
+        layers.push(dialog.map(Message::Forwards));
+    }
     // 快速命令弹窗（Ctrl+Shift+P）：轻量浮层，压在编辑器之上、粘贴确认与主密码之下。
     if let Some(dialog) = crate::snippet_palette::view(app) {
         layers.push(dialog.map(Message::Snippets));

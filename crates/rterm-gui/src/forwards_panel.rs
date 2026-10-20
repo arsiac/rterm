@@ -9,7 +9,9 @@ use crate::App;
 use crate::app::contexts::forwards_ctx;
 use crate::app::forwards::{Ctx, Message, RowStatus};
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon};
-use crate::ui::{menu_container, menu_entry, menu_separator};
+use crate::ui::{
+    DialogBtnStyle, DialogButton, dialog_panel, menu_container, menu_entry, menu_separator,
+};
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
@@ -20,6 +22,59 @@ use rterm_config::{ForwardKind, ForwardRule};
 
 /// 操作按钮图标尺寸（像素），与其它面板的列表操作一致。
 const ACTION_ICON_SIZE: f32 = ICON_SIZE;
+
+/// 删除转发规则确认弹窗层：存在待确认删除下标时返回遮罩层，否则 `None`。
+/// 复用 `dialog_panel` + `overlay_wrap_dismissable`，与会话删除确认弹窗同源。
+pub fn confirm_delete_overlay(app: &App) -> Option<Element<'_, Message>> {
+    let idx = app.forwards.pending_delete?;
+    let ctx = forwards_ctx(app);
+    let desc = ctx.rules.get(idx).map(rule_description).unwrap_or_default();
+    let body: Element<'_, Message> =
+        column![text(t!("forward.delete_confirm", name => desc)).size(14)]
+            .spacing(8)
+            .into();
+    let panel = dialog_panel(
+        t!("forward.delete_title"),
+        body,
+        None,
+        360.0,
+        Some(DialogButton {
+            label: t!("common.cancel").to_string(),
+            on_press: Message::CancelDeleteRule,
+            style: DialogBtnStyle::Neutral,
+        }),
+        DialogButton {
+            label: t!("forward.delete").to_string(),
+            on_press: Message::ConfirmDeleteRule,
+            style: DialogBtnStyle::Emphasis { danger: true },
+        },
+    );
+    Some(crate::modal::overlay_wrap_dismissable(
+        panel,
+        Message::CancelDeleteRule,
+    ))
+}
+
+/// 规则的主行描述（类型 + 绑定 → 目的），用于确认弹窗的单行标识。
+fn rule_description(rule: &ForwardRule) -> String {
+    match rule.kind {
+        ForwardKind::Dynamic => format!(
+            "{}:{} — {}",
+            rule.bind_addr(),
+            rule.bind_port,
+            t!("forward.dynamic_hint")
+        ),
+        ForwardKind::Local | ForwardKind::Remote => format!(
+            "{}:{} → {}:{}",
+            rule.bind_addr(),
+            rule.bind_port,
+            rule.target_addr(),
+            rule.target_port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".into())
+        ),
+    }
+}
 
 /// 端口转发面板（中心视图之一，与「会话 / 文件 / 传输」并列切换）。
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -160,7 +215,7 @@ fn forward_menu(idx: usize) -> Element<'static, Message> {
     let actions = vec![
         menu_entry(t!("forward.edit"), Message::StartEdit(Some(idx))),
         menu_separator(),
-        menu_entry(t!("forward.delete"), Message::RemoveRule(idx)),
+        menu_entry(t!("forward.delete"), Message::RequestDeleteRule(idx)),
     ];
     menu_container(MeasuredColumn::with_children(actions))
 }

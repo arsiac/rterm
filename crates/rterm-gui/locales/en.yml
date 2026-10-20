@@ -561,6 +561,8 @@ forward:
   new: New
   edit: Edit
   delete: Delete
+  delete_title: Delete forwarding rule
+  delete_confirm: Delete forwarding rule "%{name}"? This cannot be undone.
   save: Save
   empty: "No session selected"
   empty_hint: "Connect a session or right-click one to manage its forwarding rules."
