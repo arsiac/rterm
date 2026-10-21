@@ -128,6 +128,33 @@ jobs:
           cp target/${{ matrix.target }}/generate-rpm/*.rpm \
             "${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.rpm"
 
+      - name: Generate SHA-256 checksums
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(rterm-*.zip rterm-*.deb rterm-*.rpm)
+          for f in "${files[@]}"; do
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$f" > "$f.sha256"
+            else
+              shasum -a 256 "$f" > "$f.sha256"
+            fi
+            cat "$f.sha256"
+          done
+
+      - name: Generate SHA-256 checksums (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem -File rterm-*.zip, rterm-*.exe | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            # Write ASCII with LF line endings so `sha256sum -c` accepts it on Linux/macOS.
+            [IO.File]::WriteAllText("$($_.FullName).sha256", "$hash  $($_.Name)`n")
+            Get-Content "$($_.FullName).sha256"
+          }
+
       - uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -135,5 +162,6 @@ jobs:
             ${{ env.BINARY_NAME }}-*.exe
             ${{ env.BINARY_NAME }}-*.deb
             ${{ env.BINARY_NAME }}-*.rpm
+            ${{ env.BINARY_NAME }}-*.sha256
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
