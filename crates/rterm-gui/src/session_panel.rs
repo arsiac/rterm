@@ -1,6 +1,6 @@
 //! 中心“会话管理”面板。
 //!
-//! 未编辑时顶部为一排按钮栏（新建会话、刷新、更多），其下为会话列表（双击列表项即可连接）；
+//! 未编辑时顶部为一排按钮栏（新建会话、全部展开、全部折叠、更多），其下为会话列表（双击列表项即可连接）；
 //! 右键列表项弹出含新建会话 / 连接 / 编辑 / 删除的菜单；
 //! 编辑（新建 / 修改）以弹窗表单呈现（名称、主机、端口、用户名、认证方式及对应凭据、分组），
 //! 列表在遮罩之下仍可见。
@@ -131,6 +131,7 @@ fn list_view(app: &App) -> Element<'_, Message> {
     // dropdown 面板与右键菜单样式相同。
     let more_menu = crate::ui::menu_container(
         MeasuredColumn::with_children(vec![
+            menu_entry(t!("session.refresh"), Message::RefreshSessions),
             menu_entry(t!("session.import"), Message::ImportSessions),
             menu_entry(t!("session.export"), Message::ExportSessions),
         ])
@@ -155,10 +156,17 @@ fn list_view(app: &App) -> Element<'_, Message> {
             Position::Bottom
         ),
         icon_button(
-            Icon::ArrowClockwise,
+            Icon::ExpandAll,
             ACTION_ICON_SIZE,
-            t!("session.refresh"),
-            Message::RefreshSessions,
+            t!("session.expand_all"),
+            Message::ExpandAllGroups,
+            Position::Bottom
+        ),
+        icon_button(
+            Icon::CollapseAll,
+            ACTION_ICON_SIZE,
+            t!("session.collapse_all"),
+            Message::CollapseAllGroups,
             Position::Bottom
         ),
         Element::from(more_dropdown),

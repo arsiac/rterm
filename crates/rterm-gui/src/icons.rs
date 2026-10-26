@@ -107,6 +107,10 @@ pub enum Icon {
     Flash,
     /// 双向水平箭头（端口转发；由 transfer-2-fill 顺时针旋转 90° 派生）
     ArrowSwap,
+    /// 全部展开
+    ExpandAll,
+    /// 全部折叠
+    CollapseAll,
 }
 
 impl Icon {
@@ -149,6 +153,8 @@ impl Icon {
             Icon::ArrowDown => svg_bytes!("arrow-down-16-filled"),
             Icon::CommandLine => svg_bytes!("command-line-20-solid"),
             Icon::Flash => svg_bytes!("flash-16-filled"),
+            Icon::ExpandAll => svg_bytes!("expand-all"),
+            Icon::CollapseAll => svg_bytes!("collapse-all"),
         }
     }
 

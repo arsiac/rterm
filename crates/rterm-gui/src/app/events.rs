@@ -27,20 +27,9 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
             let tab_id = connect::open_tab(app, &id);
             connect::connect_session(app, tab_id, &id)
         }
-        session::Event::GroupStateChanged { key, collapsed } => {
+        session::Event::CollapsedGroupsChanged(groups) => {
             // 折叠态属机器本地视图状态：写回配置并立即落盘。
-            {
-                let groups = app
-                    .config
-                    .session_list
-                    .collapsed_groups
-                    .get_or_insert_with(Vec::new);
-                groups.retain(|k| k != &key);
-                if collapsed {
-                    groups.push(key);
-                }
-                groups.sort();
-            }
+            app.config.session_list.collapsed_groups = Some(groups.into_iter().collect());
             contexts::save_config(app);
             Task::none()
         }

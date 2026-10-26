@@ -502,6 +502,10 @@ pub enum Message {
     JumpKeyFilePicked(usize, Option<String>),
     /// 折叠 / 展开某分组（携带分组键：空串表示「未分组」区块）。
     ToggleGroup(String),
+    /// 折叠全部分组（含「未分组」区块）。
+    CollapseAllGroups,
+    /// 展开全部分组。
+    ExpandAllGroups,
     /// 左键按下选中会话（携带会话 id）。
     SessionSelect(String),
     /// 鼠标进入会话列表某一项（携带会话 id），用于渲染悬浮高亮。
@@ -552,8 +556,8 @@ pub enum FileFlow {
 pub enum Event {
     /// 发起连接（携带会话 id）：父层据此开标签并异步连接。
     Connect(String),
-    /// 某分组的折叠态发生变化（携带分组键与新的折叠态）：父层据此写回配置并落盘。
-    GroupStateChanged { key: String, collapsed: bool },
+    /// 分组的折叠态发生变化（携带完整的折叠分组键集合）：父层据此写回配置并落盘。
+    CollapsedGroupsChanged(BTreeSet<String>),
     /// 打开某会话的文件管理（携带会话 id）：父层据此打开对应标签的 SFTP 面板。
     OpenFiles(String),
     /// 打开某会话的端口转发管理（携带会话 id）：父层据此设置作用域并切换到转发面板。
@@ -678,6 +682,8 @@ impl State {
                 Task::none()
             }
             Message::RefreshSessions => {
+                // 入口在「更多」下拉菜单内，触发后收起菜单。
+                self.show_more_menu = false;
                 // 重新从存储加载会话列表；存储不可用则仅保留当前内存列表。
                 if let Some(store) = self.store.as_ref() {
                     self.sessions = store.load().unwrap_or_else(|e| {
@@ -749,13 +755,18 @@ impl State {
             }
             Message::ToggleGroup(key) => {
                 // 集合中存即折叠：点击在折叠 / 展开间切换，并上行持久化意图。
-                let collapsed = if self.collapsed_groups.remove(&key) {
-                    false
-                } else {
-                    self.collapsed_groups.insert(key.clone());
-                    true
-                };
-                Task::done(Event::GroupStateChanged { key, collapsed })
+                if !self.collapsed_groups.remove(&key) {
+                    self.collapsed_groups.insert(key);
+                }
+                Task::done(Event::CollapsedGroupsChanged(self.collapsed_groups.clone()))
+            }
+            Message::CollapseAllGroups => {
+                self.collapsed_groups = group_keys(&self.sessions);
+                Task::done(Event::CollapsedGroupsChanged(self.collapsed_groups.clone()))
+            }
+            Message::ExpandAllGroups => {
+                self.collapsed_groups.clear();
+                Task::done(Event::CollapsedGroupsChanged(BTreeSet::new()))
             }
             Message::SessionSelect(id) => {
                 self.selected_session = Some(id);
@@ -838,6 +849,15 @@ pub(crate) fn filtered_sessions<'a>(
                     .is_some_and(|g| g.to_lowercase().contains(&query))
         })
         .collect()
+}
+
+/// 当前会话列表涉及的全部分组键：命名分组 + 存在未分组会话时的空串键。
+fn group_keys(sessions: &[SessionConfig]) -> BTreeSet<String> {
+    let mut keys: BTreeSet<String> = sessions.iter().filter_map(|s| s.group.clone()).collect();
+    if sessions.iter().any(|s| s.group.is_none()) {
+        keys.insert(String::new());
+    }
+    keys
 }
 
 /// 解析分组折叠态：未初始化时按会话总数给出默认值，已初始化时修剪失效分组键。
@@ -1248,5 +1268,25 @@ mod tests {
         let _ = state.update(Message::ToggleGroup("prod".into()), &ctx);
         assert!(!state.collapsed_groups.contains("prod"));
         assert!(state.collapsed_groups.contains("staging"));
+    }
+
+    #[test]
+    fn collapse_all_and_expand_all_toggle_every_group() {
+        let sessions = vec![
+            s("a", "h", "u", Some("prod")),
+            s("b", "h", "u", Some("staging")),
+            s("c", "h", "u", None),
+        ];
+        let mut state = State::new(None, sessions, BTreeSet::new());
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::CollapseAllGroups, &ctx);
+        assert_eq!(
+            state.collapsed_groups,
+            BTreeSet::from(["prod".to_string(), "staging".to_string(), String::new()])
+        );
+
+        let _ = state.update(Message::ExpandAllGroups, &ctx);
+        assert!(state.collapsed_groups.is_empty());
     }
 }

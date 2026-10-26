@@ -170,6 +170,8 @@ shortcuts:
 session:
   new: New session
   refresh: Refresh
+  expand_all: Expand all
+  collapse_all: Collapse all
   filter_placeholder: Filter sessions…
   filter_no_match: No matching sessions.
   import: Import sessions
