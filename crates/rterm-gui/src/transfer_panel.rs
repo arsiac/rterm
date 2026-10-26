@@ -30,7 +30,7 @@ use crate::theme;
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, container, row, text};
 use iced::{Color, Element, Length, Padding};
 use std::time::Instant;
 
@@ -63,7 +63,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .iter()
             .map(|t| transfer_item(t, retry_limit))
             .collect();
-        scrollable(column(items).spacing(8).padding(Padding {
+        crate::ui::thin_vertical_scrollbar(column(items).spacing(8).padding(Padding {
             top: 0.0,
             right: 10.0,
             bottom: 0.0,

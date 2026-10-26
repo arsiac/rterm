@@ -420,9 +420,15 @@ pub fn search_input_style(theme: &Theme, status: text_input::Status) -> text_inp
     }
 }
 
-/// 细滚动条方向：轨道与滑块同为 6px
-pub fn thin_scrollbar_direction() -> scrollable::Direction {
-    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6.0).scroller_width(6.0))
+/// 细竖向滚动条容器：固定 6px 宽，轨道透明、滑块半透明。
+pub fn thin_vertical_scrollbar<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+) -> scrollable::Scrollable<'a, Message> {
+    scrollable(content)
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new().width(6.0).scroller_width(6.0),
+        ))
+        .style(theme::thin_scrollbar_style)
 }
 
 /// 弹窗按钮的视觉样式。

@@ -14,7 +14,7 @@ use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::Id;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{column, container, mouse_area, row, scrollable, text, text_input};
+use iced::widget::{column, container, mouse_area, row, text, text_input};
 use iced::{Element, Length};
 use iced_aw::widget::context_menu::ContextMenu;
 use rterm_core::ConnectionStatus;
@@ -331,13 +331,7 @@ fn panel(app: &App) -> Element<'_, Message> {
     }
 
     // 使用细滚动条避免内容被覆盖
-    let list = scrollable(column(entries).spacing(4))
-        .height(Length::Fill)
-        .direction(iced::widget::scrollable::Direction::Vertical(
-            iced::widget::scrollable::Scrollbar::new()
-                .width(6.0)
-                .scroller_width(4.0),
-        ));
+    let list = crate::ui::thin_vertical_scrollbar(column(entries).spacing(4)).height(Length::Fill);
 
     // 列表整体只套一层 `ContextMenu`：右键落在条目上时渲染行菜单，落在空白处或 “..”
     // 合成项上时渲染空白菜单。全局仅此一层——若逐行与整列表各套一层，右键会被两层同时

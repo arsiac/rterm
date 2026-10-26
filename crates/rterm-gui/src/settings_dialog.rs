@@ -19,8 +19,8 @@ use crate::modal;
 use crate::theme;
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    button, checkbox, column, combo_box, container, mouse_area, pick_list, row, scrollable, slider,
-    text, text_input,
+    button, checkbox, column, combo_box, container, mouse_area, pick_list, row, slider, text,
+    text_input,
 };
 use iced::{Border, Element, Length, Theme};
 use rterm_config::{
@@ -274,10 +274,9 @@ fn content_pane(app: &App) -> Element<'_, Message> {
         });
     column![
         header,
-        scrollable(body)
+        crate::ui::thin_vertical_scrollbar(body)
             .width(Length::Fill)
-            .height(Length::Fill)
-            .direction(crate::ui::thin_scrollbar_direction()),
+            .height(Length::Fill),
     ]
     .width(Length::Fill)
     .height(Length::Fill)
@@ -729,10 +728,9 @@ fn security_pane(app: &App) -> Element<'_, Message> {
             // 内层滚动 + 外层封顶（见 `KNOWN_HOSTS_LIST_MAX_H`）；滚轮到内层边缘后外层接管。
             col = col.push(
                 container(
-                    scrollable(rows)
+                    crate::ui::thin_vertical_scrollbar(rows)
                         .width(Length::Fill)
-                        .height(Length::Shrink)
-                        .direction(crate::ui::thin_scrollbar_direction()),
+                        .height(Length::Shrink),
                 )
                 .width(Length::Fill)
                 .max_height(KNOWN_HOSTS_LIST_MAX_H),

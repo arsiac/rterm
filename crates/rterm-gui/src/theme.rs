@@ -617,6 +617,49 @@ pub fn tab_scrollable_style(theme: &Theme, status: scrollable::Status) -> scroll
     }
 }
 
+/// 细滚动条样式：不画轨道底色，滑块半透明，悬停 / 拖拽时加深。
+pub fn thin_scrollbar_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let p = custom_palette(theme);
+    let (color, alpha) = match status {
+        scrollable::Status::Active { .. } => (p.border, 0.4),
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered: true,
+            ..
+        }
+        | scrollable::Status::Dragged {
+            is_vertical_scrollbar_dragged: true,
+            ..
+        } => (p.text_secondary, 0.75),
+        _ => (p.border, 0.5),
+    };
+    let rail = scrollable::Rail {
+        background: None,
+        border: iced::Border::default(),
+        scroller: scrollable::Scroller {
+            background: Color { a: alpha, ..color }.into(),
+            border: iced::Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+        },
+    };
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: p.surface_raised.into(),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            shadow: iced::Shadow::default(),
+            icon: p.text_secondary,
+        },
+    }
+}
+
 /// 标签列表 dropdown 面板样式：抬升表面 + 细边框 + 圆角，与 tooltip 视觉一致。
 pub fn dropdown_panel_style(theme: &Theme) -> container::Style {
     let p = custom_palette(theme);

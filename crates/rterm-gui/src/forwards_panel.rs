@@ -15,7 +15,7 @@ use crate::ui::{
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 use iced_aw::widget::context_menu::ContextMenu;
 use rterm_config::{ForwardKind, ForwardRule};
@@ -83,7 +83,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = match &ctx.session_id {
         None => empty_state(),
         Some(_) if ctx.rules.is_empty() => no_rules_state(),
-        Some(_) => scrollable(
+        Some(_) => crate::ui::thin_vertical_scrollbar(
             column(
                 ctx.rules
                     .iter()
@@ -93,7 +93,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
             )
             .spacing(4),
         )
-        .direction(crate::ui::thin_scrollbar_direction())
         .width(Length::Fill)
         .height(Length::Fill)
         .into(),

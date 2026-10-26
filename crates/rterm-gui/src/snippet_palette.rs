@@ -9,7 +9,7 @@ use crate::t;
 use crate::App;
 use crate::app::snippets::{Message, filtered_snippets};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, scrollable, text, text_input};
+use iced::widget::{button, column, container, text, text_input};
 use iced::{Element, Length, Theme};
 use rterm_core::ConnectionStatus;
 
@@ -92,10 +92,9 @@ fn body(app: &App, list_h: f32) -> Element<'_, Message> {
             .enumerate()
             .map(|(pos, &idx)| palette_row(app, pos, idx))
             .collect();
-        scrollable(column(rows).spacing(LIST_SPACING))
+        crate::ui::thin_vertical_scrollbar(column(rows).spacing(LIST_SPACING))
             .id(app.snippets.palette.list_id.clone())
             .on_scroll(|viewport| Message::PaletteScrolled(viewport.absolute_offset().y))
-            .direction(crate::ui::thin_scrollbar_direction())
             .width(Length::Fill)
             .height(Length::Fixed(list_h))
             .into()

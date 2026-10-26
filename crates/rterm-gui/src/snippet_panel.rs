@@ -13,7 +13,7 @@ use crate::ui::{
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, text, text_input};
 use iced::{Background, Border, Element, Length, Theme};
 use iced_aw::widget::context_menu::ContextMenu;
 use rterm_core::ConnectionStatus;
@@ -80,8 +80,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     } else if rows.is_empty() {
         no_match_state()
     } else {
-        scrollable(column(rows).spacing(4))
-            .direction(crate::ui::thin_scrollbar_direction())
+        crate::ui::thin_vertical_scrollbar(column(rows).spacing(4))
             .height(Length::Fill)
             .into()
     };

@@ -17,7 +17,7 @@ use crate::app::sftp::Message;
 use crate::sftp_panel;
 use crate::state::{ConflictDecision, ConflictRow, DeleteProbe, SftpDialog};
 use crate::ui::{SegmentOption, SegmentTone};
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, text};
 use iced::{Background, Border, Element, Length, Theme};
 use rterm_core::FileEntry;
 
@@ -247,10 +247,9 @@ fn upload_conflicts_dialog<'a>(
             // 内滚 + 外层封顶（≈6 行），沿用 known_hosts 列表的做法与细滚动条基座。
             container(
                 container(
-                    scrollable(list)
+                    crate::ui::thin_vertical_scrollbar(list)
                         .width(Length::Fill)
-                        .height(Length::Shrink)
-                        .direction(crate::ui::thin_scrollbar_direction()),
+                        .height(Length::Shrink),
                 )
                 .width(Length::Fill)
                 .max_height(336.0),

@@ -14,9 +14,7 @@ use crate::ui::{DialogBtnStyle, DialogButton, dialog_panel, menu_entry};
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{
-    button, column, container, mouse_area, pick_list, row, scrollable, text, text_input,
-};
+use iced::widget::{button, column, container, mouse_area, pick_list, row, text, text_input};
 use iced::{Background, Border, Element, Length, Shadow, Theme};
 use iced_autocomplete::auto_complete;
 use iced_aw::widget::context_menu::ContextMenu;
@@ -184,8 +182,7 @@ fn list_view(app: &App) -> Element<'_, Message> {
     } else if items.is_empty() {
         no_match_state()
     } else {
-        scrollable(column(items).spacing(4))
-            .direction(crate::ui::thin_scrollbar_direction())
+        crate::ui::thin_vertical_scrollbar(column(items).spacing(4))
             .height(Length::Fill)
             .into()
     };
@@ -583,9 +580,7 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
     column![
         header,
         crate::ui::hairline(),
-        scrollable(form)
-            .height(Length::Fill)
-            .direction(crate::ui::thin_scrollbar_direction()),
+        crate::ui::thin_vertical_scrollbar(form).height(Length::Fill),
         crate::ui::hairline(),
         footer,
     ]

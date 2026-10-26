@@ -12,7 +12,7 @@ use crate::modal;
 use crate::t;
 use crate::ui::DialogBtnStyle;
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Background, Border, Element, Length, Theme};
 
 /// 快捷键弹窗面板占窗口宽 / 高的比例。
@@ -113,10 +113,9 @@ fn content(app: &App) -> Element<'_, Message> {
     let list: Element<'_, Message> = if items.is_empty() {
         crate::ui::hint_text(t!("shortcuts.no_match"))
     } else {
-        scrollable(column(items).spacing(4))
+        crate::ui::thin_vertical_scrollbar(column(items).spacing(4))
             .width(Length::Fill)
             .height(Length::Fill)
-            .direction(crate::ui::thin_scrollbar_direction())
             .into()
     };
 

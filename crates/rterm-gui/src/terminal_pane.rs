@@ -205,7 +205,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         bottom: TAB_ROW_BOTTOM_PADDING,
         left: 0.0,
     });
-    let list_overlay = container(scrollable(
+    let list_overlay = container(crate::ui::thin_vertical_scrollbar(
         column(
             app.tabs
                 .list()
