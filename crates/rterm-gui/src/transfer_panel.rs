@@ -63,14 +63,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .iter()
             .map(|t| transfer_item(t, retry_limit))
             .collect();
-        crate::ui::thin_vertical_scrollbar(column(items).spacing(8).padding(Padding {
-            top: 0.0,
-            right: 10.0,
-            bottom: 0.0,
-            left: 0.0,
-        }))
-        .height(Length::Fill)
-        .into()
+        crate::ui::thin_vertical_scrollbar(column(items).spacing(8))
+            .height(Length::Fill)
+            .into()
     };
 
     // 整面板留白，避免内容贴边。
