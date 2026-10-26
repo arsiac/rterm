@@ -12,15 +12,16 @@ use crate::t;
 use crate::vault_keyring;
 use crate::widget::toast::toaster;
 use iced::Task;
-use log::{debug, error};
+use log::{debug, error, warn};
 use rterm_config::{AppConfig, SessionStore, SessionsFileProblem, SessionsFileState};
 use rterm_crypto::Vault;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// 应用启动：加载会话存储与保险库，使用调用方传入的应用配置，返回初始状态与任务。
 /// 会话文件按**三态**处理（见 [`SessionStore::startup_state`]）：不存在才建模式 0 随机密钥并落盘，
 /// 可用则解锁；**存在但不可用**时绝不写盘、绝不重建密钥——当首启动处理会用空会话覆盖用户文件。
-pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
+pub(crate) fn new(mut config: AppConfig) -> (App, Task<Message>) {
     let store = SessionStore::new()
         .map_err(|e| error!("failed to initialize session store: {e}"))
         .ok();
@@ -91,6 +92,24 @@ pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
         }
     };
 
+    // 会话列表折叠态：首启按会话总数决定命名分组是否默认折叠，此后只修剪失效键。
+    // 会话文件不可用或尚无会话时保持未初始化，避免把异常态固化进配置。
+    let collapsed_groups = if unusable.is_none() && !sessions.is_empty() {
+        let (set, changed) = session::resolve_collapsed_groups(
+            &sessions,
+            config.session_list.collapsed_groups.as_deref(),
+        );
+        if changed {
+            config.session_list.collapsed_groups = Some(set.iter().cloned().collect());
+            if let Err(e) = config.save() {
+                warn!("failed to persist session-list collapse state: {e}");
+            }
+        }
+        set
+    } else {
+        BTreeSet::new()
+    };
+
     // 两栏 `pane_grid` 布局态交由 `app::panes` 模块构建（初始左栏固定像素宽度 320）。
     // 比例按 320 / (恢复后的窗口宽度 - 活动栏宽) 换算：窗口宽度取配置中记录的尺寸，
     // 未启用 / 未记录时回退默认宽度，保证启动首帧分隔比例即正确。
@@ -114,7 +133,7 @@ pub(crate) fn new(config: AppConfig) -> (App, Task<Message>) {
         .map(|problem| sessions_file_unusable_text(&sessions_path, problem));
 
     let mut app = App {
-        session: session::State::new(store, sessions),
+        session: session::State::new(store, sessions, collapsed_groups),
         session_io: session_io::State::new(),
         active_session: None,
         center: CenterView::Sessions,

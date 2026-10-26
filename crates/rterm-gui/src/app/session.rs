@@ -7,11 +7,16 @@ use iced::Task;
 use log::error;
 use rterm_config::{AuthMethod, JumpHost, SessionConfig, SessionStore, new_id};
 use rterm_crypto::Vault;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use iced_autocomplete::{Filter, State as AcState};
+
+/// 首次初始化会话列表时，会话总数超过该值即折叠全部命名分组。
+///
+/// 只在 `collapsed_groups` 尚未初始化时生效；之后以用户状态为准，不再自动重算。
+pub(crate) const AUTO_COLLAPSE_THRESHOLD: usize = 15;
 
 /// 会话编辑器可编辑的字段，供 [`Message::EditorField`] 区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,7 +371,7 @@ pub struct State {
     /// 使菜单作用于哪一条在视觉上可辨。
     pub selected_session: Option<String>,
     /// 被折叠的分组键集合（空串表示「未分组」区块），点击分组头在集合内增删以切换展开态。
-    pub collapsed_groups: HashSet<String>,
+    pub collapsed_groups: BTreeSet<String>,
     /// 工具栏「更多」 dropdown 是否展开。
     pub show_more_menu: bool,
     /// 会话列表过滤词：对名称 / 主机 / 用户名 / 分组做大小写不敏感子串匹配，空串 = 全量。
@@ -378,14 +383,18 @@ pub struct State {
 }
 
 impl State {
-    /// 用初始存储与会话列表构造模块状态。
-    pub fn new(store: Option<SessionStore>, sessions: Vec<SessionConfig>) -> Self {
+    /// 用初始存储、会话列表与已解析的分组折叠态构造模块状态。
+    pub fn new(
+        store: Option<SessionStore>,
+        sessions: Vec<SessionConfig>,
+        collapsed_groups: BTreeSet<String>,
+    ) -> Self {
         Self {
             store,
             sessions,
             hovered_session: None,
             selected_session: None,
-            collapsed_groups: HashSet::new(),
+            collapsed_groups,
             show_more_menu: false,
             filter: String::new(),
             editor: None,
@@ -543,6 +552,8 @@ pub enum FileFlow {
 pub enum Event {
     /// 发起连接（携带会话 id）：父层据此开标签并异步连接。
     Connect(String),
+    /// 某分组的折叠态发生变化（携带分组键与新的折叠态）：父层据此写回配置并落盘。
+    GroupStateChanged { key: String, collapsed: bool },
     /// 打开某会话的文件管理（携带会话 id）：父层据此打开对应标签的 SFTP 面板。
     OpenFiles(String),
     /// 打开某会话的端口转发管理（携带会话 id）：父层据此设置作用域并切换到转发面板。
@@ -737,11 +748,14 @@ impl State {
                 Task::none()
             }
             Message::ToggleGroup(key) => {
-                // 集合中存即折叠：点击在折叠 / 展开间切换。
-                if !self.collapsed_groups.remove(&key) {
-                    self.collapsed_groups.insert(key);
-                }
-                Task::none()
+                // 集合中存即折叠：点击在折叠 / 展开间切换，并上行持久化意图。
+                let collapsed = if self.collapsed_groups.remove(&key) {
+                    false
+                } else {
+                    self.collapsed_groups.insert(key.clone());
+                    true
+                };
+                Task::done(Event::GroupStateChanged { key, collapsed })
             }
             Message::SessionSelect(id) => {
                 self.selected_session = Some(id);
@@ -824,6 +838,46 @@ pub(crate) fn filtered_sessions<'a>(
                     .is_some_and(|g| g.to_lowercase().contains(&query))
         })
         .collect()
+}
+
+/// 解析分组折叠态：未初始化时按会话总数给出默认值，已初始化时修剪失效分组键。
+///
+/// 首启且总会话数超过 [`AUTO_COLLAPSE_THRESHOLD`] 时折叠全部命名分组；「未分组」区块
+/// 恒默认展开。返回折叠集合与「是否需要回写配置」。
+pub(crate) fn resolve_collapsed_groups(
+    sessions: &[SessionConfig],
+    stored: Option<&[String]>,
+) -> (BTreeSet<String>, bool) {
+    let named_groups: BTreeSet<String> = sessions.iter().filter_map(|s| s.group.clone()).collect();
+    let has_ungrouped = sessions.iter().any(|s| s.group.is_none());
+
+    match stored {
+        None => {
+            let initial = if sessions.len() > AUTO_COLLAPSE_THRESHOLD {
+                named_groups
+            } else {
+                BTreeSet::new()
+            };
+            (initial, true)
+        }
+        Some(keys) => {
+            let stored_set: BTreeSet<String> = keys.iter().cloned().collect();
+            let pruned: BTreeSet<String> = stored_set
+                .iter()
+                .filter(|key| {
+                    if key.is_empty() {
+                        has_ungrouped
+                    } else {
+                        named_groups.contains(*key)
+                    }
+                })
+                .cloned()
+                .collect();
+            // 重复键会被集合去重，故长度变化也算需要回写。
+            let changed = pruned != stored_set || keys.len() != stored_set.len();
+            (pruned, changed)
+        }
+    }
 }
 
 /// 构造分组字段的自动补全状态：候选为现有会话去重后的分组名，初始文本取草稿当前分组。
@@ -1107,5 +1161,92 @@ mod tests {
             draft.to_config(&vault).is_err(),
             "空主机的跳板机应被校验拦下"
         );
+    }
+
+    #[test]
+    fn resolve_collapsed_groups_collapses_named_groups_for_large_first_run() {
+        let mut sessions = Vec::new();
+        for i in 0..8 {
+            sessions.push(s(&format!("p{i}"), "h", "u", Some("prod")));
+        }
+        for i in 0..7 {
+            sessions.push(s(&format!("s{i}"), "h", "u", Some("staging")));
+        }
+        sessions.push(s("ungrouped", "h", "u", None));
+        assert_eq!(sessions.len(), AUTO_COLLAPSE_THRESHOLD + 1);
+
+        let (collapsed, changed) = resolve_collapsed_groups(&sessions, None);
+
+        assert!(changed, "首启初始化必须回写配置");
+        assert_eq!(
+            collapsed.into_iter().collect::<Vec<_>>(),
+            vec!["prod".to_string(), "staging".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_collapsed_groups_expands_named_groups_at_threshold() {
+        let sessions: Vec<SessionConfig> = (0..AUTO_COLLAPSE_THRESHOLD)
+            .map(|i| s(&format!("s{i}"), "h", "u", Some("prod")))
+            .collect();
+
+        let (collapsed, changed) = resolve_collapsed_groups(&sessions, None);
+
+        assert!(changed, "首启即使结果为空也必须标记初始化");
+        assert!(collapsed.is_empty(), "未超阈值时命名分组应默认展开");
+    }
+
+    #[test]
+    fn resolve_collapsed_groups_keeps_user_state() {
+        let sessions = vec![
+            s("a", "h", "u", Some("prod")),
+            s("b", "h", "u", Some("staging")),
+        ];
+        let stored = vec!["prod".to_string()];
+
+        let (collapsed, changed) = resolve_collapsed_groups(&sessions, Some(&stored));
+
+        assert!(!changed, "现存键无需回写");
+        assert_eq!(collapsed.into_iter().collect::<Vec<_>>(), stored);
+    }
+
+    #[test]
+    fn resolve_collapsed_groups_prunes_stale_keys() {
+        let sessions = vec![s("a", "h", "u", Some("prod"))];
+        let stored = vec!["prod".to_string(), "gone".to_string(), String::new()];
+
+        let (collapsed, changed) = resolve_collapsed_groups(&sessions, Some(&stored));
+
+        assert!(changed, "失效键与无对应会话的未分组键都应被修剪");
+        assert_eq!(
+            collapsed.into_iter().collect::<Vec<_>>(),
+            vec!["prod".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_collapsed_groups_keeps_ungrouped_key_when_present() {
+        let sessions = vec![s("a", "h", "u", None)];
+        let stored = vec![String::new()];
+
+        let (collapsed, changed) = resolve_collapsed_groups(&sessions, Some(&stored));
+
+        assert!(!changed);
+        assert!(collapsed.contains(""), "存在未分组会话时应保留未分组折叠键");
+    }
+
+    #[test]
+    fn toggle_group_flips_state_without_touching_other_groups() {
+        let mut state = State::new(None, Vec::new(), BTreeSet::new());
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::ToggleGroup("prod".into()), &ctx);
+        let _ = state.update(Message::ToggleGroup("staging".into()), &ctx);
+        assert!(state.collapsed_groups.contains("prod"));
+        assert!(state.collapsed_groups.contains("staging"));
+
+        let _ = state.update(Message::ToggleGroup("prod".into()), &ctx);
+        assert!(!state.collapsed_groups.contains("prod"));
+        assert!(state.collapsed_groups.contains("staging"));
     }
 }

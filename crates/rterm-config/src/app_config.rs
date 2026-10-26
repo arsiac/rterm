@@ -521,12 +521,25 @@ impl Default for WindowConfig {
     }
 }
 
+/// `[session_list]` 段：会话列表的视图状态。
+///
+/// 属机器本地的界面状态，不写入 `sessions.toml`，因此不随会话导出 / 导入漂移。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionListConfig {
+    /// 被折叠的分组键（空串表示「未分组」区块）。
+    ///
+    /// `None` 表示尚未初始化（首启由程序决定默认值并回写）；`Some(vec![])` 表示明确全部展开。
+    /// 启动时按现存分组修剪失效键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed_groups: Option<Vec<String>>,
+}
+
 /// 应用级偏好配置（`config.toml` 根结构）。
 ///
 /// 除运行时字段外均可在 GUI 设置弹窗中修改并即时持久化。各功能域拆分为独立子段
 /// （见 [`ConnectionConfig`] / [`TerminalConfig`] / [`TransferConfig`] / [`FilesConfig`] /
 /// [`AppearanceConfig`] / [`LoggingConfig`] / [`UpdatesConfig`] / [`SecurityConfig`] /
-/// [`WindowConfig`]）。
+/// [`WindowConfig`] / [`SessionListConfig`]）。
 /// 文件路径在构造时确定并跳过序列化，因此不写入配置文件；`last_check_unix` 等由程序
 /// 内部写回、不出现在设置界面。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -561,6 +574,9 @@ pub struct AppConfig {
     /// `[window]` 段：主窗口几何记忆设置。
     #[serde(default)]
     pub window: WindowConfig,
+    /// `[session_list]` 段：会话列表的分组折叠状态（机器本地视图状态）。
+    #[serde(default)]
+    pub session_list: SessionListConfig,
 }
 
 /// 连接超时默认值（秒）：30 秒（0 表示不限制）。
@@ -681,6 +697,7 @@ impl Default for AppConfig {
             updates: UpdatesConfig::default(),
             security: SecurityConfig::default(),
             window: WindowConfig::default(),
+            session_list: SessionListConfig::default(),
         }
     }
 }
@@ -804,6 +821,8 @@ impl From<LegacyAppConfig> for AppConfig {
                 width: l.window_width,
                 height: l.window_height,
             },
+            // 旧版没有会话列表视图段：保持未初始化，由首启装配按会话规模决定默认值。
+            session_list: SessionListConfig::default(),
         }
     }
 }
@@ -1377,5 +1396,31 @@ theme = "Light"
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_list_collapsed_groups_distinguishes_uninitialized_from_empty() {
+        let absent: AppConfig = toml::from_str("").expect("解析");
+        assert_eq!(absent.session_list.collapsed_groups, None);
+
+        let empty: AppConfig =
+            toml::from_str("[session_list]\ncollapsed_groups = []\n").expect("解析");
+        assert_eq!(empty.session_list.collapsed_groups, Some(Vec::new()));
+
+        let values: AppConfig =
+            toml::from_str("[session_list]\ncollapsed_groups = [\"prod\", \"\"]\n").expect("解析");
+        assert_eq!(
+            values.session_list.collapsed_groups,
+            Some(vec!["prod".to_string(), String::new()])
+        );
+    }
+
+    #[test]
+    fn session_list_omits_uninitialized_state_when_serialized() {
+        let text = toml::to_string(&AppConfig::default()).expect("序列化");
+        assert!(
+            !text.contains("collapsed_groups"),
+            "未初始化状态不应写入配置: {text}"
+        );
     }
 }
