@@ -185,6 +185,7 @@ fn list_view(app: &App) -> Element<'_, Message> {
         no_match_state()
     } else {
         scrollable(column(items).spacing(4))
+            .direction(crate::ui::thin_scrollbar_direction())
             .height(Length::Fill)
             .into()
     };
