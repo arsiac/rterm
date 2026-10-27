@@ -183,6 +183,12 @@ session:
   delete_title: 删除会话
   delete_confirm: 确定删除会话「%{name}」吗？此操作不可恢复。
   open_files: 打开文件管理
+  favorites: 收藏
+  favorites_empty: 还没有收藏的会话，连接后点击星标即可加入
+  recent: 最近连接
+  recent_empty: 暂无连接记录
+  favorite: 收藏
+  unfavorite: 取消收藏
   ungrouped: 未分组
   empty_title: 暂无会话
   empty_hint: 点击右上角 + 新建会话
@@ -219,6 +225,18 @@ session:
   jump_remove: 移除该跳板机
   jump_host_empty: "跳板机 %{index}：主机不能为空"
   jump_port_invalid: "跳板机 %{index}：端口必须是非 0 数字"
+home:
+  title: 首页
+  subtitle: 快速连接收藏与最近使用的会话
+  time_now: 刚刚
+  time_minutes: "%{count} 分钟前"
+  time_hours: "%{count} 小时前"
+  time_yesterday: "昨天 %{time}"
+  time_days: "%{count} 天前"
+  time_weeks: "%{count} 周前"
+  time_months: "%{count} 个月前"
+  time_years: "%{count} 年前"
+  time_unknown: 时间未知
 masterpw:
   set_title: 设置主密码
   set_body: 请设置用于加密会话凭据的主密码。它将派生主密钥，口令本身不会保存在本机；一旦忘记，已保存的凭据将无法恢复。
@@ -403,6 +421,8 @@ transfer:
 terminal:
   empty: 尚未打开终端。请在会话中“连接”，终端将自动打开。
   close_tab: 关闭标签
+  home_tab: 首页
+  home_open: 打开首页
   connect_failed: 连接失败
   connecting: 正在连接…
   pick_tab: 请选择一个标签

@@ -111,6 +111,16 @@ pub enum Icon {
     ExpandAll,
     /// 全部折叠
     CollapseAll,
+    /// 实心星（已收藏）
+    Star,
+    /// 空心星（未收藏）
+    StarOutline,
+    /// 主页（首页标签）
+    Home,
+    /// 时钟（最近连接）
+    Clock,
+    /// 实心圆点（连接状态指示）
+    Circle,
 }
 
 impl Icon {
@@ -155,6 +165,11 @@ impl Icon {
             Icon::Flash => svg_bytes!("flash-16-filled"),
             Icon::ExpandAll => svg_bytes!("expand-all"),
             Icon::CollapseAll => svg_bytes!("collapse-all"),
+            Icon::Star => svg_bytes!("star-16-filled"),
+            Icon::StarOutline => svg_bytes!("star-16-regular"),
+            Icon::Home => svg_bytes!("home-16-filled"),
+            Icon::Clock => svg_bytes!("clock-16-regular"),
+            Icon::Circle => svg_bytes!("circle-16-filled"),
         }
     }
 

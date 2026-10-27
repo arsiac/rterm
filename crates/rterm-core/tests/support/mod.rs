@@ -428,6 +428,7 @@ impl TestSsh {
             jumps: Vec::new(),
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         }
     }
 

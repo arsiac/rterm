@@ -532,6 +532,33 @@ pub struct SessionListConfig {
     /// 启动时按现存分组修剪失效键。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collapsed_groups: Option<Vec<String>>,
+    /// 最近连接过的会话，按最近优先排列；只记 id 与时间戳。
+    #[serde(default)]
+    pub recent_sessions: Vec<RecentSession>,
+}
+
+/// 一条最近连接记录。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentSession {
+    /// 会话 id。
+    pub id: String,
+    /// 最近一次连接时间的 Unix 秒。
+    pub unix: i64,
+}
+
+impl SessionListConfig {
+    /// 记录一次连接：同 id 只保留最新时间并置顶，其余按时间倒序后截断到 `limit` 条。
+    pub fn record_recent(&mut self, id: &str, now: i64, limit: usize) {
+        self.recent_sessions.retain(|r| r.id != id);
+        self.recent_sessions.insert(
+            0,
+            RecentSession {
+                id: id.to_string(),
+                unix: now,
+            },
+        );
+        self.recent_sessions.truncate(limit);
+    }
 }
 
 /// 应用级偏好配置（`config.toml` 根结构）。
@@ -1422,5 +1449,27 @@ theme = "Light"
             !text.contains("collapsed_groups"),
             "未初始化状态不应写入配置: {text}"
         );
+    }
+
+    #[test]
+    fn session_list_recent_sessions_default_to_empty() {
+        let absent: AppConfig = toml::from_str("").expect("解析");
+        assert!(absent.session_list.recent_sessions.is_empty());
+    }
+
+    #[test]
+    fn record_recent_dedupes_and_truncates() {
+        let mut list = SessionListConfig::default();
+        list.record_recent("a", 10, 3);
+        list.record_recent("b", 20, 3);
+        list.record_recent("c", 30, 3);
+        list.record_recent("a", 40, 3);
+
+        let ids: Vec<&str> = list.recent_sessions.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c", "b"], "同 id 置顶且只留最新时间");
+        assert_eq!(list.recent_sessions[0].unix, 40);
+
+        list.record_recent("d", 50, 3);
+        assert_eq!(list.recent_sessions.len(), 3, "超出上限即截断");
     }
 }

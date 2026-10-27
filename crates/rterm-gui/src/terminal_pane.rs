@@ -3,6 +3,8 @@
 //! 每个标签对应一个 [`TerminalTab`]。标签栏用于切换 / 关闭，
 //! 主体为 `TerminalView`；键盘 / 鼠标事件由 `TerminalView` 自身捕获并回传
 //! [`tabs::Message::Terminal`](crate::app::tabs::Message::Terminal)（经顶层 `Message::Tabs` 路由）。
+//!
+//! 标签栏首位是首页标签（收藏 + 最近连接，见 [`crate::home_tab`]），选中时主体显示首页内容。
 
 use crate::t;
 
@@ -103,15 +105,6 @@ fn char_units(ch: char) -> usize {
 
 /// 渲染右侧终端区：标签栏（切换 / 关闭）与当前活动标签的终端画布。
 pub fn view(app: &App) -> Element<'_, Message> {
-    if app.tabs.list().is_empty() {
-        return container(text(t!("terminal.empty")).size(14))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into();
-    }
-
     // 每个标签一个标题按钮 + 关闭按钮，标题超宽截断，整体可横向滚动。
     let tab_row = row(app
         .tabs
@@ -240,6 +233,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .on_dismiss(Message::Tabs(tabs::Message::ToggleTabList));
 
     let tab_bar = row![
+        home_slot(app),
         tab_list,
         scrollable(tab_row)
             .direction(scrollable::Direction::Horizontal(
@@ -260,101 +254,120 @@ pub fn view(app: &App) -> Element<'_, Message> {
         left: TAB_BAR_LEFT_PADDING,
     });
 
-    let body: Element<'_, Message> = match app
-        .tabs
-        .list()
-        .iter()
-        .find(|t| Some(t.id) == app.tabs.active())
-    {
-        Some(tab) => match &tab.terminal {
-            Some(term) => {
-                let terminal_elem: Element<'_, TerminalEvent> =
-                    TerminalView::show(term, app.terminal_focused, app.shortcuts.keymap())
-                        .padding(4.0)
-                        .scrollbar(app.config.terminal.show_scrollbar)
-                        .into();
-                let terminal_elem: Element<'_, Message> =
-                    terminal_elem.map(|e| Message::Tabs(tabs::Message::Terminal(e)));
-                // 远端程序开启了鼠标上报（tmux / vim 等）时由它接管鼠标，右键菜单让位
-                // （与中键粘贴让位于鼠标模式同理，见 `handle_middle_button_pressed`）。
-                let terminal_elem = if term.mouse_reporting() {
-                    terminal_elem
-                } else {
-                    terminal_context_menu(terminal_elem, term.has_selection(), tab.id)
-                };
-                container(terminal_elem)
-                    .style(|_theme| container::Style {
-                        background: Some(
-                            crate::theme::terminal_bg(&app.config.terminal.theme).into(),
-                        ),
-                        border: Border {
-                            radius: 4.0.into(),
-                            ..Border::default()
-                        },
-                        ..container::Style::default()
-                    })
-                    .into()
-            }
-            None => {
-                // 标签已建但终端尚未就绪：按本标签的连接状态显示“连接中”或失败原因。
-                match tab.status {
-                    ConnectionStatus::Error => {
-                        // 失败原因记在该标签自己身上（同会话其它标签可能仍然连着）。
-                        let err = tab
-                            .error
-                            .clone()
-                            .unwrap_or_else(|| t!("terminal.connect_failed"));
-                        // 重试在**本标签原地**发起，与横幅「重新连接」同一条消息、同一套防重复。
-                        let retry = button(text(t!("common.retry")).size(13).color(Color::WHITE))
-                            .on_press(Message::Tabs(tabs::Message::ReconnectRequested(tab.id)))
-                            .padding([6, 16])
-                            .style(|_theme, _st| error_btn_style());
-                        let close = button(text(t!("common.close")).size(13))
-                            .on_press(Message::Tabs(tabs::Message::CloseTab(tab.id)))
-                            .padding([6, 16])
-                            .style(crate::theme::error_close_style);
-                        container(
-                            column![
-                                text(t!("terminal.error_status")).size(15).style(
-                                    |theme: &iced::Theme| iced::widget::text::Style {
-                                        color: Some(crate::theme::error_title_color(theme)),
-                                    }
-                                ),
-                                text(err).size(13).style(|theme: &iced::Theme| {
-                                    iced::widget::text::Style {
-                                        color: Some(crate::theme::error_detail_color(theme)),
-                                    }
-                                }),
-                                row![retry, close].spacing(10),
-                            ]
-                            .spacing(10)
-                            .align_x(Horizontal::Center),
-                        )
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .padding(20)
+    let body: Element<'_, Message> = if app.tabs.home_active() {
+        // 首页选中时显示首页内容（收藏 + 最近），终端画布让位。
+        crate::home_tab::view(app)
+    } else if app.tabs.list().is_empty() {
+        // 无终端标签：首页已关闭，标签栏只留主页按钮（首页的唯一恢复入口）。
+        container(text(t!("terminal.empty")).size(14))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    } else {
+        match app
+            .tabs
+            .list()
+            .iter()
+            .find(|t| Some(t.id) == app.tabs.active())
+        {
+            Some(tab) => match &tab.terminal {
+                Some(term) => {
+                    let terminal_elem: Element<'_, TerminalEvent> =
+                        TerminalView::show(term, app.terminal_focused, app.shortcuts.keymap())
+                            .padding(4.0)
+                            .scrollbar(app.config.terminal.show_scrollbar)
+                            .into();
+                    let terminal_elem: Element<'_, Message> =
+                        terminal_elem.map(|e| Message::Tabs(tabs::Message::Terminal(e)));
+                    // 远端程序开启了鼠标上报（tmux / vim 等）时由它接管鼠标，右键菜单让位
+                    // （与中键粘贴让位于鼠标模式同理，见 `handle_middle_button_pressed`）。
+                    let terminal_elem = if term.mouse_reporting() {
+                        terminal_elem
+                    } else {
+                        terminal_context_menu(terminal_elem, term.has_selection(), tab.id)
+                    };
+                    container(terminal_elem)
+                        .style(|_theme| container::Style {
+                            background: Some(
+                                crate::theme::terminal_bg(&app.config.terminal.theme).into(),
+                            ),
+                            border: Border {
+                                radius: 4.0.into(),
+                                ..Border::default()
+                            },
+                            ..container::Style::default()
+                        })
                         .into()
-                    }
-                    _ => container(text(t!("terminal.connecting")).size(13))
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .padding(12)
-                        .into(),
                 }
-            }
-        },
-        None => container(text(t!("terminal.pick_tab")).size(13))
-            .padding(6)
-            .into(),
+                None => {
+                    // 标签已建但终端尚未就绪：按本标签的连接状态显示“连接中”或失败原因。
+                    match tab.status {
+                        ConnectionStatus::Error => {
+                            // 失败原因记在该标签自己身上（同会话其它标签可能仍然连着）。
+                            let err = tab
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| t!("terminal.connect_failed"));
+                            // 重试在**本标签原地**发起，与横幅「重新连接」同一条消息、同一套防重复。
+                            let retry =
+                                button(text(t!("common.retry")).size(13).color(Color::WHITE))
+                                    .on_press(Message::Tabs(tabs::Message::ReconnectRequested(
+                                        tab.id,
+                                    )))
+                                    .padding([6, 16])
+                                    .style(|_theme, _st| error_btn_style());
+                            let close = button(text(t!("common.close")).size(13))
+                                .on_press(Message::Tabs(tabs::Message::CloseTab(tab.id)))
+                                .padding([6, 16])
+                                .style(crate::theme::error_close_style);
+                            container(
+                                column![
+                                    text(t!("terminal.error_status")).size(15).style(
+                                        |theme: &iced::Theme| iced::widget::text::Style {
+                                            color: Some(crate::theme::error_title_color(theme)),
+                                        }
+                                    ),
+                                    text(err).size(13).style(|theme: &iced::Theme| {
+                                        iced::widget::text::Style {
+                                            color: Some(crate::theme::error_detail_color(theme)),
+                                        }
+                                    }),
+                                    row![retry, close].spacing(10),
+                                ]
+                                .spacing(10)
+                                .align_x(Horizontal::Center),
+                            )
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill)
+                            .padding(20)
+                            .into()
+                        }
+                        _ => container(text(t!("terminal.connecting")).size(13))
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill)
+                            .padding(12)
+                            .into(),
+                    }
+                }
+            },
+            None => container(text(t!("terminal.pick_tab")).size(13))
+                .padding(6)
+                .into(),
+        }
     };
 
-    let banner: Option<Element<'_, Message>> = app
-        .tabs
-        .list()
-        .iter()
-        .find(|t| Some(t.id) == app.tabs.active())
-        .filter(|t| t.terminal.is_some() && t.disconnect_reason.is_some())
-        .map(disconnected_banner);
+    let banner: Option<Element<'_, Message>> = (!app.tabs.home_active())
+        .then(|| {
+            app.tabs
+                .list()
+                .iter()
+                .find(|t| Some(t.id) == app.tabs.active())
+                .filter(|t| t.terminal.is_some() && t.disconnect_reason.is_some())
+                .map(disconnected_banner)
+        })
+        .flatten();
 
     // 标签栏自身不设背景（透明，透出 pane 底色）；区分度靠活动标签的 `tab_style` 高亮，
     // 而非标签栏底色。断开横幅插在标签栏与终端区之间，与终端区左右对齐。
@@ -388,6 +401,61 @@ pub fn view(app: &App) -> Element<'_, Message> {
             top: 0.0,
             bottom: 2.0,
         }))
+        .into()
+}
+
+/// 首页标签：标签栏首位。打开时是与终端标签同形的标签本体（图标 + 标题 + 关闭），
+/// 关闭后留一个主页图标按钮，点击即重新打开。
+fn home_slot(app: &App) -> Element<'_, Message> {
+    let inner: Element<'_, Message> = if app.tabs.home_open() {
+        let active = app.tabs.home_active();
+        let close = button(Icon::Dismiss.svg(12.0))
+            .on_press(Message::Tabs(tabs::Message::CloseHome))
+            .style(crate::theme::tab_close_style)
+            .padding(2);
+        let close = iced::widget::tooltip(close, text(t!("terminal.close_tab")), Position::Bottom)
+            .delay(iced::time::Duration::from_millis(
+                crate::theme::TOOLTIP_DELAY_MS,
+            ))
+            .style(crate::theme::tooltip_style);
+        // 首页标签无终端焦点可言，选中底色一律取强调色档。
+        // 关闭按钮嵌在标签内：其按下会捕获事件，不会连带触发标签的 OpenHome。
+        button(
+            row![
+                Icon::Home.svg(12.0),
+                text(t!("terminal.home_tab")).size(12),
+                close
+            ]
+            .spacing(4)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_press(Message::Tabs(tabs::Message::OpenHome))
+        .style(move |theme: &iced::Theme, status| {
+            crate::theme::tab_style(theme, status, active, true, false)
+        })
+        .padding([4, 6])
+        .into()
+    } else {
+        let btn = button(Icon::Home.svg(14.0))
+            .on_press(Message::Tabs(tabs::Message::OpenHome))
+            .style(|theme, st| crate::theme::icon_button_style(theme, st, false))
+            .padding(4);
+        iced::widget::tooltip(btn, text(t!("terminal.home_open")), Position::Bottom)
+            .delay(iced::time::Duration::from_millis(
+                crate::theme::TOOLTIP_DELAY_MS,
+            ))
+            .style(crate::theme::tooltip_style)
+            .into()
+    };
+    // 标签行整体比标签本身高出一段底部留白；首页标签不在横向滚动区内，故自行补上
+    // 等量留白，其图标中心才与终端标签中心重合。
+    container(inner)
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: TAB_ROW_BOTTOM_PADDING,
+            left: 0.0,
+        })
         .into()
 }
 

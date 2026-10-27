@@ -17,12 +17,26 @@ use crate::widget::term::{BackendCommand, Command as TermCommand, Event as TermE
 use iced::Task;
 use rust_i18n;
 
+/// 当前 Unix 时间戳（秒）；系统时钟异常时回退 0。
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// 落地 `session::Event`：把会话模块上行的意图（连接 / 打开文件 / 删除 / 状态 / toast / 自回路）
 /// 写回父状态或委托父层级操作。
 pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Message> {
     match e {
         // 以下各分支把模块上行的意图落地为父状态变更；模块绝不写父状态。
         session::Event::Connect(id) => {
+            // 记录最近连接：先剔除已删除会话的残留条目，再把本次连接置顶并落盘。
+            let alive: Vec<String> = app.session.sessions.iter().map(|s| s.id.clone()).collect();
+            let list = &mut app.config.session_list;
+            list.recent_sessions.retain(|r| alive.contains(&r.id));
+            list.record_recent(&id, now_unix(), session::RECENT_STORE_LIMIT);
+            contexts::save_config(app);
             // 开标签并异步发起连接（标签 / 连接生命周期属父层，不在会话模块内）。
             let tab_id = connect::open_tab(app, &id);
             connect::connect_session(app, tab_id, &id)

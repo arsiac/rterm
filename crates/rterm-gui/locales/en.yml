@@ -183,6 +183,12 @@ session:
   delete_title: Delete session
   delete_confirm: Delete session "%{name}"? This cannot be undone.
   open_files: Open file manager
+  favorites: Favorites
+  favorites_empty: No favorites yet. Star a session after connecting to add it here.
+  recent: Recent
+  recent_empty: No connection records yet.
+  favorite: Add to favorites
+  unfavorite: Remove from favorites
   ungrouped: Ungrouped
   empty_title: No sessions yet
   empty_hint: Click + in the top-right to create one.
@@ -219,6 +225,18 @@ session:
   jump_remove: Remove this jump host
   jump_host_empty: "Jump host %{index}: host cannot be empty"
   jump_port_invalid: "Jump host %{index}: port must be a non-zero number"
+home:
+  title: Home
+  subtitle: Quickly connect to favorites and recently used sessions
+  time_now: just now
+  time_minutes: "%{count} min ago"
+  time_hours: "%{count} h ago"
+  time_yesterday: "yesterday %{time}"
+  time_days: "%{count} days ago"
+  time_weeks: "%{count} weeks ago"
+  time_months: "%{count} months ago"
+  time_years: "%{count} years ago"
+  time_unknown: unknown time
 masterpw:
   set_title: Set master passphrase
   set_body: Set a master passphrase to encrypt session credentials. It derives the key; the passphrase itself is never stored. If forgotten, saved credentials cannot be recovered.
@@ -403,6 +421,8 @@ transfer:
 terminal:
   empty: No terminal open yet. Connect in a session and the terminal opens automatically.
   close_tab: Close tab
+  home_tab: Home
+  home_open: Open home tab
   connect_failed: Connection failed
   connecting: Connecting…
   pick_tab: Please select a tab

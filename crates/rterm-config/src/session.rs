@@ -169,6 +169,9 @@ pub struct SessionConfig {
     /// 端口转发规则（随会话持久化）；连接建立时仅自动启动 enabled 的规则。
     #[serde(default)]
     pub forwards: Vec<ForwardRule>,
+    /// 是否在会话列表顶部收藏区展示；属用户意图，随会话文件导出 / 导入。
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 impl SessionConfig {
@@ -317,6 +320,7 @@ mod tests {
             jumps: vec![jump("bastion-a"), jump("bastion-b")],
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         }
     }
 
@@ -513,6 +517,7 @@ mod tests {
             }],
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         };
 
         let (rekeyed, dropped) = cfg.rekeyed(&vault, &vault);

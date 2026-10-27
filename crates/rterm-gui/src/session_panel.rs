@@ -1,7 +1,7 @@
 //! 中心“会话管理”面板。
 //!
 //! 未编辑时顶部为一排按钮栏（新建会话、全部展开、全部折叠、更多），其下为会话列表（双击列表项即可连接）；
-//! 右键列表项弹出含新建会话 / 连接 / 编辑 / 删除的菜单；
+//! 右键列表项弹出含新建会话 / 连接 / 编辑 / 复制 / 收藏 / 删除的菜单，行内星标切换收藏；
 //! 编辑（新建 / 修改）以弹窗表单呈现（名称、主机、端口、用户名、认证方式及对应凭据、分组），
 //! 列表在遮罩之下仍可见。
 
@@ -248,21 +248,71 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
     // 悬浮态由 App 记录的 `hovered_session` 决定，与选中态共同驱动行背景。
     let hovered = app.session.hovered_session.as_deref() == Some(s.id.as_str());
     let selected = app.session.selected_session.as_deref() == Some(s.id.as_str());
-    let content = container(
-        column![
-            text(&s.name).size(14).wrapping(Wrapping::None),
-            text(format!("{}@{}", s.username, s.host))
-                .size(12)
-                .wrapping(Wrapping::None)
-                .style(|theme: &Theme| text::Style {
-                    color: Some(crate::theme::custom_palette(theme).text_secondary),
+    // 星标：已收藏常亮（强调色实心星），未收藏仅在悬浮时以空心星出现；点击即切换收藏态。
+    let favorited = s.favorite;
+    let star: Element<'a, Message> = if favorited || hovered {
+        let icon = if favorited {
+            Icon::Star
+        } else {
+            Icon::StarOutline
+        };
+        let svg = icon
+            .svg(12.0)
+            .style(move |theme: &Theme, _| iced::widget::svg::Style {
+                color: Some(if favorited {
+                    crate::theme::accent_color(theme)
+                } else {
+                    crate::theme::custom_palette(theme).text_secondary
                 }),
+            });
+        let tip = if favorited {
+            t!("session.unfavorite")
+        } else {
+            t!("session.favorite")
+        };
+        iced::widget::tooltip(
+            button(svg)
+                .on_press(Message::ToggleFavorite(s.id.clone()))
+                .style(|theme, st| crate::theme::icon_button_style(theme, st, false))
+                .padding(2),
+            text(tip),
+            Position::Bottom,
+        )
+        .delay(iced::time::Duration::from_millis(
+            crate::theme::TOOLTIP_DELAY_MS,
+        ))
+        .style(crate::theme::tooltip_style)
+        .into()
+    } else {
+        // 未收藏且未悬浮时不显示星标，但留同宽占位，避免名称列随悬浮来回跳动。
+        iced::widget::Space::new()
+            .width(Length::Fixed(16.0))
+            .height(Length::Fixed(16.0))
+            .into()
+    };
+    let content = container(
+        row![
+            // 中栏可拖拽变窄，超长名称 / 地址一律单行截断，不撑宽面板。
+            container(
+                column![
+                    text(&s.name).size(14).wrapping(Wrapping::None),
+                    text(format!("{}@{}", s.username, s.host))
+                        .size(12)
+                        .wrapping(Wrapping::None)
+                        .style(|theme: &Theme| text::Style {
+                            color: Some(crate::theme::custom_palette(theme).text_secondary),
+                        }),
+                ]
+                .spacing(2),
+            )
+            .width(Length::Fill)
+            .clip(true),
+            star,
         ]
-        .spacing(2),
+        .spacing(6)
+        .align_y(iced::alignment::Vertical::Center),
     )
-    // 中栏可拖拽变窄，超长名称 / 地址一律单行截断，不撑宽面板。
-    .width(Length::Fill)
-    .clip(true);
+    .width(Length::Fill);
     let item: Element<'a, Message> = mouse_area(
         container(content)
             .padding([6u16, 8u16])
@@ -281,14 +331,23 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
     .into();
 
     // 右键菜单按列表项各自触发，空白处（无列表项）因此不弹菜单；
-    // 含“新建会话”与连接 / 编辑 / 复制 / 删除，已连接再追加“打开文件管理”。
+    // 含“新建会话”与连接 / 编辑 / 复制 / 收藏 / 删除，已连接再追加“打开文件管理”。
     let id = s.id.clone();
+    let favorited = s.favorite;
     let menu_overlay = move || {
         let mut actions = MeasuredColumn::with_children(vec![
             menu_entry(t!("session.new"), Message::NewSession),
             menu_entry(t!("session.connect"), Message::ConnectSession(id.clone())),
             menu_entry(t!("session.edit"), Message::EditSession(id.clone())),
             menu_entry(t!("session.copy"), Message::DuplicateSession(id.clone())),
+            menu_entry(
+                if favorited {
+                    t!("session.unfavorite")
+                } else {
+                    t!("session.favorite")
+                },
+                Message::ToggleFavorite(id.clone()),
+            ),
             menu_entry(
                 t!("session.delete"),
                 Message::RequestDeleteSession(id.clone()),

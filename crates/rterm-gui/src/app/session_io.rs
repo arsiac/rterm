@@ -667,6 +667,7 @@ mod tests {
             jumps: Vec::new(),
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         }
     }
 
@@ -956,5 +957,29 @@ mod tests {
             panic!("导入项应仍为口令形制");
         };
         assert!(password.is_none(), "导入的仅连接配置不应携带凭据信封");
+    }
+
+    /// 收藏随导出 / 导入往返保留：导入因 id 冲突重分配 id，收藏态不受影响。
+    #[test]
+    fn favorite_survives_export_and_import() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let tmp = use_temp_state_root("favorite");
+        let vault = Arc::new(Vault::new("local-master"));
+        let mut favorited = session_with_password(&vault, "web", "pw");
+        favorited.favorite = true;
+        let mut parent = Parent::new(Some(vault.clone()), vec![favorited]);
+        let target = tmp.join("favorite.toml");
+
+        open_export_dialog(&mut parent, false);
+        submit_and_pick(&mut parent, &target);
+
+        parent.drain(Message::ImportFilePicked(Some(target)));
+        assert_eq!(parent.ctx.sessions.len(), 2);
+        let imported = &parent.ctx.sessions[1];
+        assert!(imported.favorite, "导入项应保留收藏态");
+        assert_ne!(
+            imported.id, parent.ctx.sessions[0].id,
+            "id 冲突时导入项应重分配 id"
+        );
     }
 }

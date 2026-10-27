@@ -18,6 +18,9 @@ use iced_autocomplete::{Filter, State as AcState};
 /// 只在 `collapsed_groups` 尚未初始化时生效；之后以用户状态为准，不再自动重算。
 pub(crate) const AUTO_COLLAPSE_THRESHOLD: usize = 15;
 
+/// 最近连接记录的存储上限：超出后最旧的记录被丢弃。
+pub(crate) const RECENT_STORE_LIMIT: usize = 20;
+
 /// 会话编辑器可编辑的字段，供 [`Message::EditorField`] 区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionField {
@@ -141,6 +144,8 @@ pub struct EditorDraft {
     /// 端口转发规则（编辑器暂不提供编辑入口，打开 / 保存原样携带，
     /// 避免保存会话时静默丢弃规则；管理入口见 `app::forwards`）。
     pub forwards: Vec<rterm_config::ForwardRule>,
+    /// 是否收藏：编辑任意字段都须原样带回，否则会静默清掉收藏。
+    pub favorite: bool,
     /// 分组字段的自动补全状态（候选池 + 当前文本），由打开编辑器时按现有会话分组填充。
     ///
     /// 用 [`Rc`] 包裹以规避 `iced_autocomplete::State` 的 `Clone` 不确定性与生命周期：
@@ -170,6 +175,7 @@ impl EditorDraft {
             startup_command: String::new(),
             jumps: Vec::new(),
             forwards: Vec::new(),
+            favorite: false,
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: None,
@@ -204,6 +210,7 @@ impl EditorDraft {
             startup_command: cfg.startup_command.clone().unwrap_or_default(),
             jumps: cfg.jumps.iter().map(JumpDraft::from_config).collect(),
             forwards: cfg.forwards.clone(),
+            favorite: cfg.favorite,
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
             orig_auth: Some(cfg.auth.clone()),
@@ -259,6 +266,7 @@ impl EditorDraft {
             },
             jumps,
             forwards: self.forwards.clone(),
+            favorite: self.favorite,
         })
     }
 
@@ -420,6 +428,22 @@ impl State {
         }
     }
 
+    /// 展开某会话所属分组（若处于折叠态）：刚被操作过的会话必须可见。
+    ///
+    /// 返回上行事件，仅在确有分组由折叠转为展开时才有。
+    fn expand_group_of(&mut self, id: &str) -> Option<Event> {
+        let key = self
+            .sessions
+            .iter()
+            .find(|s| s.id == id)?
+            .group
+            .clone()
+            .unwrap_or_default();
+        self.collapsed_groups
+            .remove(&key)
+            .then(|| Event::CollapsedGroupsChanged(self.collapsed_groups.clone()))
+    }
+
     /// 写入单条会话配置：覆盖同名 id 或追加，并落盘（字段校验已在
     /// [`EditorDraft::to_config`] 完成，本函数不重复校验）。
     fn store_session(
@@ -506,6 +530,8 @@ pub enum Message {
     CollapseAllGroups,
     /// 展开全部分组。
     ExpandAllGroups,
+    /// 切换收藏态（携带会话 id）：翻转 `favorite` 并落盘。
+    ToggleFavorite(String),
     /// 左键按下选中会话（携带会话 id）。
     SessionSelect(String),
     /// 鼠标进入会话列表某一项（携带会话 id），用于渲染悬浮高亮。
@@ -611,6 +637,7 @@ impl State {
                 }
                 let copy = duplicated(&src, &self.sessions);
                 let name = copy.name.clone();
+                let id = copy.id.clone();
                 self.selected_session = Some(copy.id.clone());
                 self.sessions.push(copy);
                 // 落盘失败时以错误覆盖成功提示，避免报告一个并未持久化的副本。
@@ -618,7 +645,12 @@ impl State {
                     Some(e) => e,
                     None => t!("app.session_duplicated", name => name),
                 };
-                Task::done(Event::Status(Some(status)))
+                // 副本必须可见：其分组处于折叠态时展开并持久化。
+                let mut tasks = vec![Task::done(Event::Status(Some(status)))];
+                if let Some(e) = self.expand_group_of(&id) {
+                    tasks.push(Task::done(e));
+                }
+                Task::batch(tasks)
             }
             Message::RequestDeleteSession(id) => {
                 self.pending_delete = Some(id);
@@ -663,7 +695,15 @@ impl State {
                         .to_config(vault)
                         .and_then(|cfg| self.store_session(cfg, &header))
                     {
-                        Ok(()) => Task::done(Event::Status(Some(t!("app.session_saved")))),
+                        Ok(()) => {
+                            // 刚保存的会话必须可见：其分组处于折叠态时展开并持久化。
+                            let mut tasks =
+                                vec![Task::done(Event::Status(Some(t!("app.session_saved"))))];
+                            if let Some(e) = self.expand_group_of(&draft.id) {
+                                tasks.push(Task::done(e));
+                            }
+                            Task::batch(tasks)
+                        }
                         // 校验失败：不关闭弹窗，保留已填内容，错误显示在弹窗内。
                         Err(e) => {
                             self.editor = Some(EditorDraft {
@@ -768,6 +808,17 @@ impl State {
                 self.collapsed_groups.clear();
                 Task::done(Event::CollapsedGroupsChanged(BTreeSet::new()))
             }
+            Message::ToggleFavorite(id) => {
+                // 翻转收藏态并落盘；会话已被删除则忽略。
+                let Some(cfg) = self.sessions.iter_mut().find(|s| s.id == id) else {
+                    return Task::none();
+                };
+                cfg.favorite = !cfg.favorite;
+                match self.save(ctx) {
+                    Some(err) => Task::done(Event::Status(Some(err))),
+                    None => Task::none(),
+                }
+            }
             Message::SessionSelect(id) => {
                 self.selected_session = Some(id);
                 Task::none()
@@ -795,7 +846,12 @@ impl State {
             }
             Message::ConnectSession(id) => {
                 // 双击即发连接意图；开标签与异步连接由父层经 `Event::Connect` 处理。
-                Task::done(Event::Connect(id))
+                let mut tasks = vec![Task::done(Event::Connect(id.clone()))];
+                // 刚连接的会话必须可见：其分组折叠时在此展开并持久化。
+                if let Some(e) = self.expand_group_of(&id) {
+                    tasks.push(Task::done(e));
+                }
+                Task::batch(tasks)
             }
             Message::OpenFiles(id) => {
                 // 右键「打开文件管理」：打开 SFTP 由父层经 `Event::OpenFiles` 处理。
@@ -931,6 +987,8 @@ fn duplicated(src: &SessionConfig, existing: &[SessionConfig]) -> SessionConfig 
     SessionConfig {
         id: new_id(),
         name,
+        // 复制出的条目不继承收藏：收藏针对具体条目，不是连接配置。
+        favorite: false,
         ..src.clone()
     }
 }
@@ -1005,6 +1063,7 @@ mod tests {
             jumps: Vec::new(),
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         }
     }
 
@@ -1021,6 +1080,7 @@ mod tests {
             jumps: Vec::new(),
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         }
     }
 
@@ -1288,5 +1348,64 @@ mod tests {
 
         let _ = state.update(Message::ExpandAllGroups, &ctx);
         assert!(state.collapsed_groups.is_empty());
+    }
+
+    #[test]
+    fn toggle_favorite_flips_the_flag() {
+        let session = s("web", "h", "u", Some("prod"));
+        let id = session.id.clone();
+        let mut state = State::new(None, vec![session], BTreeSet::new());
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::ToggleFavorite(id.clone()), &ctx);
+        assert!(state.sessions[0].favorite);
+
+        let _ = state.update(Message::ToggleFavorite(id), &ctx);
+        assert!(!state.sessions[0].favorite);
+    }
+
+    #[test]
+    fn toggle_favorite_ignores_unknown_session() {
+        let mut state = State::new(
+            None,
+            vec![s("web", "h", "u", Some("prod"))],
+            BTreeSet::new(),
+        );
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::ToggleFavorite("gone".into()), &ctx);
+
+        assert!(!state.sessions[0].favorite);
+    }
+
+    #[test]
+    fn connecting_expands_the_collapsed_group_of_that_session() {
+        let session = s("web", "h", "u", Some("prod"));
+        let id = session.id.clone();
+        let mut state = State::new(None, vec![session], BTreeSet::from(["prod".to_string()]));
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::ConnectSession(id), &ctx);
+
+        assert!(
+            !state.collapsed_groups.contains("prod"),
+            "刚连接的会话所在分组应自动展开"
+        );
+    }
+
+    #[test]
+    fn connecting_leaves_other_groups_collapsed() {
+        let session = s("web", "h", "u", Some("prod"));
+        let id = session.id.clone();
+        let mut state = State::new(
+            None,
+            vec![session],
+            BTreeSet::from(["prod".to_string(), "staging".to_string()]),
+        );
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::ConnectSession(id), &ctx);
+
+        assert!(state.collapsed_groups.contains("staging"));
     }
 }

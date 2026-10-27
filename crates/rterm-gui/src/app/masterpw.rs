@@ -870,6 +870,7 @@ mod tests {
             jumps: Vec::new(),
             startup_command: None,
             forwards: Vec::new(),
+            favorite: false,
         };
         app.session.sessions.push(session);
 

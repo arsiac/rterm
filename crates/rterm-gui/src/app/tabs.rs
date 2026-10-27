@@ -67,6 +67,13 @@ pub struct State {
     dragging_tab: Option<u64>,
     /// 光标当前悬停的标签 id（驱动标签悬停底色；拖拽中同时驱动实时重排）。
     hovered_tab: Option<u64>,
+    /// 首页标签是否在标签栏中（启动默认打开，用户可关闭）。
+    home_open: bool,
+    /// 首页标签是否为当前选中标签（选中时终端区显示首页内容而非终端画布）。
+    home_active: bool,
+    /// 首页收藏网格中当前悬浮的卡片槽位（驱动星标浮现）。
+    /// 记槽位而非会话 id：卡片被取消收藏后由后继卡片顶替同一槽位，悬浮态随之转移。
+    home_hovered: Option<usize>,
 }
 
 /// 标签模块内部消息：UI 意图与后台任务结果，由父层经 `Message::Tabs` 路由进本模块。
@@ -82,6 +89,16 @@ pub enum Message {
     WindowClosing,
     /// 切换标签列表 dropdown 显隐。
     ToggleTabList,
+    /// 打开 / 选中首页标签：已关闭则重新打开，随后选中它。
+    OpenHome,
+    /// 关闭首页标签：移出标签栏；若正被选中则退出首页。
+    CloseHome,
+    /// 首页收藏卡片被悬浮（携带网格槽位）：该卡片浮现星标。
+    HomeHover(usize),
+    /// 首页收藏卡片失去悬浮（携带网格槽位）。
+    HomeUnhover(usize),
+    /// 光标离开收藏网格：清空悬浮槽位。
+    HomeLeave,
     /// 标签被按下：立即激活该标签并进入拖拽态。
     TabPressed(u64),
     /// 光标进入某标签：更新悬停；若正在拖拽且目标不是被拖标签，则实时重排。
@@ -170,6 +187,9 @@ impl State {
             next_banner_seq: 0,
             dragging_tab: None,
             hovered_tab: None,
+            home_open: true,
+            home_active: true,
+            home_hovered: None,
         }
     }
 
@@ -201,6 +221,21 @@ impl State {
     /// 标签栏滚动部件 id（克隆，供 scroll_to 操作）。
     pub(crate) fn scroll_id(&self) -> Id {
         self.tab_bar_scroll.clone()
+    }
+
+    /// 首页标签是否在标签栏中（只读）。
+    pub(crate) fn home_open(&self) -> bool {
+        self.home_open
+    }
+
+    /// 首页标签是否为当前选中标签（只读）。
+    pub(crate) fn home_active(&self) -> bool {
+        self.home_active
+    }
+
+    /// 首页收藏网格中当前悬浮的卡片槽位（只读）：收藏卡片据此浮现星标。
+    pub(crate) fn home_hovered(&self) -> Option<usize> {
+        self.home_hovered
     }
 
     /// 置活动标签（open_files 等父层导航操作调用，模块自身逻辑直接用 `active_tab` 字段）。
@@ -254,6 +289,8 @@ impl State {
             forwards: None,
         });
         self.active_tab = Some(tab_id);
+        // 新开终端标签即离开首页：连接目标即刻可见。
+        self.home_active = false;
         tab_id
     }
 
@@ -262,6 +299,14 @@ impl State {
         self.tabs.retain(|t| t.session_id != id);
         if !self.tabs.iter().any(|t| Some(t.id) == self.active_tab) {
             self.active_tab = self.tabs.last().map(|t| t.id);
+        }
+        self.sync_home_active();
+    }
+
+    /// 终端标签被移除后同步首页选中态：无终端标签可显示时首页接管，否则维持原选中态。
+    fn sync_home_active(&mut self) {
+        if self.home_open && self.tabs.is_empty() {
+            self.home_active = true;
         }
     }
 
@@ -277,6 +322,32 @@ impl State {
             Message::WindowClosing => self.window_closing(),
             Message::ToggleTabList => {
                 self.show_tab_list = !self.show_tab_list;
+                Task::none()
+            }
+            Message::OpenHome => {
+                self.home_open = true;
+                self.home_active = true;
+                // 首页不是终端：焦点交出，避免按键落进看不见的终端。
+                Task::done(Event::SetTerminalFocused(false))
+            }
+            Message::CloseHome => {
+                self.home_open = false;
+                self.home_active = false;
+                self.home_hovered = None;
+                Task::done(Event::SetTerminalFocused(true))
+            }
+            Message::HomeHover(slot) => {
+                self.home_hovered = Some(slot);
+                Task::none()
+            }
+            Message::HomeUnhover(slot) => {
+                if self.home_hovered == Some(slot) {
+                    self.home_hovered = None;
+                }
+                Task::none()
+            }
+            Message::HomeLeave => {
+                self.home_hovered = None;
                 Task::none()
             }
             Message::TabPressed(tab_id) => {
@@ -332,6 +403,10 @@ impl State {
     /// 切换到指定终端标签：置为活动标签、落入键盘焦点，并联动会话、必要时自动打开 SFTP。
     fn select_tab(&mut self, tab_id: u64, ctx: &Ctx, sftp: &sftp::State) -> Task<Event> {
         self.active_tab = Some(tab_id);
+        // 显式切到终端标签即离开首页：终端画布接管显示区。
+        self.home_active = false;
+        // 首页不再显示，其悬浮态一并清掉（否则回到首页时星标仍悬在旧卡片上）。
+        self.home_hovered = None;
         // 显式切到某终端标签即视为键盘焦点落入该终端（区别于仅切换标签栏的高亮选中）。
         let mut events = vec![Event::SetTerminalFocused(true)];
         let tab_info = self.tabs.iter().find(|t| t.id == tab_id).map(|t| {
@@ -406,8 +481,9 @@ impl State {
         if self.active_tab == Some(tab_id) {
             self.active_tab = self.tabs.last().map(|t| t.id);
         }
-        // 关闭最后一个标签后已无终端可显示，自动回到会话管理；
-        // 同时清空当前会话指针。该标签自带的 SFTP 视图随标签 drop 一并释放，
+        self.sync_home_active();
+        // 关闭最后一个标签后中栏回到会话管理，同时清空当前会话指针。
+        // 该标签自带的 SFTP 视图随标签 drop 一并释放，
         // 不会被活动栏“文件”按钮经 SwitchCenter 自动复活。
         let active_session = ctx.active_session.clone();
         if self.tabs.is_empty() {
@@ -468,6 +544,7 @@ impl State {
                 if self.active_tab == Some(tab_id) {
                     self.active_tab = self.tabs.last().map(|t| t.id);
                 }
+                self.sync_home_active();
                 let active_session = ctx.active_session.clone();
                 if self.tabs.is_empty() {
                     events.push(Event::SetCenter(crate::state::CenterView::Sessions));
@@ -675,6 +752,80 @@ mod tests {
             terminal_focused: true,
             window_focus_saved: None,
         }
+    }
+
+    /// 首页标签默认打开且处于选中态。
+    #[test]
+    fn home_is_open_and_active_by_default() {
+        let state = State::new();
+
+        assert!(state.home_open());
+        assert!(state.home_active());
+    }
+
+    /// 选中终端标签即离开首页；重新打开首页又回到首页。
+    #[test]
+    fn selecting_a_terminal_tab_leaves_the_home() {
+        let mut state = State::new();
+        let tab = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::SelectTab(tab), &ctx(), &sftp);
+        assert!(!state.home_active(), "终端标签接管显示区");
+
+        let _ = state.update(Message::OpenHome, &ctx(), &sftp);
+        assert!(state.home_active());
+    }
+
+    /// 关闭首页即退出首页；再打开即恢复。
+    #[test]
+    fn closing_the_home_leaves_it_and_opening_restores_it() {
+        let mut state = State::new();
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::CloseHome, &ctx(), &sftp);
+        assert!(!state.home_open());
+        assert!(!state.home_active());
+
+        let _ = state.update(Message::OpenHome, &ctx(), &sftp);
+        assert!(state.home_open());
+        assert!(state.home_active());
+    }
+
+    /// 最后一个终端标签被关掉后回落到首页；首页已关闭则不回落。
+    #[test]
+    fn removing_the_last_terminal_tab_falls_back_to_the_home() {
+        let mut state = State::new();
+        let tab = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::CloseTab(tab), &ctx(), &sftp);
+        assert!(state.home_active(), "无终端标签时首页接管显示区");
+
+        let _ = state.update(Message::CloseHome, &ctx(), &sftp);
+        let tab = state.add("s2".to_string(), "s2".to_string());
+        let _ = state.update(Message::CloseTab(tab), &ctx(), &sftp);
+        assert!(!state.home_active(), "首页已关闭时不再回落");
+    }
+
+    /// 收藏卡片悬浮态记槽位：离开别的槽位不影响当前项，离开当前槽位或收藏区才清空。
+    #[test]
+    fn home_hover_tracks_the_hovered_slot() {
+        let mut state = State::new();
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::HomeHover(1), &ctx(), &sftp);
+        assert_eq!(state.home_hovered(), Some(1));
+
+        let _ = state.update(Message::HomeUnhover(0), &ctx(), &sftp);
+        assert_eq!(state.home_hovered(), Some(1), "离开别的槽位不影响当前项");
+
+        let _ = state.update(Message::HomeUnhover(1), &ctx(), &sftp);
+        assert_eq!(state.home_hovered(), None);
+
+        let _ = state.update(Message::HomeHover(2), &ctx(), &sftp);
+        let _ = state.update(Message::HomeLeave, &ctx(), &sftp);
+        assert_eq!(state.home_hovered(), None, "离开收藏区即清空");
     }
 
     /// 到期消息必须按序号匹配：连续响铃时，旧计时器不得提前熄灭新一轮的闪烁。
