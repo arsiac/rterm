@@ -8,13 +8,15 @@
 use crate::t;
 
 use crate::App;
-use crate::app::session::{EditorDraft, JumpDraft, Message, SessionField};
+use crate::app::session::{EditorDraft, JumpDraft, Message, SessionField, field_id};
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
-use crate::ui::{DialogBtnStyle, DialogButton, dialog_panel, menu_entry};
+use crate::ui::{
+    DialogBtnStyle, DialogButton, SegmentOption, SegmentTone, dialog_panel, menu_entry,
+};
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::Position;
-use iced::widget::{button, column, container, mouse_area, pick_list, row, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, text, text_input};
 use iced::{Background, Border, Element, Length, Shadow, Theme};
 use iced_autocomplete::auto_complete;
 use iced_aw::widget::context_menu::ContextMenu;
@@ -27,13 +29,29 @@ use std::fmt;
 /// 操作按钮图标尺寸（像素），与列表图标保持一致。
 const ACTION_ICON_SIZE: f32 = ICON_SIZE;
 
-/// 会话编辑弹窗面板尺寸（像素）：两栏排版后无需过高，压扁以贴近桌面弹窗比例。
-const EDITOR_W: f32 = 480.0;
-/// 会话编辑弹窗面板高度（像素）。
-const EDITOR_H: f32 = 560.0;
+/// 会话编辑弹窗面板宽度占窗口宽的比例。
+const EDITOR_W_RATIO: f32 = 0.40;
+/// 会话编辑弹窗面板宽度下限（像素）：保证「主机 + 端口」同行。
+const EDITOR_W_MIN: f32 = 440.0;
+/// 会话编辑弹窗面板宽度上限（像素）。
+const EDITOR_W_MAX: f32 = 560.0;
+/// 会话编辑弹窗面板高度占窗口高的比例。
+const EDITOR_H_RATIO: f32 = 0.82;
+/// 会话编辑弹窗面板高度下限（像素）。
+const EDITOR_H_MIN: f32 = 480.0;
+/// 会话编辑弹窗面板高度上限（像素）。
+const EDITOR_H_MAX: f32 = 760.0;
+/// 面板窄于此宽度时，「两栏」排版退化为单栏。
+const EDITOR_SINGLE_COL_W: f32 = 500.0;
 
-/// 「主机 + 端口」一行两栏时端口列的固定宽度（像素），端口值短，无需占满半行。
+/// 「主机 + 端口」同行时端口列的固定宽度（像素），端口值短，无需占满半行。
 const PORT_FIELD_W: f32 = 96.0;
+
+/// 折叠行箭头图标尺寸（像素）。
+const FOLD_ICON_SIZE: f32 = 14.0;
+
+/// 折叠态摘要行的最大字符数：超出截断，避免把卡片头撑成两行。
+const SUMMARY_MAX_CHARS: usize = 48;
 
 /// 编辑器中的认证方式选项；显示名随语言翻译，但写回配置时映射回内部值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +65,14 @@ enum AuthChoice {
 }
 
 impl AuthChoice {
-    /// 全部认证方式选项，供 `pick_list` 展示。
-    const ALL: [AuthChoice; 3] = [
-        AuthChoice::Password,
-        AuthChoice::PublicKey,
-        AuthChoice::Agent,
-    ];
+    /// 由内部认证值解析出选项（未知值回落为密码）。
+    fn from_value(value: &str) -> Self {
+        match value {
+            "publickey" => AuthChoice::PublicKey,
+            "agent" => AuthChoice::Agent,
+            _ => AuthChoice::Password,
+        }
+    }
 
     /// 映射为持久化的内部认证方式值。
     fn value(self) -> &'static str {
@@ -418,14 +438,26 @@ fn group_header_style(theme: &Theme, _st: button::Status) -> button::Style {
 /// 编辑器弹窗层：仅当存在编辑草稿时返回全屏遮罩层，否则返回 `None`。
 ///
 /// 遮罩叠加在窗口最顶层（见 [`layout::view`](crate::layout::view)），列表在遮罩下仍可见。
-/// 面板样式走共享的 [`crate::ui::dialog_panel_style`]，与其余模态弹窗同源。
+/// 面板尺寸随窗口自适应（比例见 [`EDITOR_W_RATIO`] / [`EDITOR_H_RATIO`]），窄于
+/// [`EDITOR_SINGLE_COL_W`] 时表单退化为单栏。
 pub fn editor_overlay(app: &App) -> Option<Element<'_, Message>> {
     let draft = app.session.editor.as_ref()?;
-    let panel = container(editor_body(draft))
-        .width(EDITOR_W)
-        .height(EDITOR_H)
-        .style(crate::ui::dialog_panel_style(None))
-        .padding(0);
+    let panel = iced::widget::responsive(move |size| {
+        let width = (size.width * EDITOR_W_RATIO).clamp(EDITOR_W_MIN, EDITOR_W_MAX);
+        let height = (size.height * EDITOR_H_RATIO).clamp(EDITOR_H_MIN, EDITOR_H_MAX);
+        container(
+            container(editor_body(draft, width))
+                .width(width)
+                .height(height)
+                .style(crate::ui::dialog_panel_style(None))
+                .padding(0),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+    });
     Some(crate::modal::overlay_wrap_dismissable(
         panel.into(),
         Message::CancelEdit,
@@ -469,12 +501,15 @@ pub fn confirm_delete_overlay(app: &App) -> Option<Element<'_, Message>> {
     ))
 }
 
-/// 弹窗主体：标题栏（含关闭按钮）+ 可滚动表单（分节）+ 固定底部按钮行。
-fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
+/// 弹窗主体：标题栏（含关闭按钮）+ 可滚动表单（分节 + 折叠区）+ 固定底部按钮行。
+///
+/// `panel_w` 为面板实际宽度：窄于 [`EDITOR_SINGLE_COL_W`] 时两栏排版退化为单栏。
+fn editor_body<'a>(draft: &'a EditorDraft, panel_w: f32) -> Element<'a, Message> {
+    let single_col = panel_w < EDITOR_SINGLE_COL_W;
+
     // 标题栏随新建 / 编辑切换（强调条 + 标题 + 关闭按钮），关闭按钮复用「取消编辑」语义。
-    let is_new = draft.is_new();
     let header = crate::ui::dialog_title_bar(
-        if is_new {
+        if draft.is_new() {
             t!("session.editor_new")
         } else {
             t!("session.editor_edit")
@@ -482,156 +517,26 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
         Some(Message::CancelEdit),
     );
 
-    let auth_choice = match draft.auth.as_str() {
-        "publickey" => AuthChoice::PublicKey,
-        "agent" => AuthChoice::Agent,
-        _ => AuthChoice::Password,
-    };
-
-    // 凭据字段随认证方式变化（字符串均取自 draft，生命周期与 &app 一致）。
-    // 凭据为密文信封，编辑器内留空表示「保持不变」，故占位提示强调这一点。
-    let cred_field: Element<'a, Message> = match draft.auth.as_str() {
-        "password" => labeled_input(
-            crate::ui::field_label(t!("session.password")),
-            &draft.password,
-            t!("session.keep_unchanged"),
-            SessionField::Password,
-            true,
-            Length::Fill,
-        ),
-        "publickey" => column![
-            // 私钥路径：输入框 + 文件系统选择按钮（document 图标）。
-            key_path_field(&draft.key_path, SessionField::KeyPath, Message::PickKeyFile),
-            labeled_input(
-                crate::ui::field_label(t!("session.passphrase")),
-                &draft.passphrase,
-                t!("session.keep_unchanged"),
-                SessionField::Passphrase,
-                true,
-                Length::Fill,
-            ),
-        ]
-        .spacing(12)
-        .into(),
-        _ => agent_hint(t!("session.agent_hint")),
-    };
-
-    // 表单分三节：连接（主机 + 端口两栏 / 用户名）、认证（方式 + 凭据）、名称与分组（两栏）。
-    // 节标题用主文本色、字段标签用次级色，形成两级层次；节间距 18px、节内 12px 拉开呼吸感。
+    // 表单分三节常显 + 一个折叠区：连接 / 认证 / 名称与分组常显，启动作业与跳板机收进「高级选项」。
     let form = column![
-        crate::ui::form_section(
-            t!("session.section_connection"),
-            column![
-                row![
-                    labeled_input(
-                        crate::ui::required_label(t!("session.host")),
-                        &draft.host,
-                        "",
-                        SessionField::Host,
-                        false,
-                        Length::Fill,
-                    ),
-                    labeled_input(
-                        crate::ui::required_label(t!("session.port")),
-                        &draft.port,
-                        "",
-                        SessionField::Port,
-                        false,
-                        Length::Fixed(PORT_FIELD_W),
-                    ),
-                ]
-                .spacing(10),
-                labeled_input(
-                    crate::ui::field_label(t!("session.username")),
-                    &draft.username,
-                    "",
-                    SessionField::Username,
-                    false,
-                    Length::Fill,
-                ),
-                column![
-                    labeled_input(
-                        crate::ui::field_label(t!("session.startup_command")),
-                        &draft.startup_command,
-                        "",
-                        SessionField::StartupCommand,
-                        false,
-                        Length::Fill,
-                    ),
-                    crate::ui::hint_text(t!("session.startup_command_hint")),
-                ]
-                .spacing(4),
-            ]
-            .spacing(12),
-        ),
-        crate::ui::form_section(
-            t!("session.section_auth"),
-            column![
-                column![
-                    crate::ui::field_label(t!("session.auth")),
-                    pick_list(&AuthChoice::ALL[..], Some(auth_choice), |c| {
-                        Message::EditorField(SessionField::Auth, c.value().to_string())
-                    },)
-                    .width(Length::Fill)
-                    .style(crate::theme::pick_list_style),
-                ]
-                .spacing(4),
-                cred_field,
-            ]
-            .spacing(12),
-        ),
-        crate::ui::form_section(
-            t!("session.section_identity"),
-            row![
-                labeled_input(
-                    crate::ui::field_label(t!("session.name")),
-                    &draft.name,
-                    "user@host",
-                    SessionField::Name,
-                    false,
-                    Length::Fill,
-                ),
-                column![
-                    crate::ui::field_label(t!("session.group")),
-                    auto_complete(
-                        draft.group_ac.as_ref(),
-                        "",
-                        |v| Message::EditorField(SessionField::Group, v),
-                        |v| Message::EditorField(SessionField::Group, v),
-                        Some(|opt: String| Message::EditorField(SessionField::Group, opt)),
-                    )
-                    .width(Length::Fill)
-                    .input_style(crate::ui::text_input_style)
-                    .menu_style(|theme: &Theme| {
-                        let p = crate::theme::custom_palette(theme);
-                        menu::Style {
-                            background: Background::Color(p.surface_raised),
-                            border: Border {
-                                color: p.border,
-                                width: 1.0,
-                                radius: 6.0.into(),
-                            },
-                            text_color: theme.palette().text,
-                            selected_text_color: theme.palette().text,
-                            selected_background: Background::Color(p.hover_raised),
-                            shadow: Shadow::default(),
-                        }
-                    }),
-                ]
-                .spacing(4)
-                .width(Length::Fill),
-            ]
-            .spacing(10),
-        ),
-        crate::ui::form_section(t!("session.section_jumps"), jump_section(draft)),
+        connection_section(draft, single_col),
+        auth_section(draft),
+        identity_section(draft, single_col),
+        advanced_section(draft, single_col),
     ]
     .spacing(18)
     .padding([16, 20]);
 
-    // 底部固定行：左「校验错误」+ 右「取消 / 保存」，走共享的 ui::dialog_footer
-    // （错误文案位置固定，不随其出现 / 消失而推动按钮）。
+    // 页脚左侧只放一条消息：整表单级错误优先，否则只显示待修正项计数（错误详情就地显示）。
+    let message = if let Some(e) = &draft.error {
+        Some(e.clone())
+    } else if draft.errors.is_empty() {
+        None
+    } else {
+        Some(t!("session.error_count", count => draft.errors.len()))
+    };
     let footer = crate::ui::dialog_footer(
-        draft.error.clone(),
+        message,
         Some(crate::ui::DialogButton {
             label: t!("common.cancel"),
             on_press: Message::CancelEdit,
@@ -654,14 +559,224 @@ fn editor_body<'a>(draft: &'a EditorDraft) -> Element<'a, Message> {
     .into()
 }
 
-/// 跳板链编辑分节：逐个跳板机子面板（由外到内排序，与连接顺序一致）+ 追加按钮。
-fn jump_section(draft: &EditorDraft) -> Element<'_, Message> {
+/// 「连接」节：主机 + 端口（两栏 / 单栏随面板宽度切换）+ 用户名。
+fn connection_section(draft: &EditorDraft, single_col: bool) -> Element<'_, Message> {
+    let host = labeled_input(
+        crate::ui::required_label(t!("session.host")),
+        &draft.host,
+        "",
+        SessionField::Host,
+        false,
+        Length::Fill,
+        error_for_field(draft, SessionField::Host),
+    );
+    let port = labeled_input(
+        crate::ui::required_label(t!("session.port")),
+        &draft.port,
+        "",
+        SessionField::Port,
+        false,
+        Length::Fixed(PORT_FIELD_W),
+        error_for_field(draft, SessionField::Port),
+    );
+    let host_port: Element<'_, Message> = if single_col {
+        column![host, port].spacing(12).into()
+    } else {
+        row![host, port].spacing(10).into()
+    };
+    crate::ui::form_section(
+        t!("session.section_connection"),
+        column![
+            host_port,
+            labeled_input(
+                crate::ui::field_label(t!("session.username")),
+                &draft.username,
+                "",
+                SessionField::Username,
+                false,
+                Length::Fill,
+                None,
+            ),
+        ]
+        .spacing(12),
+    )
+}
+
+/// 「认证」节：分段控件（三种方式常驻）+ 形态说明条 + 凭据区。
+fn auth_section(draft: &EditorDraft) -> Element<'_, Message> {
+    let segmented = auth_segmented(&draft.auth, |value| {
+        Message::EditorField(SessionField::Auth, value.to_string())
+    });
+    // 凭据字段随认证方式变化；密文信封留空表示「保持不变」，与目标主机同规。
+    let cred: Element<'_, Message> = match draft.auth.as_str() {
+        "publickey" => column![
+            key_path_field(
+                &draft.key_path,
+                SessionField::KeyPath,
+                Message::PickKeyFile,
+                error_for_field(draft, SessionField::KeyPath),
+            ),
+            labeled_input(
+                crate::ui::field_label(t!("session.passphrase")),
+                &draft.passphrase,
+                t!("session.keep_unchanged"),
+                SessionField::Passphrase,
+                true,
+                Length::Fill,
+                error_for_field(draft, SessionField::Passphrase),
+            ),
+        ]
+        .spacing(12)
+        .into(),
+        "agent" => agent_hint(t!("session.agent_hint")),
+        _ => labeled_input(
+            crate::ui::field_label(t!("session.password")),
+            &draft.password,
+            t!("session.keep_unchanged"),
+            SessionField::Password,
+            true,
+            Length::Fill,
+            error_for_field(draft, SessionField::Password),
+        ),
+    };
+    crate::ui::form_section(
+        t!("session.section_auth"),
+        column![
+            column![
+                segmented,
+                crate::ui::hint_text(auth_shape_hint(&draft.auth)),
+            ]
+            .spacing(6),
+            cred,
+        ]
+        .spacing(10),
+    )
+}
+
+/// 「名称与分组」节：名称 + 分组自动补全（分组框不参与 Tab 链，故附提示气泡）。
+fn identity_section(draft: &EditorDraft, single_col: bool) -> Element<'_, Message> {
+    let name = labeled_input(
+        crate::ui::field_label(t!("session.name")),
+        &draft.name,
+        "user@host",
+        SessionField::Name,
+        false,
+        Length::Fill,
+        None,
+    );
+    let group: Element<'_, Message> = column![
+        crate::ui::field_label(t!("session.group")),
+        crate::ui::hover_tooltip(
+            auto_complete(
+                draft.group_ac.as_ref(),
+                "",
+                |v| Message::EditorField(SessionField::Group, v),
+                |v| Message::EditorField(SessionField::Group, v),
+                Some(|opt: String| Message::EditorField(SessionField::Group, opt)),
+            )
+            .width(Length::Fill)
+            .input_style(crate::ui::text_input_style)
+            .menu_style(|theme: &Theme| {
+                let p = crate::theme::custom_palette(theme);
+                menu::Style {
+                    background: Background::Color(p.surface_raised),
+                    border: Border {
+                        color: p.border,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    text_color: theme.palette().text,
+                    selected_text_color: theme.palette().text,
+                    selected_background: Background::Color(p.hover_raised),
+                    shadow: Shadow::default(),
+                }
+            }),
+            t!("session.group_tab_hint"),
+            Position::Bottom,
+        ),
+    ]
+    .spacing(4)
+    .width(Length::Fill)
+    .into();
+    let body: Element<'_, Message> = if single_col {
+        column![name, group].spacing(12).into()
+    } else {
+        row![name, group].spacing(10).into()
+    };
+    crate::ui::form_section(t!("session.section_identity"), body)
+}
+
+/// 「高级选项」折叠区：启动作业与跳板机默认收起。
+///
+/// 收起时其输入框**不进入控件树**——输入框可聚焦，留着会让 Tab 跳进看不见的输入框。
+fn advanced_section(draft: &EditorDraft, single_col: bool) -> Element<'_, Message> {
+    let toggle = fold_row(
+        draft.advanced_open,
+        t!("session.section_advanced"),
+        advanced_badges(draft),
+        Message::ToggleAdvanced,
+    );
+    let mut column = column![].spacing(10);
+    if draft.advanced_open {
+        // 分隔线画在折叠行上方，把折叠区与上方常显内容分开。
+        column = column
+            .push(crate::ui::hairline())
+            .push(toggle)
+            .push(
+                column![
+                    crate::ui::hint_text(t!("session.section_advanced_hint")),
+                    labeled_input(
+                        crate::ui::field_label(t!("session.startup_command")),
+                        &draft.startup_command,
+                        "",
+                        SessionField::StartupCommand,
+                        false,
+                        Length::Fill,
+                        None,
+                    ),
+                    crate::ui::hint_text(t!("session.startup_command_hint")),
+                ]
+                .spacing(4),
+            )
+            .push(sub_section_title(t!("session.section_jumps")))
+            .push(jump_section(draft, single_col));
+    } else {
+        column = column.push(toggle);
+    }
+    column.into()
+}
+
+/// 折叠区内的次级节标题：12px 次级色。
+fn sub_section_title(label: impl Into<String>) -> Element<'static, Message> {
+    text(label.into())
+        .size(12)
+        .style(|theme: &Theme| iced::widget::text::Style {
+            color: Some(crate::theme::custom_palette(theme).text_secondary),
+        })
+        .into()
+}
+
+/// 折叠态摘要徽标：跳板机台数 + 启动作业是否已设置。
+fn advanced_badges(draft: &EditorDraft) -> Element<'static, Message> {
+    let mut badges = row![].spacing(12);
+    badges = badges.push(tertiary_text(
+        t!("session.jump_count", count => draft.jumps.len()),
+        Length::Shrink,
+    ));
+    if !draft.startup_command.trim().is_empty() {
+        badges = badges.push(tertiary_text(t!("session.startup_set"), Length::Shrink));
+    }
+    badges.into()
+}
+
+/// 跳板链：逐个跳板机卡片（由外到内排序，与连接顺序一致）+ 追加按钮。
+fn jump_section(draft: &EditorDraft, single_col: bool) -> Element<'_, Message> {
     let mut items: Vec<Element<'_, Message>> = Vec::new();
     if draft.jumps.is_empty() {
         items.push(crate::ui::hint_text(t!("session.jumps_empty")));
     }
     for (index, hop) in draft.jumps.iter().enumerate() {
-        items.push(jump_card(index, hop));
+        items.push(jump_card(draft, index, hop, single_col));
     }
     items.push(
         button(
@@ -684,47 +799,30 @@ fn jump_section(draft: &EditorDraft) -> Element<'_, Message> {
     column(items).spacing(10).into()
 }
 
-/// 单跳跳板机子面板：标题（跳序 + 移除）+ 主机 / 端口 + 用户名 / 认证 + 凭据。
-fn jump_card(index: usize, hop: &JumpDraft) -> Element<'_, Message> {
-    let auth_choice = match hop.auth.as_str() {
-        "publickey" => AuthChoice::PublicKey,
-        "agent" => AuthChoice::Agent,
-        _ => AuthChoice::Password,
-    };
-    // 凭据字段随认证方式变化；密文信封留空表示「保持不变」，与目标主机同规。
-    let cred_field: Element<'_, Message> = match hop.auth.as_str() {
-        "password" => labeled_input(
-            crate::ui::field_label(t!("session.password")),
-            &hop.password,
-            t!("session.keep_unchanged"),
-            SessionField::JumpPassword(index),
-            true,
-            Length::Fill,
-        ),
-        "publickey" => column![
-            key_path_field(
-                &hop.key_path,
-                SessionField::JumpKeyPath(index),
-                Message::PickJumpKeyFile(index),
-            ),
-            labeled_input(
-                crate::ui::field_label(t!("session.passphrase")),
-                &hop.passphrase,
-                t!("session.keep_unchanged"),
-                SessionField::JumpPassphrase(index),
-                true,
-                Length::Fill,
-            ),
+/// 单跳跳板机卡片：折叠态为单行摘要（箭头 + 名称 + 摘要 + 删除），展开态补全表单。
+fn jump_card<'a>(
+    draft: &'a EditorDraft,
+    index: usize,
+    hop: &'a JumpDraft,
+    single_col: bool,
+) -> Element<'a, Message> {
+    let open = draft.expanded_jumps.contains(&index);
+    // 箭头与名称同属一个按钮，点击即展开 / 收起；删除按钮独立在外。
+    let head = button(
+        row![
+            fold_chevron(open),
+            text(t!("session.jump_label", index => index + 1)).size(13),
+            jump_summary_text(hop, single_col),
         ]
-        .spacing(12)
-        .into(),
-        _ => agent_hint(t!("session.agent_hint")),
-    };
-
-    let head = row![
-        text(t!("session.jump_label", index => index + 1))
-            .size(13)
-            .width(Length::Fill),
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center),
+    )
+    .width(Length::Fill)
+    .padding([2, 0])
+    .style(jump_head_style())
+    .on_press(Message::ToggleJump(index));
+    let head_row = row![
+        head,
         icon_button(
             Icon::Delete,
             ACTION_ICON_SIZE,
@@ -733,56 +831,16 @@ fn jump_card(index: usize, hop: &JumpDraft) -> Element<'_, Message> {
             Position::Bottom,
         ),
     ]
+    .spacing(6)
     .align_y(iced::alignment::Vertical::Center);
 
-    let body = column![
-        row![
-            labeled_input(
-                crate::ui::required_label(t!("session.host")),
-                &hop.host,
-                "",
-                SessionField::JumpHost(index),
-                false,
-                Length::Fill,
-            ),
-            labeled_input(
-                crate::ui::field_label(t!("session.port")),
-                &hop.port,
-                "",
-                SessionField::JumpPort(index),
-                false,
-                Length::Fixed(PORT_FIELD_W),
-            ),
-        ]
-        .spacing(10),
-        row![
-            labeled_input(
-                crate::ui::field_label(t!("session.username")),
-                &hop.username,
-                "",
-                SessionField::JumpUsername(index),
-                false,
-                Length::Fill,
-            ),
-            column![
-                crate::ui::field_label(t!("session.auth")),
-                pick_list(&AuthChoice::ALL[..], Some(auth_choice), move |c| {
-                    Message::EditorField(SessionField::JumpAuth(index), c.value().to_string())
-                },)
-                .width(Length::Fill)
-                .style(crate::theme::pick_list_style),
-            ]
-            .spacing(4)
-            .width(Length::Fill),
-        ]
-        .spacing(10),
-        cred_field,
-    ]
-    .spacing(12);
-
-    container(column![head, body].spacing(10))
+    let mut card = column![head_row].spacing(10);
+    if open {
+        card = card.push(jump_body(draft, index, hop, single_col));
+    }
+    container(card)
         .width(Length::Fill)
-        .padding(12)
+        .padding([8, 10])
         .style(|theme: &Theme| {
             let p = crate::theme::custom_palette(theme);
             iced::widget::container::Style {
@@ -796,6 +854,272 @@ fn jump_card(index: usize, hop: &JumpDraft) -> Element<'_, Message> {
             }
         })
         .into()
+}
+
+/// 展开态的跳板机表单：主机 + 端口、用户名、认证分段与凭据。
+fn jump_body<'a>(
+    draft: &'a EditorDraft,
+    index: usize,
+    hop: &'a JumpDraft,
+    single_col: bool,
+) -> Element<'a, Message> {
+    let host = labeled_input(
+        crate::ui::required_label(t!("session.host")),
+        &hop.host,
+        "",
+        SessionField::JumpHost(index),
+        false,
+        Length::Fill,
+        error_for_field(draft, SessionField::JumpHost(index)),
+    );
+    let port = labeled_input(
+        crate::ui::required_label(t!("session.port")),
+        &hop.port,
+        "",
+        SessionField::JumpPort(index),
+        false,
+        Length::Fixed(PORT_FIELD_W),
+        error_for_field(draft, SessionField::JumpPort(index)),
+    );
+    let host_port: Element<'_, Message> = if single_col {
+        column![host, port].spacing(12).into()
+    } else {
+        row![host, port].spacing(10).into()
+    };
+    let cred: Element<'_, Message> = match hop.auth.as_str() {
+        "publickey" => column![
+            key_path_field(
+                &hop.key_path,
+                SessionField::JumpKeyPath(index),
+                Message::PickJumpKeyFile(index),
+                error_for_field(draft, SessionField::JumpKeyPath(index)),
+            ),
+            labeled_input(
+                crate::ui::field_label(t!("session.passphrase")),
+                &hop.passphrase,
+                t!("session.keep_unchanged"),
+                SessionField::JumpPassphrase(index),
+                true,
+                Length::Fill,
+                error_for_field(draft, SessionField::JumpPassphrase(index)),
+            ),
+        ]
+        .spacing(12)
+        .into(),
+        "agent" => agent_hint(t!("session.agent_hint")),
+        _ => labeled_input(
+            crate::ui::field_label(t!("session.password")),
+            &hop.password,
+            t!("session.keep_unchanged"),
+            SessionField::JumpPassword(index),
+            true,
+            Length::Fill,
+            error_for_field(draft, SessionField::JumpPassword(index)),
+        ),
+    };
+    column![
+        host_port,
+        labeled_input(
+            crate::ui::field_label(t!("session.username")),
+            &hop.username,
+            "",
+            SessionField::JumpUsername(index),
+            false,
+            Length::Fill,
+            None,
+        ),
+        auth_segmented(&hop.auth, move |value| {
+            Message::EditorField(SessionField::JumpAuth(index), value.to_string())
+        }),
+        cred,
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// 认证方式分段控件：三段常驻、单击即切换。
+///
+/// 不用下拉框：弹层会被弹窗内的滚动区裁切。
+fn auth_segmented<'a>(
+    value: &str,
+    on_pick: impl Fn(&'static str) -> Message + 'a,
+) -> Element<'a, Message> {
+    let current = AuthChoice::from_value(value);
+    let options = [
+        SegmentOption {
+            label: AuthChoice::Password.to_string(),
+            selected: current == AuthChoice::Password,
+            tone: SegmentTone::Accent,
+            on_press: on_pick(AuthChoice::Password.value()),
+        },
+        SegmentOption {
+            label: AuthChoice::PublicKey.to_string(),
+            selected: current == AuthChoice::PublicKey,
+            tone: SegmentTone::Accent,
+            on_press: on_pick(AuthChoice::PublicKey.value()),
+        },
+        SegmentOption {
+            label: AuthChoice::Agent.to_string(),
+            selected: current == AuthChoice::Agent,
+            tone: SegmentTone::Accent,
+            on_press: on_pick(AuthChoice::Agent.value()),
+        },
+    ];
+    crate::ui::segmented(options)
+}
+
+/// 认证形态说明条：当前认证方式需要哪些凭据。
+fn auth_shape_hint(auth: &str) -> String {
+    match auth {
+        "publickey" => t!("session.auth_shape_publickey"),
+        "agent" => t!("session.auth_shape_agent"),
+        _ => t!("session.auth_shape_password"),
+    }
+}
+
+/// 折叠行：箭头 + 标题 + 右侧摘要徽标，整行可点。
+fn fold_row(
+    open: bool,
+    title: impl Into<String>,
+    badges: Element<'static, Message>,
+    on_toggle: Message,
+) -> Element<'static, Message> {
+    button(
+        row![
+            fold_chevron(open),
+            text(title.into()).size(13).width(Length::Fill),
+            badges
+        ]
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center),
+    )
+    .width(Length::Fill)
+    .padding([8, 10])
+    .style(fold_row_style(open))
+    .on_press(on_toggle)
+    .into()
+}
+
+/// 折叠箭头：收起指向右、展开指向下。
+fn fold_chevron(open: bool) -> Element<'static, Message> {
+    let icon = if open {
+        Icon::ChevronCircleDown
+    } else {
+        Icon::ChevronCircleRight
+    };
+    icon.svg(FOLD_ICON_SIZE).into()
+}
+
+/// 折叠行样式：常态无底色，悬停铺一层弱底；标题色随展开态由次级升为主色。
+fn fold_row_style(open: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme: &Theme, status| {
+        let p = crate::theme::custom_palette(theme);
+        let background = match status {
+            button::Status::Hovered | button::Status::Pressed => {
+                Some(Background::Color(p.hover_raised))
+            }
+            _ => None,
+        };
+        button::Style {
+            background,
+            border: Border::default().rounded(6.0),
+            text_color: if open {
+                theme.extended_palette().background.base.text
+            } else {
+                p.text_secondary
+            },
+            ..Default::default()
+        }
+    }
+}
+
+/// 跳板机卡片头样式：与折叠行同族，常态即为主色。
+fn jump_head_style() -> impl Fn(&Theme, button::Status) -> button::Style {
+    |theme: &Theme, status| {
+        let p = crate::theme::custom_palette(theme);
+        let background = match status {
+            button::Status::Hovered | button::Status::Pressed => {
+                Some(Background::Color(p.hover_raised))
+            }
+            _ => None,
+        };
+        button::Style {
+            background,
+            border: Border::default().rounded(6.0),
+            text_color: theme.extended_palette().background.base.text,
+            ..Default::default()
+        }
+    }
+}
+
+/// 弱色小字（三级文本色，12px）：`width` 为 `Fill` 时占满剩余空间。
+fn tertiary_text(label: impl Into<String>, width: Length) -> Element<'static, Message> {
+    text(label.into())
+        .size(12)
+        .width(width)
+        .style(|theme: &Theme| iced::widget::text::Style {
+            color: Some(crate::theme::custom_palette(theme).text_tertiary),
+        })
+        .into()
+}
+
+/// 跳板机折叠态摘要文本：窄屏只留 `host:port`，完整摘要（含用户名）进 tooltip。
+fn jump_summary_text(hop: &JumpDraft, single_col: bool) -> Element<'static, Message> {
+    let full = jump_summary(hop, true);
+    if !single_col {
+        return summary_text(truncate(full, SUMMARY_MAX_CHARS));
+    }
+    let short = jump_summary(hop, false);
+    crate::ui::hover_tooltip(
+        summary_text(truncate(short, SUMMARY_MAX_CHARS)),
+        full,
+        Position::Bottom,
+    )
+}
+
+/// 跳板机折叠态摘要：`host:port　user`（主机未填时给出占位说明）。
+///
+/// `with_user` 为 `false` 时略去用户名，仅用于窄屏形态。
+fn jump_summary(hop: &JumpDraft, with_user: bool) -> String {
+    let user = if with_user { hop.username.trim() } else { "" };
+    let raw = if hop.host.trim().is_empty() {
+        t!("session.jump_summary_empty", user => user)
+    } else {
+        t!(
+            "session.jump_summary",
+            host => hop.host.trim(),
+            port => hop.port.trim(),
+            user => user
+        )
+    };
+    raw.trim_end().to_string()
+}
+
+/// 摘要文字：占满卡片头剩余宽度并裁切，长主机名不会把删除按钮挤出卡片。
+fn summary_text(label: impl Into<String>) -> Element<'static, Message> {
+    container(tertiary_text(label, Length::Fill))
+        .width(Length::Fill)
+        .clip(true)
+        .into()
+}
+
+/// 截断过长文本并加省略号：摘要行不换行，避免把卡片头撑成两行。
+fn truncate(text: String, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let mut cut: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
+/// 取某字段的校验错误文案（若有）。
+fn error_for_field(draft: &EditorDraft, field: SessionField) -> Option<&str> {
+    draft
+        .errors
+        .iter()
+        .find(|(f, _)| *f == field)
+        .map(|(_, msg)| msg.as_str())
 }
 
 /// SSH agent 提示：以「内嵌说明块」呈现（弱文字 + 表面底色 + 细边框），
@@ -821,9 +1145,8 @@ fn agent_hint<'a>(label: impl Into<String>) -> Element<'a, Message> {
 
 /// 生成带标签的输入框（标签在输入框顶部，`placeholder` 为空值占位提示）。
 ///
-/// `label` 直接传入标签元素（便于 [`field_label`] / [`required_label`] 复用同一布局）；
-/// `secure` 为 `true` 时掩码输入（用于密码 / 私钥口令等敏感字段）；`width` 控制整列宽度，
-/// 使「主机 + 端口」这类一行两栏的排版得以成立。
+/// `label` 直接传入标签元素；`secure` 为 `true` 时掩码输入；`width` 控制整列宽度；
+/// `error` 非空时描边转危险色并在框下补错误文案。输入框带固定 `id`（iced 0.14 需显式 `id`）。
 fn labeled_input<'a>(
     label: Element<'a, Message>,
     value: &'a str,
@@ -831,18 +1154,20 @@ fn labeled_input<'a>(
     field: SessionField,
     secure: bool,
     width: Length,
+    error: Option<&'a str>,
 ) -> Element<'a, Message> {
     let placeholder = placeholder.into();
-    column![
-        label,
-        text_input(&placeholder, value)
-            .secure(secure)
-            .on_input(move |v| Message::EditorField(field, v))
-            .style(crate::ui::text_input_style),
-    ]
-    .spacing(4)
-    .width(width)
-    .into()
+    let input = text_input(&placeholder, value)
+        .id(field_id(field))
+        .secure(secure)
+        .on_input(move |v| Message::EditorField(field, v))
+        .on_submit(Message::SaveSession)
+        .style(input_style(error.is_some()));
+    let mut column = column![label, input].spacing(4).width(width);
+    if let Some(msg) = error {
+        column = column.push(crate::ui::field_error(msg));
+    }
+    column.into()
 }
 
 /// 私钥路径输入：文本框 + 文件选择按钮（选择结果经 `pick` 消息回填 `field`）。
@@ -850,13 +1175,17 @@ fn key_path_field<'a>(
     key_path: &'a str,
     field: SessionField,
     pick: Message,
+    error: Option<&'a str>,
 ) -> Element<'a, Message> {
-    column![
+    let input = text_input("", key_path)
+        .id(field_id(field))
+        .on_input(move |v| Message::EditorField(field, v))
+        .on_submit(Message::SaveSession)
+        .style(input_style(error.is_some()));
+    let mut column = column![
         crate::ui::field_label(t!("session.key_path")),
         row![
-            text_input("", key_path)
-                .on_input(move |v| Message::EditorField(field, v))
-                .style(crate::ui::text_input_style),
+            input,
             icon_button(
                 Icon::Document,
                 ACTION_ICON_SIZE,
@@ -868,6 +1197,18 @@ fn key_path_field<'a>(
         .spacing(6)
         .align_y(iced::alignment::Vertical::Center),
     ]
-    .spacing(4)
-    .into()
+    .spacing(4);
+    if let Some(msg) = error {
+        column = column.push(crate::ui::field_error(msg));
+    }
+    column.into()
+}
+
+/// 按是否有校验错误选择输入框样式。
+fn input_style(error: bool) -> fn(&Theme, text_input::Status) -> text_input::Style {
+    if error {
+        crate::ui::text_input_error_style
+    } else {
+        crate::ui::text_input_style
+    }
 }

@@ -247,12 +247,85 @@ pub(crate) fn handle_app_key(
             .update(sftp::Message::SftpDialogConfirm, tab_id)
             .map(Message::SftpEvent);
     }
+    // 会话编辑器打开态的上下文键：必须早于 `Captured` 丢弃（模态遮罩把按键标为已捕获）。
+    if let Some(task) = session_editor_key(app, chord) {
+        return task;
+    }
     if status == iced::event::Status::Captured {
         return Task::none();
     }
     match app.shortcuts.command_for(chord) {
         Some(command) => dispatch_command(app, command),
         None => Task::none(),
+    }
+}
+
+/// 会话编辑器打开态的上下文键：Tab 链推进、认证方式切换、折叠开关、保存与选私钥。
+fn session_editor_key(app: &mut App, chord: &Chord) -> Option<Task<Message>> {
+    app.session.editor.as_ref()?;
+    let msg = match editor_key_intent(chord)? {
+        EditorKey::StepFocus => {
+            let field = app.session.step_focus(!chord.shift)?;
+            session::Message::FocusField(field)
+        }
+        EditorKey::SetAuth(value) => {
+            session::Message::EditorField(session::SessionField::Auth, value.into())
+        }
+        EditorKey::ToggleAdvanced => session::Message::ToggleAdvanced,
+        EditorKey::AddJump => session::Message::AddJump,
+        EditorKey::Save => session::Message::SaveSession,
+        // 私钥路径框聚焦时选的是该跳的私钥，否则是目标主机的。
+        EditorKey::PickKey => match app.session.focused_field {
+            Some(session::SessionField::JumpKeyPath(i)) => session::Message::PickJumpKeyFile(i),
+            _ => session::Message::PickKeyFile,
+        },
+    };
+    Some(Task::done(Message::Session(msg)))
+}
+
+/// 会话编辑器的上下文键意图：按键到动作的映射。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditorKey {
+    /// Tab / Shift+Tab：推进到下一个 / 上一个输入框。
+    StepFocus,
+    /// Alt+1/2/3：切换认证方式。
+    SetAuth(&'static str),
+    /// Ctrl+M：展开 / 折叠「高级选项」。
+    ToggleAdvanced,
+    /// Ctrl+Shift+J：追加一台跳板机。
+    AddJump,
+    /// Ctrl+S：保存。
+    Save,
+    /// Ctrl+O：选择私钥文件。
+    PickKey,
+}
+
+/// 把和弦映射为会话编辑器的上下文键意图；不属于编辑器语境时返回 `None`。
+fn editor_key_intent(chord: &Chord) -> Option<EditorKey> {
+    let ctrl = chord.ctrl;
+    let shift = chord.shift;
+    let alt = chord.alt;
+    let logo = chord.logo;
+    match chord.key {
+        // Tab / Shift+Tab：在编辑器可见的输入框之间推进焦点（到末尾回到首个）。
+        ChordKey::Tab if !ctrl && !alt && !logo => Some(EditorKey::StepFocus),
+        // Alt+1/2/3：切换认证方式（分段控件的键盘等价）。
+        ChordKey::Char('1') if alt && !ctrl && !shift && !logo => {
+            Some(EditorKey::SetAuth("password"))
+        }
+        ChordKey::Char('2') if alt && !ctrl && !shift && !logo => {
+            Some(EditorKey::SetAuth("publickey"))
+        }
+        ChordKey::Char('3') if alt && !ctrl && !shift && !logo => Some(EditorKey::SetAuth("agent")),
+        // Ctrl+M：展开 / 折叠「高级选项」。
+        ChordKey::Char('M') if ctrl && !shift && !alt && !logo => Some(EditorKey::ToggleAdvanced),
+        // Ctrl+Shift+J：追加一台跳板机。
+        ChordKey::Char('J') if ctrl && shift && !alt && !logo => Some(EditorKey::AddJump),
+        // Ctrl+S：保存。
+        ChordKey::Char('S') if ctrl && !shift && !alt && !logo => Some(EditorKey::Save),
+        // Ctrl+O：选择私钥文件。
+        ChordKey::Char('O') if ctrl && !shift && !alt && !logo => Some(EditorKey::PickKey),
+        _ => None,
     }
 }
 
@@ -376,6 +449,10 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
             .update(search::Message::Close)
             .map(Message::SearchEvent)
     } else if app.session.editor.is_some() {
+        // 两段式 Esc：第一次只失焦（输入框已自行失焦，此处仅清掉追踪），再按一次才关弹窗。
+        if app.session.focused_field.take().is_some() {
+            return Task::none();
+        }
         let ctx = contexts::session_ctx(app);
         app.session
             .update(session::Message::CancelEdit, &ctx)
@@ -480,4 +557,87 @@ pub(crate) fn handle_switch_center(app: &mut App, view: CenterView) -> iced::Tas
         }
     }
     Task::none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造带指定修饰键的和弦。
+    fn chord(key: ChordKey, ctrl: bool, shift: bool, alt: bool) -> Chord {
+        Chord {
+            ctrl,
+            shift,
+            alt,
+            logo: false,
+            key,
+        }
+    }
+
+    /// 编辑器上下文键的映射：Tab 推进、Alt+1/2/3 切认证、Ctrl+M/J/S/O 各司其职。
+    #[test]
+    fn editor_keys_map_to_their_intents() {
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Tab, false, false, false)),
+            Some(EditorKey::StepFocus)
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Tab, false, true, false)),
+            Some(EditorKey::StepFocus),
+            "Shift+Tab 仍是推进焦点，只是方向相反"
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('1'), false, false, true)),
+            Some(EditorKey::SetAuth("password"))
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('2'), false, false, true)),
+            Some(EditorKey::SetAuth("publickey"))
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('3'), false, false, true)),
+            Some(EditorKey::SetAuth("agent"))
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('M'), true, false, false)),
+            Some(EditorKey::ToggleAdvanced)
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('J'), true, true, false)),
+            Some(EditorKey::AddJump)
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('S'), true, false, false)),
+            Some(EditorKey::Save)
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('O'), true, false, false)),
+            Some(EditorKey::PickKey)
+        );
+    }
+
+    /// 修饰键组合不符时不应命中编辑器语境，避免劫持全局键位。
+    #[test]
+    fn editor_keys_ignore_mismatched_modifiers() {
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('1'), false, false, false)),
+            None
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('M'), true, true, false)),
+            None
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('S'), false, false, false)),
+            None
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Tab, true, false, false)),
+            None
+        );
+        assert_eq!(
+            editor_key_intent(&chord(ChordKey::Char('Q'), true, false, false)),
+            None
+        );
+    }
 }

@@ -225,6 +225,17 @@ session:
   jump_remove: Remove this jump host
   jump_host_empty: "Jump host %{index}: host cannot be empty"
   jump_port_invalid: "Jump host %{index}: port must be a non-zero number"
+  section_advanced: Advanced options
+  section_advanced_hint: Startup command and jump hosts are optional
+  startup_set: Startup command · set
+  jump_count: "Jump hosts · %{count}"
+  auth_shape_password: "Requires 1 credential: password"
+  auth_shape_publickey: "Requires 2 credentials: private key path, passphrase (optional)"
+  auth_shape_agent: No credential needed, uses the local SSH agent
+  error_count: "%{count} issue(s) to fix"
+  group_tab_hint: Click to choose or create a group
+  jump_summary: "%{host}:%{port}　%{user}"
+  jump_summary_empty: "Host not set　%{user}"
 home:
   title: Home
   subtitle: Quickly connect to favorites and recently used sessions

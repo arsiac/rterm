@@ -225,6 +225,17 @@ session:
   jump_remove: 移除该跳板机
   jump_host_empty: "跳板机 %{index}：主机不能为空"
   jump_port_invalid: "跳板机 %{index}：端口必须是非 0 数字"
+  section_advanced: 高级选项
+  section_advanced_hint: 启动作业与跳板机为可选项
+  startup_set: 启动作业 · 已设置
+  jump_count: 跳板机 · %{count}
+  auth_shape_password: 需要 1 项凭据：密码
+  auth_shape_publickey: 需要 2 项凭据：私钥路径、私钥口令（可选）
+  auth_shape_agent: 无需凭据，使用本机 SSH agent
+  error_count: "%{count} 项待修正"
+  group_tab_hint: 点击输入以选择或新建分组
+  jump_summary: "%{host}:%{port}　%{user}"
+  jump_summary_empty: "未填写主机　%{user}"
 home:
   title: 首页
   subtitle: 快速连接收藏与最近使用的会话

@@ -4,6 +4,7 @@ use crate::state::ToastKind;
 use crate::t;
 
 use iced::Task;
+use iced::widget::Id;
 use log::error;
 use rterm_config::{AuthMethod, JumpHost, SessionConfig, SessionStore, new_id};
 use rterm_crypto::Vault;
@@ -58,6 +59,73 @@ pub enum SessionField {
     JumpKeyPath(usize),
     /// 第 n 跳跳板机的私钥口令。
     JumpPassphrase(usize),
+}
+
+/// 编辑器输入框的 [`Id`]：供 `operation::focus` 精确定位焦点（iced 0.14 的输入框需显式 `id`）。
+pub fn field_id(field: SessionField) -> Id {
+    match field {
+        SessionField::Host => Id::new("session-editor-host"),
+        SessionField::Port => Id::new("session-editor-port"),
+        SessionField::Username => Id::new("session-editor-username"),
+        SessionField::Password => Id::new("session-editor-password"),
+        SessionField::KeyPath => Id::new("session-editor-key-path"),
+        SessionField::Passphrase => Id::new("session-editor-passphrase"),
+        SessionField::Name => Id::new("session-editor-name"),
+        SessionField::StartupCommand => Id::new("session-editor-startup-command"),
+        SessionField::JumpHost(i) => Id::from(format!("session-editor-jump-{i}-host")),
+        SessionField::JumpPort(i) => Id::from(format!("session-editor-jump-{i}-port")),
+        SessionField::JumpUsername(i) => Id::from(format!("session-editor-jump-{i}-username")),
+        SessionField::JumpPassword(i) => Id::from(format!("session-editor-jump-{i}-password")),
+        SessionField::JumpKeyPath(i) => Id::from(format!("session-editor-jump-{i}-key-path")),
+        SessionField::JumpPassphrase(i) => Id::from(format!("session-editor-jump-{i}-passphrase")),
+        SessionField::Auth | SessionField::Group | SessionField::JumpAuth(_) => {
+            Id::new("session-editor-unfocusable")
+        }
+    }
+}
+
+/// 把焦点落到指定输入框。
+pub fn focus_field<T: Send + 'static>(field: SessionField) -> Task<T> {
+    iced::widget::operation::focus(field_id(field))
+}
+
+/// 某认证方式下需渲染的凭据输入框字段：`jump` 为 `None` 表示目标主机，`Some(i)` 表示第 i 跳。
+fn cred_input_fields(auth: &str, jump: Option<usize>) -> Vec<SessionField> {
+    match auth {
+        "publickey" => vec![
+            jump.map_or(SessionField::KeyPath, SessionField::JumpKeyPath),
+            jump.map_or(SessionField::Passphrase, SessionField::JumpPassphrase),
+        ],
+        "agent" => Vec::new(),
+        _ => vec![jump.map_or(SessionField::Password, SessionField::JumpPassword)],
+    }
+}
+
+/// 当前草稿中实际渲染的输入框字段（视觉顺序）：Tab 链与焦点落点共用此表。
+///
+/// 折叠区不渲染 ⇒ 字段不入表（输入框可聚焦，留着会让 Tab 跳进看不见的框）；
+/// 分组框不入表：`iced-autocomplete` 未实现 `operate`，其内部输入框不参与焦点遍历。
+pub fn visible_input_fields(draft: &EditorDraft) -> Vec<SessionField> {
+    let mut fields = vec![
+        SessionField::Host,
+        SessionField::Port,
+        SessionField::Username,
+    ];
+    fields.extend(cred_input_fields(&draft.auth, None));
+    fields.push(SessionField::Name);
+    if draft.advanced_open {
+        fields.push(SessionField::StartupCommand);
+        for (i, hop) in draft.jumps.iter().enumerate() {
+            if !draft.expanded_jumps.contains(&i) {
+                continue;
+            }
+            fields.push(SessionField::JumpHost(i));
+            fields.push(SessionField::JumpPort(i));
+            fields.push(SessionField::JumpUsername(i));
+            fields.extend(cred_input_fields(&hop.auth, Some(i)));
+        }
+    }
+    fields
 }
 
 /// 编辑器中的一跳跳板机草稿：字段以字符串保存，与 [`EditorDraft`] 同规。
@@ -153,6 +221,12 @@ pub struct EditorDraft {
     pub group_ac: Rc<AcState<String>>,
     /// 保存校验失败信息（显示在弹窗内），修改任意字段时清除。
     pub error: Option<String>,
+    /// 字段级校验错误：`(字段, 文案)`，就地标红显示，页脚只显示计数。
+    pub errors: Vec<(SessionField, String)>,
+    /// 「高级选项」折叠区是否展开（启动作业与跳板机）。草稿内的临时 UI 态，不落盘。
+    pub advanced_open: bool,
+    /// 已展开的跳板机卡片下标集合。
+    pub expanded_jumps: BTreeSet<usize>,
     /// 编辑已有会话时保留的原始认证（含密文信封）；新建会话为 `None`。
     /// 凭据字段留空保存时沿用此处信封，避免误将空串当新凭据加密。
     pub(crate) orig_auth: Option<rterm_config::AuthMethod>,
@@ -178,6 +252,9 @@ impl EditorDraft {
             favorite: false,
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
+            errors: Vec::new(),
+            advanced_open: false,
+            expanded_jumps: BTreeSet::new(),
             orig_auth: None,
         }
     }
@@ -213,6 +290,9 @@ impl EditorDraft {
             favorite: cfg.favorite,
             group_ac: Rc::new(AcState::new(std::iter::empty::<String>(), Filter::None)),
             error: None,
+            errors: Vec::new(),
+            advanced_open: false,
+            expanded_jumps: BTreeSet::new(),
             orig_auth: Some(cfg.auth.clone()),
         }
     }
@@ -223,16 +303,14 @@ impl EditorDraft {
     /// `vault` 用于把键入的明文凭据加密为信封；凭据字段留空时沿用 `Self::orig_auth`
     /// 中已有的信封（编辑场景），实现「不改动即保持不变」。
     pub fn to_config(&self, vault: &Vault) -> Result<SessionConfig, String> {
-        if self.host.trim().is_empty() {
-            return Err(t!("session.host_empty"));
+        if let Some((_, msg)) = self.validate().first() {
+            return Err(msg.clone());
         }
+        // 端口已在 validate 中确认可解析且非 0。
         let port = self
             .port
             .parse::<u16>()
-            .map_err(|_| t!("session.port_invalid"))?;
-        if port == 0 {
-            return Err(t!("session.port_zero"));
-        }
+            .unwrap_or(rterm_config::DEFAULT_SSH_PORT);
         let name = if self.name.trim().is_empty() {
             format!("{}@{}", self.username.trim(), self.host.trim())
         } else {
@@ -246,7 +324,7 @@ impl EditorDraft {
             self.orig_auth.as_ref(),
             vault,
         );
-        let jumps = self.build_jumps(vault)?;
+        let jumps = self.build_jumps(vault);
         Ok(SessionConfig {
             id: self.id.clone(),
             name,
@@ -270,40 +348,64 @@ impl EditorDraft {
         })
     }
 
-    /// 由跳板草稿构建跳板链（由外到内）：校验每跳主机必填、端口为合法数值。
+    /// 收齐全部校验失败字段：`(字段, 文案)`，按主机 → 端口 → 各跳板机的顺序。
     ///
-    /// 端口留空时取 SSH 默认值，省去常见的 22 手填。
-    fn build_jumps(&self, vault: &Vault) -> Result<Vec<JumpHost>, String> {
+    /// 规则与文案沿用既有校验，区别仅在于一次给出全部失败项。
+    pub fn validate(&self) -> Vec<(SessionField, String)> {
+        let mut errors = Vec::new();
+        if self.host.trim().is_empty() {
+            errors.push((SessionField::Host, t!("session.host_empty")));
+        }
+        match self.port.parse::<u16>() {
+            Err(_) => errors.push((SessionField::Port, t!("session.port_invalid"))),
+            Ok(0) => errors.push((SessionField::Port, t!("session.port_zero"))),
+            Ok(_) => {}
+        }
+        for (i, hop) in self.jumps.iter().enumerate() {
+            let index = i + 1;
+            if hop.host.trim().is_empty() {
+                errors.push((
+                    SessionField::JumpHost(i),
+                    t!("session.jump_host_empty", index => index),
+                ));
+            }
+            // 端口留空取默认值 22；填了则必须是非 0 数字。
+            if !hop.port.trim().is_empty()
+                && hop.port.parse::<u16>().ok().filter(|p| *p != 0).is_none()
+            {
+                errors.push((
+                    SessionField::JumpPort(i),
+                    t!("session.jump_port_invalid", index => index),
+                ));
+            }
+        }
+        errors
+    }
+
+    /// 由跳板草稿构建跳板链（由外到内）：端口留空取 SSH 默认值。
+    ///
+    /// 主机与端口的合法性已由 [`Self::validate`] 先行判定，此处只做取值。
+    fn build_jumps(&self, vault: &Vault) -> Vec<JumpHost> {
         self.jumps
             .iter()
-            .enumerate()
-            .map(|(i, hop)| {
-                let index = i + 1;
-                if hop.host.trim().is_empty() {
-                    return Err(t!("session.jump_host_empty", index => index));
-                }
-                let port = if hop.port.trim().is_empty() {
-                    rterm_config::DEFAULT_SSH_PORT
-                } else {
-                    hop.port
-                        .parse::<u16>()
-                        .ok()
-                        .filter(|p| *p != 0)
-                        .ok_or_else(|| t!("session.jump_port_invalid", index => index))?
-                };
-                Ok(JumpHost {
-                    host: hop.host.clone(),
-                    port,
-                    username: hop.username.clone(),
-                    auth: build_auth(
-                        &hop.auth,
-                        &hop.password,
-                        &hop.key_path,
-                        &hop.passphrase,
-                        hop.orig_auth.as_ref(),
-                        vault,
-                    ),
-                })
+            .map(|hop| JumpHost {
+                host: hop.host.clone(),
+                port: hop
+                    .port
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|p| *p != 0)
+                    .unwrap_or(rterm_config::DEFAULT_SSH_PORT),
+                username: hop.username.clone(),
+                auth: build_auth(
+                    &hop.auth,
+                    &hop.password,
+                    &hop.key_path,
+                    &hop.passphrase,
+                    hop.orig_auth.as_ref(),
+                    vault,
+                ),
             })
             .collect()
     }
@@ -386,6 +488,11 @@ pub struct State {
     pub filter: String,
     /// 会话编辑器中的草稿（无则未编辑）。
     pub editor: Option<EditorDraft>,
+    /// 编辑器内当前聚焦的输入框（`None` 表示无输入框聚焦）。
+    ///
+    /// iced 0.14 的输入框在 Esc 时自行失焦并吞掉该键，应用层据此判断「Esc 只失焦、
+    /// 再按一次才关弹窗」的两段式行为。
+    pub focused_field: Option<SessionField>,
     /// 待确认删除的会话 id（`None` 表示当前未弹出删除确认框）。
     pub pending_delete: Option<String>,
 }
@@ -406,8 +513,31 @@ impl State {
             show_more_menu: false,
             filter: String::new(),
             editor: None,
+            focused_field: None,
             pending_delete: None,
         }
+    }
+
+    /// Tab 链推进：按可见字段顺序移动焦点，走到末尾后回到首个（反向同理）。
+    ///
+    /// 折叠区不渲染 ⇒ 其字段不在链内；当前焦点不在链内（如落在按钮上）时，
+    /// 正向取首个、反向取末个。
+    pub fn step_focus(&self, forward: bool) -> Option<SessionField> {
+        let draft = self.editor.as_ref()?;
+        let fields = visible_input_fields(draft);
+        if fields.is_empty() {
+            return None;
+        }
+        let current = self
+            .focused_field
+            .and_then(|f| fields.iter().position(|c| *c == f));
+        let index = match current {
+            Some(i) if forward => (i + 1) % fields.len(),
+            Some(i) => (i + fields.len() - 1) % fields.len(),
+            None if forward => 0,
+            None => fields.len() - 1,
+        };
+        fields.get(index).copied()
     }
 
     /// 持久化会话列表：失败仅记录日志（保险库未就绪则跳过）。返回错误文案（若有），
@@ -512,6 +642,12 @@ pub enum Message {
     RefreshSessions,
     /// 编辑器字段变更（字段类型 + 新值）。
     EditorField(SessionField, String),
+    /// 展开 / 折叠「高级选项」区（启动作业与跳板机）。
+    ToggleAdvanced,
+    /// 展开 / 折叠第 n 台跳板机卡片。
+    ToggleJump(usize),
+    /// 把焦点落到指定字段（Tab 链推进、认证方式切换后的落点）。
+    FocusField(SessionField),
     /// 在跳板链末尾追加一跳空白跳板机。
     AddJump,
     /// 移除第 n 跳跳板机。
@@ -617,15 +753,19 @@ impl State {
                 let mut draft = EditorDraft::new();
                 draft.group_ac = Rc::new(group_ac_state(&draft.group, &self.sessions));
                 self.editor = Some(draft);
-                Task::none()
+                self.focused_field = Some(SessionField::Host);
+                focus_field::<Event>(SessionField::Host)
             }
             Message::EditSession(id) => {
                 if let Some(cfg) = self.sessions.iter().find(|s| s.id == id).cloned() {
                     let mut draft = EditorDraft::from_config(&cfg);
                     draft.group_ac = Rc::new(group_ac_state(&draft.group, &self.sessions));
                     self.editor = Some(draft);
+                    self.focused_field = Some(SessionField::Host);
+                    focus_field::<Event>(SessionField::Host)
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::DuplicateSession(id) => {
                 let Some(src) = self.sessions.iter().find(|s| s.id == id).cloned() else {
@@ -691,6 +831,24 @@ impl State {
                 };
                 let header = vault.header().clone();
                 if let Some(draft) = self.editor.take() {
+                    // 先收齐全部校验失败字段：就地标红 + 页脚计数，焦点跳到首个出错字段。
+                    let errors = draft.validate();
+                    if !errors.is_empty() {
+                        let first = errors[0].0;
+                        let mut next = EditorDraft {
+                            error: None,
+                            errors,
+                            ..draft
+                        };
+                        // 出错字段若在收起的跳板机卡片里，先展开它——否则错误既看不见也聚焦不到。
+                        if let SessionField::JumpHost(i) | SessionField::JumpPort(i) = first {
+                            next.advanced_open = true;
+                            next.expanded_jumps.insert(i);
+                        }
+                        self.editor = Some(next);
+                        self.focused_field = Some(first);
+                        return focus_field::<Event>(first);
+                    }
                     match draft
                         .to_config(vault)
                         .and_then(|cfg| self.store_session(cfg, &header))
@@ -702,6 +860,7 @@ impl State {
                             if let Some(e) = self.expand_group_of(&draft.id) {
                                 tasks.push(Task::done(e));
                             }
+                            self.focused_field = None;
                             Task::batch(tasks)
                         }
                         // 校验失败：不关闭弹窗，保留已填内容，错误显示在弹窗内。
@@ -719,6 +878,7 @@ impl State {
             }
             Message::CancelEdit => {
                 self.editor = None;
+                self.focused_field = None;
                 Task::none()
             }
             Message::RefreshSessions => {
@@ -734,15 +894,52 @@ impl State {
                 Task::none()
             }
             Message::EditorField(field, value) => {
+                // 认证方式切换后把焦点落到对应凭据框（agent 无凭据框，焦点留在分段控件）。
+                let landing = match field {
+                    SessionField::Auth => cred_input_fields(&value, None).first().copied(),
+                    SessionField::JumpAuth(i) => {
+                        cred_input_fields(&value, Some(i)).first().copied()
+                    }
+                    _ => None,
+                };
                 if let Some(draft) = self.editor.as_mut() {
                     apply_editor_field(draft, field, value);
                     draft.error = None;
+                    // 该字段的错误就地消解（页脚计数随之减少）。
+                    draft.errors.retain(|(f, _)| *f != field);
+                }
+                // 正在输入 ⇒ 焦点在该输入框上。
+                self.focused_field = landing.or(Some(field));
+                match landing {
+                    Some(f) => focus_field::<Event>(f),
+                    None => Task::none(),
+                }
+            }
+            Message::ToggleAdvanced => {
+                if let Some(draft) = self.editor.as_mut() {
+                    draft.advanced_open = !draft.advanced_open;
                 }
                 Task::none()
+            }
+            Message::ToggleJump(index) => {
+                // `remove` 返回 true 表示原本已展开 ⇒ 转为收起；否则插入 ⇒ 展开。
+                if let Some(draft) = self.editor.as_mut()
+                    && !draft.expanded_jumps.remove(&index)
+                {
+                    draft.expanded_jumps.insert(index);
+                }
+                Task::none()
+            }
+            Message::FocusField(field) => {
+                self.focused_field = Some(field);
+                focus_field::<Event>(field)
             }
             Message::AddJump => {
                 if let Some(draft) = self.editor.as_mut() {
                     draft.jumps.push(JumpDraft::new());
+                    // 新增后自动展开该张卡片。
+                    let index = draft.jumps.len() - 1;
+                    draft.expanded_jumps.insert(index);
                     draft.error = None;
                 }
                 Task::none()
@@ -753,6 +950,16 @@ impl State {
                 {
                     draft.jumps.remove(index);
                     draft.error = None;
+                    // 下标前移一位，展开态随之平移（被移除的那张不再展开）。
+                    draft.expanded_jumps = draft
+                        .expanded_jumps
+                        .iter()
+                        .filter_map(|i| match i.cmp(&index) {
+                            std::cmp::Ordering::Equal => None,
+                            std::cmp::Ordering::Greater => Some(i - 1),
+                            std::cmp::Ordering::Less => Some(*i),
+                        })
+                        .collect();
                 }
                 Task::none()
             }
@@ -1049,6 +1256,189 @@ fn apply_editor_field(draft: &mut EditorDraft, field: SessionField, value: Strin
 mod tests {
     use super::*;
     use rterm_config::AuthMethod;
+
+    /// 构造一份可编辑的草稿：主机 / 端口已填，其余留空。
+    fn draft() -> EditorDraft {
+        let mut d = EditorDraft::new();
+        d.host = "example.com".into();
+        d.port = "22".into();
+        d
+    }
+
+    /// 构造一台跳板机草稿（主机 / 端口可指定）。
+    fn jump(host: &str, port: &str) -> JumpDraft {
+        let mut j = JumpDraft::new();
+        j.host = host.into();
+        j.port = port.into();
+        j
+    }
+
+    /// 校验错误应一次收齐全部失败字段，而不是遇到第一个即返回。
+    #[test]
+    fn validate_collects_every_failing_field() {
+        let mut d = EditorDraft::new();
+        d.port = "0".into();
+        d.jumps.push(jump("", "abc"));
+        d.jumps.push(jump("host2", "70000"));
+
+        let errors = d.validate();
+
+        let fields: Vec<SessionField> = errors.iter().map(|(f, _)| *f).collect();
+        assert_eq!(
+            fields,
+            vec![
+                SessionField::Host,
+                SessionField::Port,
+                SessionField::JumpHost(0),
+                SessionField::JumpPort(0),
+                SessionField::JumpPort(1),
+            ],
+            "错误应按主机 → 端口 → 各跳板机顺序收齐"
+        );
+    }
+
+    /// 空端口取默认值 22，不算错误；非 0 数字才算。
+    #[test]
+    fn validate_treats_an_empty_jump_port_as_default() {
+        let mut d = draft();
+        d.jumps.push(jump("host2", ""));
+
+        assert!(d.validate().is_empty(), "空端口应取默认值而非报错");
+    }
+
+    /// 折叠区不渲染 ⇒ 其输入框不参与 Tab 链。
+    #[test]
+    fn visible_fields_exclude_the_collapsed_advanced_section() {
+        let mut d = draft();
+        d.jumps.push(jump("host2", "22"));
+
+        let closed = visible_input_fields(&d);
+        assert!(!closed.contains(&SessionField::StartupCommand));
+        assert!(!closed.contains(&SessionField::JumpHost(0)));
+
+        d.advanced_open = true;
+        let opened = visible_input_fields(&d);
+        assert!(opened.contains(&SessionField::StartupCommand));
+        assert!(
+            !opened.contains(&SessionField::JumpHost(0)),
+            "跳板机卡片自身折叠时其输入框仍不进 Tab 链"
+        );
+
+        d.expanded_jumps.insert(0);
+        let expanded = visible_input_fields(&d);
+        assert!(expanded.contains(&SessionField::JumpHost(0)));
+    }
+
+    /// Tab 链顺序：主机 → 端口 → 用户名 → 凭据 → 名称（凭据随认证方式变化）。
+    #[test]
+    fn visible_fields_follow_the_documented_tab_order() {
+        let mut d = draft();
+
+        assert_eq!(
+            visible_input_fields(&d),
+            vec![
+                SessionField::Host,
+                SessionField::Port,
+                SessionField::Username,
+                SessionField::Password,
+                SessionField::Name,
+            ]
+        );
+
+        d.auth = "publickey".into();
+        assert_eq!(
+            visible_input_fields(&d),
+            vec![
+                SessionField::Host,
+                SessionField::Port,
+                SessionField::Username,
+                SessionField::KeyPath,
+                SessionField::Passphrase,
+                SessionField::Name,
+            ]
+        );
+
+        d.auth = "agent".into();
+        assert!(!visible_input_fields(&d).contains(&SessionField::Password));
+    }
+
+    /// Tab 推进到末尾后回到首个，反向同理；当前焦点不在链内时正向取首个。
+    ///
+    /// `step_focus` 只算出下一个落点，不自行推进追踪焦点——推进由 [`Message::FocusField`] 落地。
+    #[test]
+    fn step_focus_cycles_and_wraps() {
+        let mut state = State::new(None, Vec::new(), BTreeSet::new());
+        state.editor = Some(draft());
+        state.focused_field = Some(SessionField::Host);
+
+        assert_eq!(state.step_focus(true), Some(SessionField::Port));
+        assert_eq!(
+            state.step_focus(false),
+            Some(SessionField::Name),
+            "从首个反向应取末位"
+        );
+
+        state.focused_field = Some(SessionField::Name);
+        assert_eq!(
+            state.step_focus(true),
+            Some(SessionField::Host),
+            "末位之后应回到首个"
+        );
+
+        state.focused_field = None;
+        assert_eq!(state.step_focus(true), Some(SessionField::Host));
+        assert_eq!(
+            state.step_focus(false),
+            Some(SessionField::Name),
+            "无当前焦点时反向应取末位"
+        );
+    }
+
+    /// 移除一台跳板机后，展开态下标应整体前移，避免展开错位。
+    #[test]
+    fn removing_a_jump_shifts_the_expanded_indices() {
+        let mut state = State::new(None, Vec::new(), BTreeSet::new());
+        let mut d = draft();
+        d.jumps.push(jump("h1", "22"));
+        d.jumps.push(jump("h2", "22"));
+        d.jumps.push(jump("h3", "22"));
+        d.expanded_jumps = BTreeSet::from([0, 2]);
+        state.editor = Some(d);
+
+        let _ = state.update(Message::RemoveJump(1), &Ctx { vault: None });
+
+        let draft = state.editor.as_ref().unwrap();
+        assert_eq!(draft.expanded_jumps, BTreeSet::from([0, 1]));
+    }
+
+    /// 新增跳板机后自动展开该张卡片。
+    #[test]
+    fn adding_a_jump_expands_it() {
+        let mut state = State::new(None, Vec::new(), BTreeSet::new());
+        state.editor = Some(draft());
+
+        let _ = state.update(Message::AddJump, &Ctx { vault: None });
+
+        let draft = state.editor.as_ref().unwrap();
+        assert_eq!(draft.expanded_jumps, BTreeSet::from([0]));
+    }
+
+    /// 校验失败时，出错字段所在的跳板机卡片与高级选项区应自动展开（否则错误既看不见也聚焦不到）。
+    #[test]
+    fn a_failing_jump_is_expanded_before_focus_moves_to_it() {
+        let mut state = State::new(None, Vec::new(), BTreeSet::new());
+        let mut d = draft();
+        d.jumps.push(jump("", "22"));
+        state.editor = Some(d);
+        let vault = Arc::new(Vault::new("test-master"));
+
+        let _ = state.update(Message::SaveSession, &Ctx { vault: Some(vault) });
+
+        let draft = state.editor.as_ref().unwrap();
+        assert!(draft.advanced_open, "出错字段在折叠区内，须先展开高级选项");
+        assert_eq!(draft.expanded_jumps, BTreeSet::from([0]));
+        assert_eq!(state.focused_field, Some(SessionField::JumpHost(0)));
+    }
 
     /// 构造测试用会话配置（名称与认证方式可变，其余字段固定）。
     fn cfg(name: &str, auth: AuthMethod) -> SessionConfig {

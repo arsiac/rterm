@@ -196,6 +196,15 @@ pub fn required_label<'a, M: Clone + 'a>(label: impl Into<String>) -> Element<'a
     iced::widget::row![label, star].spacing(3).into()
 }
 
+/// 字段级校验错误文案：危险色 12px，就地显示在出错输入框下方。
+pub fn field_error<'a, M: Clone + 'a>(label: impl Into<String>) -> Element<'a, M> {
+    text(label.into())
+        .size(12)
+        .wrapping(Wrapping::Word)
+        .color(DANGER)
+        .into()
+}
+
 /// 说明 / 提示文字
 pub fn hint_text<'a, M: Clone + 'a>(label: impl Into<String>) -> Element<'a, M> {
     // 弱文字色、按词换行
@@ -375,12 +384,30 @@ pub fn menu_separator<'a, M: Clone + 'a>() -> Element<'a, M> {
 
 /// 文本框 / 组合框输入区样式：跟随主题底色，圆角边框（名称 / 主机 / 路径等复用）。
 pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    text_input_style_inner(theme, status, false)
+}
+
+/// 校验出错的文本框样式：边框固定为 [`DANGER`] 红，其余与常态一致。
+pub fn text_input_error_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    text_input_style_inner(theme, status, true)
+}
+
+/// 输入框样式公共实现：`error` 为 `true` 时边框固定危险色（聚焦态亦然）。
+fn text_input_style_inner(
+    theme: &Theme,
+    status: text_input::Status,
+    error: bool,
+) -> text_input::Style {
     let p = theme::custom_palette(theme);
     let pal = theme.extended_palette();
-    let border_color = match status {
-        text_input::Status::Focused { .. } => theme::accent_color(theme),
-        text_input::Status::Hovered => theme::input_border_hover(theme),
-        _ => theme::input_border_color(theme),
+    let border_color = if error {
+        DANGER
+    } else {
+        match status {
+            text_input::Status::Focused { .. } => theme::accent_color(theme),
+            text_input::Status::Hovered => theme::input_border_hover(theme),
+            _ => theme::input_border_color(theme),
+        }
     };
     text_input::Style {
         background: Background::Color(pal.background.base.color),
