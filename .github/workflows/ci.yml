@@ -63,7 +63,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
       - name: Run tests
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test --workspace --target ${{ matrix.target }}
 
       - name: Run build
         run: cargo build --target ${{ matrix.target }}

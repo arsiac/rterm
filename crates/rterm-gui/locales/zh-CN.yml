@@ -204,7 +204,6 @@ session:
   username: 用户名
   startup_command: 启动作业(选填)
   startup_command_hint: 连接就绪后下发给远端 shell；留空则不执行；明文保存。
-  auth: 认证方式
   auth_password: 密码
   auth_publickey: 公钥
   auth_agent: SSH agent

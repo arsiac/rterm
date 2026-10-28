@@ -204,7 +204,6 @@ session:
   username: Username
   startup_command: Startup command (optional)
   startup_command_hint: Sent to the remote shell once the connection is ready; leave empty to skip; stored in plaintext.
-  auth: Authentication
   auth_password: Password
   auth_publickey: Public key
   auth_agent: SSH agent

@@ -73,6 +73,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 toml = "1"
 winresource = "0.1"
+yaml-rust2 = { version = "0.13.0", default-features = false }
 
 [package]
 name = "rterm"

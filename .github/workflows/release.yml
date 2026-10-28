@@ -72,7 +72,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Run tests
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test --workspace --target ${{ matrix.target }}
 
       - run: cargo build --release --target ${{ matrix.target }}
 
