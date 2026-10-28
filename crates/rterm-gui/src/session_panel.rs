@@ -12,6 +12,7 @@ use crate::app::session::{EditorDraft, JumpDraft, Message, SessionField, field_i
 use crate::icons::{ICON_BUTTON_DEFAULT_PADDING, ICON_SIZE, Icon, icon_button};
 use crate::ui::{
     DialogBtnStyle, DialogButton, SegmentOption, SegmentTone, dialog_panel, menu_entry,
+    menu_separator,
 };
 use crate::widget::measured_column::MeasuredColumn;
 use iced::widget::text::Wrapping;
@@ -351,13 +352,23 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
     .into();
 
     // 右键菜单按列表项各自触发，空白处（无列表项）因此不弹菜单；
-    // 含“新建会话”与连接 / 编辑 / 复制 / 收藏 / 删除，已连接再追加“打开文件管理”。
+    // 按功能分四组：新建 / 连接（已连接追加“打开文件管理”）/ 编辑与收藏 / 删除。
     let id = s.id.clone();
     let favorited = s.favorite;
     let menu_overlay = move || {
-        let mut actions = MeasuredColumn::with_children(vec![
+        let mut actions = vec![
             menu_entry(t!("session.new"), Message::NewSession),
+            menu_separator(),
             menu_entry(t!("session.connect"), Message::ConnectSession(id.clone())),
+        ];
+        if status == ConnectionStatus::Connected {
+            actions.push(menu_entry(
+                t!("session.open_files"),
+                Message::OpenFiles(id.clone()),
+            ));
+        }
+        actions.extend([
+            menu_separator(),
             menu_entry(t!("session.edit"), Message::EditSession(id.clone())),
             menu_entry(t!("session.copy"), Message::DuplicateSession(id.clone())),
             menu_entry(
@@ -368,24 +379,13 @@ fn session_row<'a>(app: &'a App, s: &'a SessionConfig) -> Element<'a, Message> {
                 },
                 Message::ToggleFavorite(id.clone()),
             ),
+            menu_separator(),
             menu_entry(
                 t!("session.delete"),
                 Message::RequestDeleteSession(id.clone()),
             ),
-        ])
-        .spacing(2);
-        if status == ConnectionStatus::Connected {
-            actions = actions.push(menu_entry(
-                t!("session.open_files"),
-                Message::OpenFiles(id.clone()),
-            ));
-        }
-        // 端口转发管理无需连接即可编辑规则（引擎只在连接上生效），故不做状态限制。
-        actions = actions.push(menu_entry(
-            t!("forward.menu_entry"),
-            Message::OpenForwards(id.clone()),
-        ));
-        crate::ui::menu_container(actions)
+        ]);
+        crate::ui::menu_container(MeasuredColumn::with_children(actions).spacing(2))
     };
 
     ContextMenu::new(item, menu_overlay).into()

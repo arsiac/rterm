@@ -685,9 +685,6 @@ pub enum Message {
     /// 打开某会话的文件管理（携带会话 id），右键菜单「打开文件管理」触发：
     /// 经 `Event::OpenFiles` 上行，由父层打开对应标签的 SFTP。
     OpenFiles(String),
-    /// 打开某会话的端口转发管理（携带会话 id），右键菜单「端口转发…」触发：
-    /// 经 `Event::OpenForwards` 上行，由父层设置作用域并切换到转发面板。
-    OpenForwards(String),
     /// 切换工具栏「更多」dropdown显隐。
     ToggleMoreMenu,
     /// 会话列表过滤词变更（携带输入框最新文本）。
@@ -722,8 +719,6 @@ pub enum Event {
     CollapsedGroupsChanged(BTreeSet<String>),
     /// 打开某会话的文件管理（携带会话 id）：父层据此打开对应标签的 SFTP 面板。
     OpenFiles(String),
-    /// 打开某会话的端口转发管理（携带会话 id）：父层据此设置作用域并切换到转发面板。
-    OpenForwards(String),
     /// 某会话被删除（携带会话 id）：父层关闭该会话的全部终端标签。
     SessionDeleted(String),
     /// 写回状态栏提示（携带文案，`None` 表示清除）。
@@ -1063,10 +1058,6 @@ impl State {
             Message::OpenFiles(id) => {
                 // 右键「打开文件管理」：打开 SFTP 由父层经 `Event::OpenFiles` 处理。
                 Task::done(Event::OpenFiles(id))
-            }
-            Message::OpenForwards(id) => {
-                // 右键「端口转发…」：作用域设置与导航由父层经 `Event::OpenForwards` 处理。
-                Task::done(Event::OpenForwards(id))
             }
             Message::ToggleMoreMenu => {
                 self.show_more_menu = !self.show_more_menu;

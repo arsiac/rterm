@@ -88,13 +88,9 @@ impl RuleDraft {
     }
 }
 
-/// 模块状态：作用域会话、编辑弹窗草稿与各标签的运行时行状态。
+/// 模块状态：编辑弹窗草稿与各标签的运行时行状态。
 #[derive(Default)]
 pub struct State {
-    /// 无活动标签时的作用域会话 id（会话行右键「端口转发…」入口设置）。
-    ///
-    /// 活动标签存在时作用域始终跟随活动标签，本值仅在无标签时生效。
-    pub scope: Option<String>,
     /// 规则编辑弹窗草稿（无则未编辑）。
     pub editor: Option<RuleDraft>,
     /// 各标签的规则行运行时状态（按下标对齐会话 forwards 列表；仅已连接标签有条目）。
@@ -230,10 +226,6 @@ impl State {
             Message::CancelEdit => {
                 self.editor = None;
                 Task::none()
-            }
-            Message::ScopeTo(id) => {
-                self.scope = Some(id.clone());
-                Task::done(Event::OpenPanel(id))
             }
             Message::Runtime { tab_id, event } => {
                 self.apply_runtime(tab_id, &event);
@@ -427,8 +419,6 @@ pub enum Message {
     SaveRule,
     /// 取消编辑（丢弃草稿）。
     CancelEdit,
-    /// 把作用域切到指定会话（会话行右键「端口转发…」入口）。
-    ScopeTo(String),
     /// 引擎事件回流（携带标签 id 与事件）。
     Runtime {
         /// 事件所属标签。
@@ -457,8 +447,6 @@ pub enum Event {
     },
     /// 弹 toast 通知（携带类型与文案）。
     Toast(ToastKind, String),
-    /// 打开转发面板并把作用域切到指定会话（无活动标签时的右键入口）。
-    OpenPanel(String),
 }
 
 /// 父层只读上下文：作用域会话的规则快照与连接状态。

@@ -574,7 +574,6 @@ errors:
     envelope: Malformed ciphertext envelope (invalid base64 or length)
 
 forward:
-  menu_entry: "Port forwarding…"
   add: "Add rule"
   kind: Type
   kind_local: "Local (-L)"

@@ -195,9 +195,8 @@ pub(crate) fn snippets_ctx(app: &App) -> snippets::Ctx {
 
 /// 组装端口转发模块所需的只读上下文（作用域会话的规则快照与连接状态）。
 ///
-/// 作用域解析：活动标签优先取其会话（活动标签存在即如此，无论是否已连接）；否则取
-/// 无标签时由会话行右键设置的 `forwards.scope`；再否则为空。`live` 仅在作用域来自
-/// 活动标签且该标签已连接时为真（此时面板按标签渲染运行时行状态）。
+/// 作用域仅跟随活动标签：有活动标签时取其会话（无论是否已连接），无活动标签时为空。
+/// `live` 仅在活动标签已连接时为真（此时面板按标签渲染运行时行状态）。
 ///
 /// 每次 `update` 前重建；仅含 owned 数据（不借用 `App`），以免与 `app.forwards` 的
 /// 可变借用冲突。
@@ -212,7 +211,7 @@ pub(crate) fn forwards_ctx(app: &App) -> forwards::Ctx {
             tab.status == ConnectionStatus::Connected,
             (tab.status == ConnectionStatus::Connected).then_some(tab.id),
         ),
-        None => (app.forwards.scope.clone(), false, None),
+        None => (None, false, None),
     };
     let rules = session_id
         .as_deref()

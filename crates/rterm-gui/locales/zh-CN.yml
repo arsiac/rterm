@@ -574,7 +574,6 @@ errors:
     envelope: 密文信封格式损坏（base64 或长度非法）
 
 forward:
-  menu_entry: "端口转发…"
   add: 添加规则
   kind: 类型
   kind_local: "本地 (-L)"

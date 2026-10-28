@@ -103,10 +103,6 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
             };
             Task::done(Message::SessionIo(msg))
         }
-        // 右键「端口转发…」：转交转发模块设置作用域并打开面板（经 OpenPanel 落地导航）。
-        session::Event::OpenForwards(id) => {
-            Task::done(Message::Forwards(forwards::Message::ScopeTo(id)))
-        }
     }
 }
 
@@ -116,11 +112,6 @@ pub(crate) fn apply_forwards_event(app: &mut App, e: forwards::Event) -> Task<Me
     match e {
         forwards::Event::Toast(kind, msg) => {
             contexts::set_toast(app, kind, msg);
-            Task::none()
-        }
-        forwards::Event::OpenPanel(id) => {
-            app.forwards.scope = Some(id);
-            app.center = crate::state::CenterView::Forwards;
             Task::none()
         }
         forwards::Event::SessionForwardsChanged {
