@@ -164,6 +164,7 @@ shortcuts:
   cmd_open_shortcuts: 打开快捷键
   cmd_toggle_sidebar: 收起 / 展开侧边栏
   cmd_new_session: 新建会话
+  cmd_open_sessions: 快速选择会话
   cmd_open_search: 终端内搜索
   cmd_open_snippets: 快速命令弹窗
   cmd_sftp_rename: 重命名文件
@@ -174,6 +175,10 @@ session:
   collapse_all: 全部折叠
   filter_placeholder: 筛选会话…
   filter_no_match: 没有匹配的会话。
+  palette_placeholder: 输入以过滤会话…
+  palette_no_match: 没有匹配的会话。
+  open_palette: 快速选择会话
+  palette_tooltip: 快速选择会话（%{chord}）
   import: 导入会话
   export: 导出会话
   connect: 连接

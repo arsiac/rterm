@@ -19,6 +19,8 @@ pub enum Command {
     ToggleSidebar,
     /// 新建会话。
     NewSession,
+    /// 会话快速选择弹窗。
+    OpenSessions,
     /// 终端内搜索。
     OpenSearch,
     /// 常用命令快速弹窗。
@@ -29,11 +31,12 @@ pub enum Command {
 
 impl Command {
     /// 全部命令（按 [`CommandGroup`] 的展示顺序排列）。
-    pub const ALL: [Command; 7] = [
+    pub const ALL: [Command; 8] = [
         Command::OpenSettings,
         Command::OpenShortcuts,
         Command::ToggleSidebar,
         Command::NewSession,
+        Command::OpenSessions,
         Command::OpenSearch,
         Command::OpenSnippets,
         Command::SftpRename,
@@ -46,13 +49,14 @@ impl Command {
             Command::OpenShortcuts => "open_shortcuts",
             Command::ToggleSidebar => "toggle_sidebar",
             Command::NewSession => "new_session",
+            Command::OpenSessions => "open_sessions",
             Command::OpenSearch => "open_search",
             Command::OpenSnippets => "open_snippets",
             Command::SftpRename => "sftp_rename",
         }
     }
 
-    /// 默认和弦；`None` 表示默认不绑定（搜索 / 重命名 / 设置有默认绑定）。
+    /// 默认和弦；`None` 表示默认不绑定。
     pub fn default_chord(self) -> Option<Chord> {
         match self {
             Command::OpenSettings => Some(Chord {
@@ -61,6 +65,13 @@ impl Command {
                 alt: false,
                 logo: false,
                 key: ChordKey::Char(','),
+            }),
+            Command::OpenSessions => Some(Chord {
+                ctrl: true,
+                shift: true,
+                alt: false,
+                logo: false,
+                key: ChordKey::Char('K'),
             }),
             Command::OpenSearch => Some(Chord {
                 ctrl: true,
@@ -94,11 +105,14 @@ impl Command {
 
     /// 终端聚焦时是否应由终端拦下该命令的和弦（不写入远端）。
     ///
-    /// 仅 [`Command::OpenSearch`] 与 [`Command::OpenSnippets`]：组合键已被客户端占用，
-    /// 写入远端只会干扰远端程序（`Ctrl+Shift+P` 不拦会当 `\x10` 写出）。
+    /// 仅 [`Command::OpenSearch`]、[`Command::OpenSnippets`] 与 [`Command::OpenSessions`]：
+    /// 组合键已被客户端占用，写入远端只会干扰远端程序（`Ctrl+Shift+P` 不拦会当 `\x10` 写出）。
     /// 其余命令沿用终端既有的功能键透传（如 `F2` 仍写 `\x1bOQ`），故不拦截。
     pub fn terminal_intercepts(self) -> bool {
-        matches!(self, Command::OpenSearch | Command::OpenSnippets)
+        matches!(
+            self,
+            Command::OpenSearch | Command::OpenSnippets | Command::OpenSessions
+        )
     }
 
     /// 所属分组。
@@ -107,7 +121,7 @@ impl Command {
             Command::OpenSettings | Command::OpenShortcuts | Command::ToggleSidebar => {
                 CommandGroup::General
             }
-            Command::NewSession => CommandGroup::Session,
+            Command::NewSession | Command::OpenSessions => CommandGroup::Session,
             Command::OpenSearch | Command::OpenSnippets => CommandGroup::Terminal,
             Command::SftpRename => CommandGroup::Files,
         }
@@ -119,7 +133,7 @@ impl Command {
 pub enum CommandGroup {
     /// 通用：设置、快捷键、侧边栏。
     General,
-    /// 会话：新建会话。
+    /// 会话：新建会话、快速选择。
     Session,
     /// 终端：终端内搜索。
     Terminal,
@@ -476,7 +490,7 @@ mod tests {
     #[test]
     fn recording_binds_a_new_chord() {
         let mut s = state();
-        let new = chord(true, true, ChordKey::Char('K'));
+        let new = chord(true, true, ChordKey::Char('Y'));
         record(&mut s, Command::SftpRename, new);
         assert_eq!(s.chord_for(Command::SftpRename), Some(&new));
         assert!(s.is_overridden(Command::SftpRename));
@@ -609,7 +623,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("应能创建临时目录");
         rterm_config::paths::set_test_root(Some(dir.clone()));
 
-        let new = chord(true, true, ChordKey::Char('K'));
+        let new = chord(true, true, ChordKey::Char('Y'));
         {
             let mut s = State::new();
             assert_eq!(

@@ -223,6 +223,9 @@ pub(crate) fn handle_app_key(
     if app.snippets.palette.open {
         return palette_nav(app, chord);
     }
+    if app.session.palette.open {
+        return session_palette_nav(app, chord);
+    }
     if app.search.is_open() {
         return search_nav(app, chord);
     }
@@ -363,6 +366,24 @@ fn palette_nav(app: &mut App, chord: &Chord) -> Task<Message> {
         .map(Message::SnippetsEvent)
 }
 
+/// 会话快速选择弹窗打开态的上下文键：Enter 连接、↑ / ↓ 移动高亮、弹窗唤起键 toggle 关闭，
+/// 其余不派发（同 [`palette_nav`] 的取舍）。
+fn session_palette_nav(app: &mut App, chord: &Chord) -> Task<Message> {
+    let message = if app.shortcuts.command_for(chord) == Some(shortcuts::Command::OpenSessions) {
+        // 与终端保留集同源查表，用户改键后关闭键随之变化，不写死默认值。
+        session::Message::TogglePalette
+    } else {
+        match chord.key {
+            ChordKey::Enter => session::Message::PaletteConnect,
+            ChordKey::ArrowDown => session::Message::PaletteNext,
+            ChordKey::ArrowUp => session::Message::PalettePrevious,
+            _ => return Task::none(),
+        }
+    };
+    let ctx = contexts::session_ctx(app);
+    app.session.update(message, &ctx).map(Message::SessionEvent)
+}
+
 /// 是否为不带任何修饰键的 Esc（上下文键判据）。
 fn is_plain_escape(chord: &Chord) -> bool {
     !chord.ctrl && !chord.shift && !chord.alt && !chord.logo && chord.key == ChordKey::Escape
@@ -382,6 +403,9 @@ pub(crate) fn dispatch_command(app: &mut App, command: shortcuts::Command) -> Ta
         }
         shortcuts::Command::NewSession => {
             Task::done(Message::Session(session::Message::NewSession))
+        }
+        shortcuts::Command::OpenSessions => {
+            Task::done(Message::Session(session::Message::TogglePalette))
         }
         // 搜索条绑定单个终端，故取当前活动标签；无活动标签时为空操作。
         shortcuts::Command::OpenSearch => match app.tabs.active() {
@@ -443,6 +467,12 @@ pub(crate) fn handle_escape(app: &mut App) -> iced::Task<Message> {
         app.snippets
             .update(snippets::Message::ClosePalette, &ctx)
             .map(Message::SnippetsEvent)
+    } else if app.session.palette.open {
+        // 会话快速选择弹窗：与快速命令弹窗同层，Esc 关闭并交还终端焦点。
+        let ctx = contexts::session_ctx(app);
+        app.session
+            .update(session::Message::ClosePalette, &ctx)
+            .map(Message::SessionEvent)
     } else if app.search.is_open() {
         // 搜索条是内联输入态：弹窗（含设置）全部让位后优先于会话编辑器 / SFTP 对话框关闭。
         app.search

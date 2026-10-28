@@ -323,6 +323,7 @@ fn command_label(command: Command) -> String {
         Command::OpenShortcuts => t!("shortcuts.cmd_open_shortcuts"),
         Command::ToggleSidebar => t!("shortcuts.cmd_toggle_sidebar"),
         Command::NewSession => t!("shortcuts.cmd_new_session"),
+        Command::OpenSessions => t!("shortcuts.cmd_open_sessions"),
         Command::OpenSearch => t!("shortcuts.cmd_open_search"),
         Command::OpenSnippets => t!("shortcuts.cmd_open_snippets"),
         Command::SftpRename => t!("shortcuts.cmd_sftp_rename"),

@@ -21,6 +21,7 @@ pub mod message;
 pub mod modal;
 pub mod paste_dialog;
 pub mod session_io_dialog;
+pub mod session_palette;
 pub mod session_panel;
 pub mod settings_dialog;
 pub mod sftp_dialogs;

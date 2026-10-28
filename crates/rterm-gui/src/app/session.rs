@@ -495,6 +495,25 @@ pub struct State {
     pub focused_field: Option<SessionField>,
     /// 待确认删除的会话 id（`None` 表示当前未弹出删除确认框）。
     pub pending_delete: Option<String>,
+    /// 快速选择弹窗（Ctrl+Shift+K）的交互态。
+    pub palette: Palette,
+}
+
+/// 会话快速选择弹窗的交互态：过滤词与命中集内的高亮位置。
+#[derive(Clone)]
+pub struct Palette {
+    /// 弹窗是否打开。
+    pub open: bool,
+    /// 过滤词：对名称 / 主机 / 用户名 / 分组做大小写不敏感子串匹配，空串即全量。
+    pub query: String,
+    /// 高亮位置（过滤命中集内的下标，非清单下标）；`None` 表示无命中。
+    pub highlight: Option<usize>,
+    /// 过滤输入框部件 id（打开时父层据此抢键盘焦点）。
+    pub input_id: iced::widget::Id,
+    /// 命中列表滚动部件 id（键盘移动高亮时据此编程式滚动）。
+    pub list_id: iced::widget::Id,
+    /// 命中列表当前滚动 y 的镜像（on_scroll 回写，键盘滚动时自行同步）。
+    pub scroll_y: f32,
 }
 
 impl State {
@@ -515,6 +534,14 @@ impl State {
             editor: None,
             focused_field: None,
             pending_delete: None,
+            palette: Palette {
+                open: false,
+                query: String::new(),
+                highlight: None,
+                input_id: iced::widget::Id::unique(),
+                list_id: iced::widget::Id::unique(),
+                scroll_y: 0.0,
+            },
         }
     }
 
@@ -572,6 +599,100 @@ impl State {
         self.collapsed_groups
             .remove(&key)
             .then(|| Event::CollapsedGroupsChanged(self.collapsed_groups.clone()))
+    }
+
+    /// 发起连接：开标签与异步连接由父层经 `Event::Connect` 处理；
+    /// 刚连接的会话必须可见，其分组折叠时在此展开并持久化。
+    fn connect(&mut self, id: &str) -> Task<Event> {
+        let mut tasks = vec![Task::done(Event::Connect(id.to_string()))];
+        if let Some(e) = self.expand_group_of(id) {
+            tasks.push(Task::done(e));
+        }
+        Task::batch(tasks)
+    }
+
+    /// 当前过滤词下的命中会话（收藏优先，其后按名称排序）。
+    fn palette_hits(&self) -> Vec<&SessionConfig> {
+        palette_sessions(&self.sessions, &self.palette.query)
+    }
+
+    /// 命中集中的首个高亮位置；无命中为 `None`。
+    fn first_hit(&self) -> Option<usize> {
+        (!self.palette_hits().is_empty()).then_some(0)
+    }
+
+    /// 在命中集内移动高亮（夹紧不环绕）；无命中无操作。
+    fn move_palette_highlight(&mut self, delta: isize) {
+        let Some(current) = self.palette.highlight else {
+            return;
+        };
+        let count = self.palette_hits().len();
+        if count == 0 {
+            return;
+        }
+        let next = (current as isize + delta).clamp(0, count as isize - 1);
+        self.palette.highlight = Some(next as usize);
+    }
+
+    /// 编程式滚动命中列表到绝对 y（只动纵向），镜像同步写入以兜住 on_scroll 不回触的情况。
+    fn scroll_palette_to(&mut self, y: f32) -> Task<Event> {
+        self.palette.scroll_y = y;
+        iced::widget::operation::scroll_to(
+            self.palette.list_id.clone(),
+            iced::widget::scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        )
+    }
+
+    /// 键盘移动高亮后把该行滚回视口：越上缘贴顶、越下缘贴底，视口内不动。
+    fn keep_highlight_visible(&mut self) -> Task<Event> {
+        let Some(pos) = self.palette.highlight else {
+            return Task::none();
+        };
+        let Some(y) = crate::session_palette::scroll_target(
+            self.palette.scroll_y,
+            pos,
+            self.palette_hits().len(),
+        ) else {
+            return Task::none();
+        };
+        self.scroll_palette_to(y)
+    }
+
+    /// 打开弹窗：清空过滤与高亮，收走终端焦点并把键盘交给过滤框。
+    fn open_palette(&mut self) -> Task<Event> {
+        self.palette.open = true;
+        self.palette.query.clear();
+        self.palette.highlight = self.first_hit();
+        // 视图重建后 scrollable 从 0 起滚，镜像随之归零即可。
+        self.palette.scroll_y = 0.0;
+        Task::batch([
+            Task::done(Event::SetTerminalFocused(false)),
+            Task::done(Event::FocusPaletteInput),
+        ])
+    }
+
+    /// 关闭弹窗并复位交互态；焦点交还终端（父层自会处理「窗口失焦不写」的守卫）。
+    fn close_palette(&mut self) -> Task<Event> {
+        self.palette.open = false;
+        self.palette.query.clear();
+        self.palette.highlight = None;
+        self.palette.scroll_y = 0.0;
+        Task::done(Event::SetTerminalFocused(true))
+    }
+
+    /// 连接高亮命中项：成功即关闭弹窗；无命中时保持打开。
+    fn palette_connect(&mut self) -> Task<Event> {
+        let Some(pos) = self.palette.highlight else {
+            return Task::none();
+        };
+        let Some(id) = self.palette_hits().get(pos).map(|s| s.id.clone()) else {
+            return Task::none();
+        };
+        let connect = self.connect(&id);
+        Task::batch([connect, self.close_palette()])
     }
 
     /// 写入单条会话配置：覆盖同名 id 或追加，并落盘（字段校验已在
@@ -682,6 +803,22 @@ pub enum Message {
     SessionSelectHovered,
     /// 发起连接（携带会话 id）：经 `Event::Connect` 上行，由父层开标签并连接。
     ConnectSession(String),
+    /// 切换快速选择弹窗（开则关、关则开）。
+    TogglePalette,
+    /// 关闭快速选择弹窗（丢弃过滤与高亮）。
+    ClosePalette,
+    /// 弹窗过滤词变更（携带输入框最新文本）。
+    PaletteQuery(String),
+    /// 弹窗高亮移到下一个命中项（夹紧不环绕）。
+    PaletteNext,
+    /// 弹窗高亮移到上一个命中项（夹紧不环绕）。
+    PalettePrevious,
+    /// 弹窗命中列表滚动位置上报（携带滚动 y），维持镜像供键盘滚动判界。
+    PaletteScrolled(f32),
+    /// 单击弹窗命中行（携带命中集下标）：对齐高亮并连接。
+    PalettePick(usize),
+    /// 连接弹窗高亮项（键盘回车入口）。
+    PaletteConnect,
     /// 打开某会话的文件管理（携带会话 id），右键菜单「打开文件管理」触发：
     /// 经 `Event::OpenFiles` 上行，由父层打开对应标签的 SFTP。
     OpenFiles(String),
@@ -715,6 +852,10 @@ pub enum FileFlow {
 pub enum Event {
     /// 发起连接（携带会话 id）：父层据此开标签并异步连接。
     Connect(String),
+    /// 请求把键盘焦点交给弹窗过滤输入框（打开时）。
+    FocusPaletteInput,
+    /// 请求写回「终端是否持有键盘焦点」（弹窗开关时的焦点交接，父层带窗口失焦守卫落地）。
+    SetTerminalFocused(bool),
     /// 分组的折叠态发生变化（携带完整的折叠分组键集合）：父层据此写回配置并落盘。
     CollapsedGroupsChanged(BTreeSet<String>),
     /// 打开某会话的文件管理（携带会话 id）：父层据此打开对应标签的 SFTP 面板。
@@ -1046,15 +1187,42 @@ impl State {
                 }
                 Task::none()
             }
-            Message::ConnectSession(id) => {
-                // 双击即发连接意图；开标签与异步连接由父层经 `Event::Connect` 处理。
-                let mut tasks = vec![Task::done(Event::Connect(id.clone()))];
-                // 刚连接的会话必须可见：其分组折叠时在此展开并持久化。
-                if let Some(e) = self.expand_group_of(&id) {
-                    tasks.push(Task::done(e));
+            Message::ConnectSession(id) => self.connect(&id),
+            Message::TogglePalette => {
+                if self.palette.open {
+                    self.close_palette()
+                } else {
+                    self.open_palette()
                 }
-                Task::batch(tasks)
             }
+            Message::ClosePalette => self.close_palette(),
+            Message::PaletteQuery(query) => {
+                self.palette.query = query;
+                self.palette.highlight = self.first_hit();
+                self.scroll_palette_to(0.0)
+            }
+            Message::PaletteNext => {
+                self.move_palette_highlight(1);
+                self.keep_highlight_visible()
+            }
+            Message::PalettePrevious => {
+                self.move_palette_highlight(-1);
+                self.keep_highlight_visible()
+            }
+            Message::PaletteScrolled(y) => {
+                self.palette.scroll_y = y;
+                Task::none()
+            }
+            Message::PalettePick(pos) => {
+                // 单击命中行：先对齐高亮再连接，与键盘回车同一落点。
+                if pos < self.palette_hits().len() {
+                    self.palette.highlight = Some(pos);
+                    self.palette_connect()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::PaletteConnect => self.palette_connect(),
             Message::OpenFiles(id) => {
                 // 右键「打开文件管理」：打开 SFTP 由父层经 `Event::OpenFiles` 处理。
                 Task::done(Event::OpenFiles(id))
@@ -1103,6 +1271,22 @@ pub(crate) fn filtered_sessions<'a>(
                     .is_some_and(|g| g.to_lowercase().contains(&query))
         })
         .collect()
+}
+
+/// 弹窗命中会话：先按过滤词收窄，再排序为「收藏优先、同组内按名称」。
+///
+/// 排序让快速选择的前几项稳定落在常用收藏上；同名时保持清单原顺序（稳定排序）。
+pub(crate) fn palette_sessions<'a>(
+    sessions: &'a [SessionConfig],
+    query: &str,
+) -> Vec<&'a SessionConfig> {
+    let mut hits = filtered_sessions(sessions, query);
+    hits.sort_by(|a, b| {
+        b.favorite
+            .cmp(&a.favorite)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    hits
 }
 
 /// 当前会话列表涉及的全部分组键：命名分组 + 存在未分组会话时的空串键。
@@ -1788,5 +1972,72 @@ mod tests {
         let _ = state.update(Message::ConnectSession(id), &ctx);
 
         assert!(state.collapsed_groups.contains("staging"));
+    }
+
+    #[test]
+    fn palette_query_highlight_and_toggle() {
+        let mut state = State::new(
+            None,
+            vec![
+                s("zulu", "z.example.com", "u", None),
+                s("alpha", "a.example.com", "u", None),
+            ],
+            BTreeSet::new(),
+        );
+        let ctx = Ctx { vault: None };
+        let hits = palette_sessions(&state.sessions, "");
+        assert_eq!(hits[0].name, "alpha", "命中按名称排序");
+
+        // 打开：清空过滤、高亮首个命中。
+        let _ = state.update(Message::TogglePalette, &ctx);
+        assert!(state.palette.open);
+        assert_eq!(state.palette.highlight, Some(0));
+
+        // 过滤后高亮回到首个命中；无命中时回车无操作且弹窗保持打开。
+        let _ = state.update(Message::PaletteQuery("zzz".into()), &ctx);
+        assert_eq!(state.palette.highlight, None);
+        let _ = state.update(Message::PaletteConnect, &ctx);
+        assert!(state.palette.open, "无命中回车无操作");
+
+        // ↑ / ↓ 在命中集内夹紧不环绕。
+        let _ = state.update(Message::PaletteQuery(String::new()), &ctx);
+        let _ = state.update(Message::PaletteNext, &ctx);
+        let _ = state.update(Message::PaletteNext, &ctx);
+        assert_eq!(state.palette.highlight, Some(1), "末行下移夹紧");
+        let _ = state.update(Message::PalettePrevious, &ctx);
+        let _ = state.update(Message::PalettePrevious, &ctx);
+        assert_eq!(state.palette.highlight, Some(0), "首行上移夹紧");
+        let _ = state.update(Message::PalettePick(9), &ctx);
+        assert!(state.palette.open, "越界下标不改状态");
+
+        // toggle 关闭与显式关闭都复位交互态。
+        let _ = state.update(Message::TogglePalette, &ctx);
+        assert!(!state.palette.open);
+        assert!(state.palette.query.is_empty());
+        assert_eq!(state.palette.highlight, None);
+        let _ = state.update(Message::TogglePalette, &ctx);
+        let _ = state.update(Message::ClosePalette, &ctx);
+        assert!(!state.palette.open);
+    }
+
+    #[test]
+    fn palette_prefers_favorites_and_connects_highlighted() {
+        let mut favorite = s("zeta", "z.example.com", "u", Some("prod"));
+        favorite.favorite = true;
+        let mut state = State::new(
+            None,
+            vec![s("alpha", "a.example.com", "u", None), favorite],
+            BTreeSet::from(["prod".to_string()]),
+        );
+        let ctx = Ctx { vault: None };
+
+        let _ = state.update(Message::TogglePalette, &ctx);
+        let hits = palette_sessions(&state.sessions, "");
+        assert_eq!(hits[0].name, "zeta", "收藏优先于名称排序");
+
+        // 回车连接高亮项：关闭弹窗，并按既有连接路径展开其折叠分组。
+        let _ = state.update(Message::PaletteConnect, &ctx);
+        assert!(!state.palette.open);
+        assert!(!state.collapsed_groups.contains("prod"));
     }
 }

@@ -164,6 +164,7 @@ shortcuts:
   cmd_open_shortcuts: Open keyboard shortcuts
   cmd_toggle_sidebar: Toggle sidebar
   cmd_new_session: New session
+  cmd_open_sessions: Quick session switcher
   cmd_open_search: Search in terminal
   cmd_open_snippets: Quick command palette
   cmd_sftp_rename: Rename file
@@ -174,6 +175,10 @@ session:
   collapse_all: Collapse all
   filter_placeholder: Filter sessions…
   filter_no_match: No matching sessions.
+  palette_placeholder: Type to filter sessions…
+  palette_no_match: No matching sessions.
+  open_palette: Quick session switcher
+  palette_tooltip: Quick session switcher (%{chord})
   import: Import sessions
   export: Export sessions
   connect: Connect

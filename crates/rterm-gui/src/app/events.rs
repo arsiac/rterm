@@ -86,6 +86,17 @@ pub(crate) fn apply_session_event(app: &mut App, e: session::Event) -> Task<Mess
             app.status = s;
             Task::none()
         }
+        session::Event::FocusPaletteInput => {
+            iced::widget::operation::focus(app.session.palette.input_id.clone())
+        }
+        // 弹窗开关的焦点交接；关闭交还焦点时若窗口本身失焦（存在保存态）则不写，
+        // 同搜索条：置位会绕过「窗口重新聚焦时按保存态还原」的机制。
+        session::Event::SetTerminalFocused(b) => {
+            if !(b && app.window_focus_saved.is_some()) {
+                app.terminal_focused = b;
+            }
+            Task::none()
+        }
         session::Event::Toast(kind, msg) => {
             contexts::set_toast(app, kind, msg);
             Task::none()

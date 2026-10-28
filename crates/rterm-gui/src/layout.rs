@@ -135,6 +135,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(dialog) = crate::snippet_palette::view(app) {
         layers.push(dialog.map(Message::Snippets));
     }
+    // 会话快速选择弹窗（Ctrl+Shift+K）：与快速命令弹窗同层的轻量浮层。
+    if let Some(dialog) = crate::session_palette::view(app) {
+        layers.push(dialog.map(Message::Session));
+    }
     // 大量粘贴确认弹窗：置于会话编辑器之上、主密码弹窗之下。
     if let Some(dialog) = crate::paste_dialog::view(app) {
         layers.push(dialog.map(Message::Paste));

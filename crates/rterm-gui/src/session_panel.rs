@@ -1,6 +1,6 @@
 //! 中心“会话管理”面板。
 //!
-//! 未编辑时顶部为一排按钮栏（新建会话、全部展开、全部折叠、更多），其下为会话列表（双击列表项即可连接）；
+//! 未编辑时顶部为一排按钮栏（新建会话、快速选择、全部展开、全部折叠、更多），其下为会话列表（双击列表项即可连接）；
 //! 右键列表项弹出含新建会话 / 连接 / 编辑 / 复制 / 收藏 / 删除的菜单，行内星标切换收藏；
 //! 编辑（新建 / 修改）以弹窗表单呈现（名称、主机、端口、用户名、认证方式及对应凭据、分组），
 //! 列表在遮罩之下仍可见。
@@ -168,12 +168,27 @@ fn list_view(app: &App) -> Element<'_, Message> {
     .alignment(iced_aw::core::alignment::Alignment::BottomEnd)
     .on_dismiss(Message::ToggleMoreMenu);
 
+    // 快速选择按钮：tooltip 顺带展示当前绑定（键位可重绑，不写死默认值）。
+    let palette_tip = match app
+        .shortcuts
+        .chord_for(crate::app::shortcuts::Command::OpenSessions)
+    {
+        Some(chord) => t!("session.palette_tooltip", chord => chord.to_string()),
+        None => t!("session.open_palette"),
+    };
     let toolbar_actions = row![
         icon_button(
             Icon::Add,
             ACTION_ICON_SIZE,
             t!("session.new"),
             Message::NewSession,
+            Position::Bottom
+        ),
+        icon_button(
+            Icon::Flash,
+            ACTION_ICON_SIZE,
+            palette_tip,
+            Message::TogglePalette,
             Position::Bottom
         ),
         icon_button(
