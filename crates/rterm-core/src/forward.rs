@@ -642,11 +642,8 @@ async fn socks_handshake(mut tcp: TcpStream) -> Result<(TcpStream, (String, u16)
     if head[0] != 0x05 {
         return Err(format!("unsupported request version {}", head[0]));
     }
-    if head[1] != 0x01 {
-        reply_error(&mut tcp, 0x07).await; // command not supported
-        return Err(format!("unsupported command {}", head[1]));
-    }
-    // 地址。
+    // 地址与端口必须读完再判命令：Windows 关闭仍有未读数据的连接会发 RST，
+    // 客户端可能连同错误应答一起收到连接重置。
     let (addr, _atyp_len) = match head[3] {
         0x01 => {
             let mut buf = [0u8; 4];
@@ -682,6 +679,10 @@ async fn socks_handshake(mut tcp: TcpStream) -> Result<(TcpStream, (String, u16)
     tcp.read_exact(&mut port)
         .await
         .map_err(|e| format!("read port: {e}"))?;
+    if head[1] != 0x01 {
+        reply_error(&mut tcp, 0x07).await; // command not supported
+        return Err(format!("unsupported command {}", head[1]));
+    }
     let (host, port) = match socks_target(head[3], &addr, u16::from_be_bytes(port)) {
         Ok(target) => target,
         Err(code) => {
