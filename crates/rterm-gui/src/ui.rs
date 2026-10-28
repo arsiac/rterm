@@ -577,11 +577,11 @@ pub fn dialog_btn_style_neutral(theme: &Theme, status: button::Status) -> button
 /// 分段单选控件选中段的配色档位。
 #[derive(Debug, Clone, Copy)]
 pub enum SegmentTone {
-    /// 弱危险（覆盖这类破坏性动作）：[`DANGER`] 文字 + 半透明红底。
+    /// 弱危险（覆盖这类破坏性动作）：半透明 [`DANGER`] 红底。
     Danger,
-    /// 中性（跳过这类保守动作）：次要文字 + 抬升实底。
+    /// 中性（跳过这类保守动作）：抬升实底。
     Neutral,
-    /// 信息（重命名这类替代动作）：强调色文字 + 半透明强调底。
+    /// 信息（重命名这类替代动作）：半透明强调色底。
     Accent,
 }
 
@@ -597,7 +597,13 @@ pub struct SegmentOption<M> {
     pub on_press: M,
 }
 
+/// 分段控件高度（像素）：与表单输入框等高（16px 默认字号 × 1.3 默认行高 + 上下各 5px 内边距）。
+const SEGMENT_HEIGHT: f32 = 30.8;
+
 /// 分段单选控件：数段共容器、圆角、单击即切换——下拉与菜单弹层会被弹窗内滚动区裁切，故不用。
+///
+/// 容器与输入框同底（窗口主背景色）+ 同款描边：弹窗面板自身即 `surface_raised`，
+/// 若容器再用抬升底色会与面板融为一体、只剩一圈极淡的边框。
 pub fn segmented<'a, M: Clone + 'static>(
     options: impl IntoIterator<Item = SegmentOption<M>>,
 ) -> Element<'a, M> {
@@ -605,29 +611,31 @@ pub fn segmented<'a, M: Clone + 'static>(
     for opt in options {
         seg = seg.push(
             button(text(opt.label).size(12))
-                .padding([2, 8])
+                .padding([5, 12])
                 .style(segment_btn_style(opt.selected, opt.tone))
                 .on_press(opt.on_press),
         );
     }
     container(seg)
         .padding(2)
-        .style(|theme: &Theme| {
-            let p = theme::custom_palette(theme);
-            container::Style {
-                background: Some(Background::Color(p.surface_raised)),
-                border: Border {
-                    color: p.border,
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                ..Default::default()
-            }
+        .height(Length::Fixed(SEGMENT_HEIGHT))
+        .align_y(iced::alignment::Vertical::Center)
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(
+                theme.extended_palette().background.base.color,
+            )),
+            border: Border {
+                color: theme::input_border_color(theme),
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
         })
         .into()
 }
 
-/// 分段控件单钮样式：选中段按档位着色（红/蓝档用 20% 半透明底、悬停加深），未选中段透明底悬停抬一档。
+/// 分段控件单钮样式：文字恒用默认文本色（次级灰在抬升面板上过淡）；选中段按档位着色
+/// （红/蓝档用半透明底、悬停加深），未选中段透明底悬停抬一档。
 fn segment_btn_style(
     selected: bool,
     tone: SegmentTone,
@@ -637,7 +645,7 @@ fn segment_btn_style(
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let mut style = button::Style {
             background: None,
-            text_color: p.text_secondary,
+            text_color: theme.extended_palette().background.base.text,
             border: Border::default().rounded(6.0),
             ..Default::default()
         };
@@ -655,9 +663,8 @@ fn segment_btn_style(
                         base.r,
                         base.g,
                         base.b,
-                        if hovered { 0.32 } else { 0.20 },
+                        if hovered { 0.45 } else { 0.28 },
                     )));
-                    style.text_color = base;
                 }
             }
         } else if hovered {
