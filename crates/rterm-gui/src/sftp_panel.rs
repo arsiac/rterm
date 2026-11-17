@@ -26,6 +26,14 @@ const ACTION_ICON_SIZE: f32 = ICON_SIZE;
 /// 避免因目录不显示大小而导致整体排版错位。
 const SIZE_COL_W: f32 = 76.0;
 
+/// 文件名溢出时淡出区的期望宽度（像素）。部件内部会按名称列宽自适应收敛，
+/// 面板极窄时不会把整段名字都盖进渐变里。
+const FADE_OUT_WIDTH: f32 = 56.0;
+
+/// 单段（退化）模式下淡出区向右越出名称列的宽度（像素）：先吃掉 8px 列间距，
+/// 再借入大小列左侧的空白。双段模式把尾段锚定在名称列内，不使用这段越界宽度。
+const FADE_OUT_EXTEND: f32 = 12.0;
+
 /// 内联“新建文件夹”输入框的 [`Id`]，用于进入创建态时自动聚焦。
 pub(crate) const NEW_DIR_INPUT_ID: Id = Id::new("sftp-new-dir");
 /// 内联“重命名”输入框的 [`Id`]，用于进入重命名态时自动聚焦。
@@ -77,12 +85,12 @@ fn parent_entry(path: &str, selected: bool, hovered: bool) -> Element<'static, M
             .padding([6u16, 8u16])
             .width(Length::Fill)
             .style(move |theme| {
-                let mut style = crate::theme::list_row_bg(
+                let mut style = crate::theme::plain_background(crate::theme::list_row_solid_bg(
                     theme,
                     selected,
                     hovered,
                     ConnectionStatus::Disconnected,
-                );
+                ));
                 style.border.radius = 6.0.into();
                 style
             }),
@@ -239,11 +247,26 @@ fn panel(app: &App) -> Element<'_, Message> {
             } else {
                 format_size(e.size)
             };
-            let name_text = text(name.clone())
+            // 文件名放不下时双段显示：前缀在中段淡入行背景色，扩展名 / 末尾字符锚定
+            // 名称列右端实显并从左缘渐显，同前缀的一批长文件名仍能一眼分辨。淡出终点
+            // 必须与行底色严格一致，故与行样式共用 `list_row_solid_bg`；只有不透明底色
+            // 才能把末段文字完全淡掉（半透明强调底会残留半截字）。
+            let name_text = crate::widget::fading_text::FadingText::new(name.clone())
                 .size(14)
                 .width(Length::Fill)
-                .wrapping(Wrapping::None);
-            let name_clipped = container(name_text).width(Length::Fill).clip(true);
+                .fade_extend(FADE_OUT_EXTEND)
+                .preserve_tail()
+                .fade_out(FADE_OUT_WIDTH, move |theme| {
+                    Some(crate::theme::list_row_solid_bg(
+                        theme,
+                        selected,
+                        hovered,
+                        ConnectionStatus::Disconnected,
+                    ))
+                });
+            // 不裁剪此容器：退化为单段淡出时，越界部分要借入右侧列间距与大小列的空白处。
+            // 文本自身已在部件内按可视宽度裁切，不会盖到后面的列。
+            let name_clipped = container(name_text).width(Length::Fill);
             let name_clipped =
                 crate::ui::hover_tooltip(name_clipped, name.clone(), Position::FollowCursor);
 
@@ -266,12 +289,13 @@ fn panel(app: &App) -> Element<'_, Message> {
                     .padding([6u16, 8u16])
                     .width(Length::Fill)
                     .style(move |theme| {
-                        let mut style = crate::theme::list_row_bg(
-                            theme,
-                            selected,
-                            hovered,
-                            ConnectionStatus::Disconnected,
-                        );
+                        let mut style =
+                            crate::theme::plain_background(crate::theme::list_row_solid_bg(
+                                theme,
+                                selected,
+                                hovered,
+                                ConnectionStatus::Disconnected,
+                            ));
                         style.border.radius = 6.0.into();
                         style
                     }),

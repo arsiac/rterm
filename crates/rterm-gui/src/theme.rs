@@ -311,6 +311,43 @@ pub fn list_row_bg(
     }
 }
 
+/// 把带 alpha 的前景色合成到不透明背景色上，返回不透明结果色。
+///
+/// 仅用于语义色派生；`foreground.a` 先夹到 `0.0..=1.0`，结果的 alpha 恒为 1。
+fn blend_over(foreground: Color, background: Color) -> Color {
+    let a = foreground.a.clamp(0.0, 1.0);
+    Color::from_rgb(
+        foreground.r * a + background.r * (1.0 - a),
+        foreground.g * a + background.g * (1.0 - a),
+        foreground.b * a + background.b * (1.0 - a),
+    )
+}
+
+/// 列表行的**不透明**底色：与 [`list_row_bg`] 取色一致，但把选中态的半透明强调色
+/// 预先合成到常态行底上。
+///
+/// [`accent_active_bg`] 带 0.28 不透明度；若直接拿它当文字淡出遮罩的终点色，遮罩
+/// 末端最多只能遮住 28% 的文字，会残留半截字。行底与淡出终点共用本函数后两者
+/// 严格同色，遮罩也能完全淡入背景。默认 / 悬停态本就不透明，取色不变。
+///
+/// 只影响需要精确衔接文字淡出的视图（如 SFTP 文件列表）；会话列表仍走
+/// [`list_row_bg`]，外观不受影响。
+pub fn list_row_solid_bg(
+    theme: &Theme,
+    selected: bool,
+    hovered: bool,
+    status: ConnectionStatus,
+) -> Color {
+    let base = row_base_bg(theme, status);
+    if selected {
+        blend_over(accent_active_bg(theme), base)
+    } else if hovered {
+        custom_palette(theme).hover
+    } else {
+        base
+    }
+}
+
 /// 图标按钮样式：以背景色区分选中态与悬停态，并带圆角。
 ///
 /// `theme` 用于派生悬停态的语义色；`active` 表示当前选中（如活动栏当前视图）；其余情况
