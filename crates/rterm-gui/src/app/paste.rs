@@ -18,6 +18,13 @@ pub struct PendingPaste {
     pub stats: PasteStats,
 }
 
+impl PendingPaste {
+    /// 是否含控制字符：此时弹窗强调反转，「取消」为推荐（默认）动作。
+    pub fn has_control_chars(&self) -> bool {
+        self.stats.control_chars > 0
+    }
+}
+
 /// 粘贴文本的量级统计。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasteStats {
@@ -70,6 +77,17 @@ impl State {
     /// 当前「本次不再提醒」勾选态。
     pub fn suppress_checked(&self) -> bool {
         self.suppress_checked
+    }
+
+    /// Enter 触发的默认按钮消息：与弹窗强调一致——含控制字符时「取消」为默认，否则「确认」。
+    /// 无待确认项时返回 `None`。
+    pub fn default_action(&self) -> Option<Message> {
+        let pending = self.pending.as_ref()?;
+        Some(if pending.has_control_chars() {
+            Message::Cancel
+        } else {
+            Message::Confirm
+        })
     }
 
     /// 待确认项的内容预览缓冲（只读），供渲染层绑定 `text_editor`。
@@ -378,6 +396,33 @@ mod tests {
         // 确认后清空待确认。
         let _ = s.update(Message::Confirm, &ctx());
         assert!(s.pending().is_none());
+    }
+
+    #[test]
+    fn default_action_follows_panel_emphasis() {
+        let mut s = State::new();
+        assert!(s.default_action().is_none(), "无待确认项时无默认动作");
+
+        // 普通大量粘贴：默认「确认」。
+        let _ = s.update(
+            Message::Request {
+                tab_id: 3,
+                text: "a\nb\nc\nd\n".into(),
+            },
+            &ctx(),
+        );
+        assert!(matches!(s.default_action(), Some(Message::Confirm)));
+
+        // 含控制字符：强调反转，默认「取消」。
+        let _ = s.update(Message::Cancel, &ctx());
+        let _ = s.update(
+            Message::Request {
+                tab_id: 3,
+                text: "a\x1bb".into(),
+            },
+            &ctx(),
+        );
+        assert!(matches!(s.default_action(), Some(Message::Cancel)));
     }
 
     #[test]

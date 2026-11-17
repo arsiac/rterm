@@ -219,6 +219,18 @@ pub(crate) fn handle_app_key(
     if is_plain_escape(chord) {
         return handle_escape(app);
     }
+    // 粘贴确认框开态：Enter 触发默认按钮（含控制字符时默认是「取消」，与面板强调一致）。
+    // 必须早于 `Captured` 丢弃——模态遮罩会把按键标为已捕获，而弹窗正需要这个键。
+    if chord.key == ChordKey::Enter
+        && !chord.ctrl
+        && !chord.shift
+        && !chord.alt
+        && !chord.logo
+        && let Some(msg) = app.paste.default_action()
+    {
+        let ctx = contexts::paste_ctx(app);
+        return app.paste.update(msg, &ctx).map(Message::PasteEvent);
+    }
     // 弹窗打开分支必须早于 `Captured` 丢弃：模态遮罩会把按键标为已捕获，而弹窗正需要这些键。
     if app.snippets.palette.open {
         return palette_nav(app, chord);

@@ -2,7 +2,8 @@
 //!
 //! 三条粘贴入口收敛到 `app::paste` 模块后，达到量级阈值的粘贴在此弹窗询问：展示量级摘要
 //! 与内容预览，用户确认后才写入。含控制字符时面板转红、且「取消」为强调（推荐）按钮——
-//! 与主机密钥指纹变更的强调反转同理。面板随窗口等比例缩放（见 [`view`]）。
+//! 与主机密钥指纹变更的强调反转同理；此时 Enter 也走「取消」，否则 Enter 等同「粘贴」。
+//! 面板随窗口等比例缩放（见 [`view`]）。
 
 use crate::app::paste::{self, PendingPaste};
 use crate::modal::overlay_wrap_dismissable;
@@ -67,7 +68,7 @@ fn panel<'a>(
     );
 
     let stats = pending.stats;
-    let has_control = stats.control_chars > 0;
+    let has_control = pending.has_control_chars();
 
     let mut body = column![
         text(t!(
