@@ -44,9 +44,9 @@ iced_graphics = "0.14.0"
 open = "5.4"
 polling = "3.11"
 log = "0.4.34"
-rfd = "0.17"
+rfd = "0.18"
 keyring = "4.1.6"
-russh = "0.64"
+russh = "0.65"
 russh-sftp = "3"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
