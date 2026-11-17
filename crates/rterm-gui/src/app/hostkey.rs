@@ -27,6 +27,13 @@ impl State {
         self.prompts.is_empty()
     }
 
+    /// Enter 触发的默认按钮：与弹窗强调一致——未知主机为「信任」，指纹变更为「拒绝」。
+    /// 队列为空时返回 `None`。
+    pub fn default_action(&self) -> Option<Message> {
+        let head = self.prompts.first()?;
+        Some(Message::Decision(head.prompt.mismatch.is_none()))
+    }
+
     /// 关闭某标签时，按标签 id 清理其悬挂的待确认项——并先以「拒绝」回复握手，
     /// 否则弹窗会挂在队列里等待一个已被关闭的连接。
     pub fn remove_for_tab(&mut self, tab_id: u64) {
@@ -136,6 +143,23 @@ mod tests {
         let h = s.head().expect("应有队首");
         assert_eq!(h.tab_id, 1);
         assert_eq!(h.prompt.host, "example.com");
+    }
+
+    #[test]
+    fn default_action_follows_panel_emphasis() {
+        let mut s = State::new();
+        assert!(s.default_action().is_none(), "空队列无默认动作");
+
+        // 未知主机：默认「信任」。
+        let _ = s.update(Message::Prompt(1, prompt(), reply()));
+        assert!(matches!(s.default_action(), Some(Message::Decision(true))));
+
+        // 指纹变更：强调反转，默认「拒绝」。
+        let mut changed = prompt();
+        changed.mismatch = Some("aa:bb:cc".into());
+        let _ = s.update(Message::Decision(true));
+        let _ = s.update(Message::Prompt(2, changed, reply()));
+        assert!(matches!(s.default_action(), Some(Message::Decision(false))));
     }
 
     #[test]

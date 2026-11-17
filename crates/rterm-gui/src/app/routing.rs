@@ -219,6 +219,17 @@ pub(crate) fn handle_app_key(
     if is_plain_escape(chord) {
         return handle_escape(app);
     }
+    // 主机密钥确认框开态（窗口级最顶模态）：Enter 触发默认按钮——未知主机为「信任」，
+    // 指纹变更为「拒绝」，与弹窗强调一致。必须早于 `Captured` 丢弃。
+    if chord.key == ChordKey::Enter
+        && !chord.ctrl
+        && !chord.shift
+        && !chord.alt
+        && !chord.logo
+        && let Some(msg) = app.hostkey.default_action()
+    {
+        return app.hostkey.update(msg).map(Message::HostKeyEvent);
+    }
     // 粘贴确认框开态：Enter 触发默认按钮（含控制字符时默认是「取消」，与面板强调一致）。
     // 必须早于 `Captured` 丢弃——模态遮罩会把按键标为已捕获，而弹窗正需要这个键。
     if chord.key == ChordKey::Enter
