@@ -5102,7 +5102,7 @@ dependencies = [
 
 [[package]]
 name = "rterm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "dirs",
  "flexi_logger",
@@ -5114,7 +5114,7 @@ dependencies = [
 
 [[package]]
 name = "rterm-config"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "dark-light",
  "dirs",
@@ -5128,7 +5128,7 @@ dependencies = [
 
 [[package]]
 name = "rterm-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5145,7 +5145,7 @@ dependencies = [
 
 [[package]]
 name = "rterm-crypto"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5160,7 +5160,7 @@ dependencies = [
 
 [[package]]
 name = "rterm-gui"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
