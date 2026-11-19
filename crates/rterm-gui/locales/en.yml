@@ -435,9 +435,7 @@ transfer:
   folder_failed: "%{count} failed"
 terminal:
   empty: No terminal open yet. Connect in a session and the terminal opens automatically.
-  close_tab: Close tab
   home_tab: Home
-  home_open: Open home tab
   connect_failed: Connection failed
   connecting: Connecting…
   pick_tab: Please select a tab

@@ -67,6 +67,9 @@ pub struct State {
     dragging_tab: Option<u64>,
     /// 光标当前悬停的标签 id（驱动标签悬停底色；拖拽中同时驱动实时重排）。
     hovered_tab: Option<u64>,
+    /// 首页标签（标签栏首位）是否悬浮：驱动其未选中态下关闭按钮的显隐。
+    /// 首页没有终端标签那样的 id，故单独记一个布尔位。
+    home_tab_hovered: bool,
     /// 首页标签是否在标签栏中（启动默认打开，用户可关闭）。
     home_open: bool,
     /// 首页标签是否为当前选中标签（选中时终端区显示首页内容而非终端画布）。
@@ -99,6 +102,8 @@ pub enum Message {
     HomeUnhover(usize),
     /// 光标离开收藏网格：清空悬浮槽位。
     HomeLeave,
+    /// 首页标签的悬浮态变化：驱动其未选中态下关闭按钮的显隐。
+    HomeTabHover(bool),
     /// 标签被按下：立即激活该标签并进入拖拽态。
     TabPressed(u64),
     /// 光标进入某标签：更新悬停；若正在拖拽且目标不是被拖标签，则实时重排。
@@ -187,6 +192,7 @@ impl State {
             next_banner_seq: 0,
             dragging_tab: None,
             hovered_tab: None,
+            home_tab_hovered: false,
             home_open: true,
             home_active: true,
             home_hovered: None,
@@ -216,6 +222,11 @@ impl State {
     /// 光标当前悬停的标签 id（渲染层据此驱动悬停底色）。
     pub(crate) fn hovered(&self) -> Option<u64> {
         self.hovered_tab
+    }
+
+    /// 首页标签是否悬浮（只读）：渲染层据此决定其未选中态的关闭按钮是否出现。
+    pub(crate) fn home_tab_hovered(&self) -> bool {
+        self.home_tab_hovered
     }
 
     /// 标签栏滚动部件 id（克隆，供 scroll_to 操作）。
@@ -327,6 +338,8 @@ impl State {
             Message::OpenHome => {
                 self.home_open = true;
                 self.home_active = true;
+                // 重新出现的标签由 mouse_area 重新判定悬浮，旧悬浮位不带过来。
+                self.home_tab_hovered = false;
                 // 首页不是终端：焦点交出，避免按键落进看不见的终端。
                 Task::done(Event::SetTerminalFocused(false))
             }
@@ -334,6 +347,8 @@ impl State {
                 self.home_open = false;
                 self.home_active = false;
                 self.home_hovered = None;
+                // 标签消失时 mouse_area 不保证送达 on_exit，残留会让下次打开时凭空显示关闭按钮。
+                self.home_tab_hovered = false;
                 Task::done(Event::SetTerminalFocused(true))
             }
             Message::HomeHover(slot) => {
@@ -348,6 +363,10 @@ impl State {
             }
             Message::HomeLeave => {
                 self.home_hovered = None;
+                Task::none()
+            }
+            Message::HomeTabHover(hovered) => {
+                self.home_tab_hovered = hovered;
                 Task::none()
             }
             Message::TabPressed(tab_id) => {
@@ -433,8 +452,9 @@ impl State {
     /// 切换到目标标签：收起列表并滚动到该标签使其可见，复用 SelectTab 的切换与联动逻辑。
     fn switch_tab(&mut self, tab_id: u64) -> Task<Event> {
         self.show_tab_list = false;
-        // 目标标签的 x 偏移按其左侧全部标签的估算宽度累加（系数与渲染截断同源）；
-        // 滚到标签左缘对齐可视区起点即可保证可见（单标签 ≤160px，远窄于标签栏）。
+        // 目标标签的 x 偏移按其左侧全部标签的估算宽度累加（系数与渲染截断同源，
+        // 每个标签元素含一条 1px 分隔线）；滚到标签左缘对齐可视区起点即可保证可见
+        // （单标签 ≤180px，远窄于标签栏）。
         let mut x = terminal_pane::TAB_ROW_LEFT_PADDING;
         for tab in &self.tabs {
             if tab.id == tab_id {
@@ -477,7 +497,15 @@ impl State {
         }
         // 本标签若有暂停在主机密钥弹窗上的握手，一并按拒绝处理，
         // 否则弹窗仍会挂在队列里等待一个已被关闭的连接（由父层执行清理）。
+        let closed_at = self.tabs.iter().position(|t| t.id == tab_id);
         self.tabs.retain(|t| t.id != tab_id);
+        // 悬浮态移交：光标悬在被关标签上（点其 × 关闭的常态）时，继任标签左移补位到
+        // 光标正下方，但它收不到 on_enter——mouse_area 只在光标移动时判定进出。不移交
+        // 的话继任标签在光标动之前没有 hover 反馈，连点关闭时下一个 × 也不会浮现。
+        // （移交给同索引的后继即可；个别错位由下一次光标移动的 enter / exit 自愈。）
+        if self.hovered_tab == Some(tab_id) {
+            self.hovered_tab = closed_at.and_then(|i| self.tabs.get(i).map(|t| t.id));
+        }
         if self.active_tab == Some(tab_id) {
             self.active_tab = self.tabs.last().map(|t| t.id);
         }
@@ -640,7 +668,11 @@ impl State {
         } else {
             // 窗口失去焦点：终端必然不再接收键盘输入，先保存当前态再置否。
             // 拖拽态一并清除：窗外释放不保证送达（拖拽结束订阅收不到），否则拖拽会一直挂着。
+            // 标签悬浮态也在此清掉：mouse_area 的 on_exit 不保证送达，残留会让回来后
+            // 某个未选中标签凭空挂着一个关闭按钮。
             self.dragging_tab = None;
+            self.hovered_tab = None;
+            self.home_tab_hovered = false;
             Task::batch([
                 Task::done(Event::SetWindowFocusSaved(Some(ctx.terminal_focused))),
                 Task::done(Event::SetTerminalFocused(false)),
@@ -828,6 +860,38 @@ mod tests {
         assert_eq!(state.home_hovered(), None, "离开收藏区即清空");
     }
 
+    /// 首页标签悬浮态：进入 / 离开如实跟踪，关闭首页时一并清掉（标签消失收不到 on_exit）。
+    #[test]
+    fn home_tab_hover_tracks_enter_exit_and_reset() {
+        let mut state = State::new();
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::HomeTabHover(true), &ctx(), &sftp);
+        assert!(state.home_tab_hovered());
+
+        let _ = state.update(Message::HomeTabHover(false), &ctx(), &sftp);
+        assert!(!state.home_tab_hovered());
+
+        let _ = state.update(Message::HomeTabHover(true), &ctx(), &sftp);
+        let _ = state.update(Message::CloseHome, &ctx(), &sftp);
+        assert!(!state.home_tab_hovered(), "首页标签消失时应清掉悬浮态");
+    }
+
+    /// 窗口失焦清掉两类标签悬浮态：回来后未选中标签不得残留关闭按钮。
+    #[test]
+    fn window_unfocus_clears_tab_hover_state() {
+        let mut state = State::new();
+        let tab = state.add("s1".to_string(), "s1".to_string());
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::TabHoverEnter(tab), &ctx(), &sftp);
+        let _ = state.update(Message::HomeTabHover(true), &ctx(), &sftp);
+        let _ = state.update(Message::WindowFocused(false), &ctx(), &sftp);
+
+        assert_eq!(state.hovered(), None);
+        assert!(!state.home_tab_hovered());
+    }
+
     /// 到期消息必须按序号匹配：连续响铃时，旧计时器不得提前熄灭新一轮的闪烁。
     #[test]
     fn only_the_latest_bell_expiry_clears_the_flash() {
@@ -862,6 +926,33 @@ mod tests {
         assert!(
             state.list()[0].bell_flash.is_some(),
             "其它标签的闪烁不受影响"
+        );
+    }
+
+    /// 关闭悬浮中的标签：悬浮态移交给同索引的后继（左移补位到光标正下方）；
+    /// 被关的是末位标签则悬浮清空；关闭非悬浮标签不影响当前悬浮。
+    #[test]
+    fn closing_a_hovered_tab_hands_hover_to_its_successor() {
+        let mut state = State::new();
+        let ids = (1..=3)
+            .map(|i| state.add(format!("s{i}"), format!("t{i}")))
+            .collect::<Vec<_>>();
+        let sftp = sftp::State::default();
+
+        let _ = state.update(Message::TabHoverEnter(ids[1]), &ctx(), &sftp);
+        let _ = state.update(Message::CloseTab(ids[1]), &ctx(), &sftp);
+        assert_eq!(state.hovered(), Some(ids[2]), "后继标签补位并获得悬浮");
+
+        let _ = state.update(Message::TabHoverEnter(ids[2]), &ctx(), &sftp);
+        let _ = state.update(Message::CloseTab(ids[2]), &ctx(), &sftp);
+        assert_eq!(state.hovered(), None, "末位标签关闭后悬浮清空");
+
+        let _ = state.update(Message::TabHoverEnter(ids[0]), &ctx(), &sftp);
+        let _ = state.update(Message::CloseTab(404), &ctx(), &sftp);
+        assert_eq!(
+            state.hovered(),
+            Some(ids[0]),
+            "关闭非悬浮标签不影响当前悬浮"
         );
     }
 

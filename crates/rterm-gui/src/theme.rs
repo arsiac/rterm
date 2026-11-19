@@ -44,8 +44,8 @@ pub const TAB_RADIUS: f32 = 8.0;
 
 /// 终端背景兜底色（`#181818`），与终端配色板 `ColorPalette::default()` 的背景一致。
 ///
-/// 仅作 [`terminal_bg`] 解析失败时的兜底：终端留白实际取当前终端主题的 `background`，
-/// 故本常量与「选中标签底色」无关（活动标签底色走 [`accent_active_bg`] / `hover`）。
+/// 仅作 [`terminal_bg`] 解析失败时的兜底：终端留白与活动标签底色均取当前终端主题的
+/// `background`（活动标签经 [`tab_style`] 的 `merge_bg` 与终端区同色融合）。
 pub const TERMINAL_BG: Color = Color::from_rgb(0.094, 0.094, 0.094);
 
 /// 根据终端配色主题名返回终端背景色（解析调色板 `background` 字段的 `#RRGGBB` 十六进制）。
@@ -78,9 +78,6 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
     };
     Some(Color::from_rgb8(r, g, b))
 }
-
-/// 标签关闭按钮悬停时的红色背景。
-pub const TAB_CLOSE_HOVER: Color = Color::from_rgba(0.85, 0.30, 0.30, 0.65);
 
 /// tooltip 显示前的延迟（毫秒）。
 pub const TOOLTIP_DELAY_MS: u64 = 200;
@@ -470,64 +467,84 @@ pub fn pane_divider_color(theme: &Theme) -> Color {
     shift_from_bg(theme, 0.10, 0.08)
 }
 
-/// 标签按钮样式：整个标签（状态点 + 标题 + 关闭按钮）为单一按钮，悬浮 / 按下反馈覆盖全部区域。
+/// 标签条样式（VS Code / Zed 形态）：矩形标签满高贴合条带，活动标签与下方内容区同色融合。
 ///
-/// 三态区分「选中」与「键盘聚焦」：
-/// - 非活动：透明背景，悬浮 / 按下以主题 hover 色反馈。
-/// - 活动且聚焦：强调色半透明底，表示按键会落入此终端。
-/// - 活动但未聚焦：中性低饱和底（随主题 surface 派生），与「聚焦」态在色相 / 饱和度上明显不同，
-///   避免用户误以为焦点仍在终端（如焦点已落在文件管理输入框）。
+/// - 非活动：透明底（透出条带 surface 底色），标题用次要文本色；悬浮 / 按下以 hover 色反馈。
+/// - 活动：底色取 `merge_bg`（终端背景或首页内容底色），与下方内容区连成一体；标题色按
+///   `merge_bg` 亮度派生（深底浅字 / 浅底深字），未聚焦时降一档次要色，示意焦点不在终端。
+/// - `flash`（响铃视觉提示）优先级最高：实底强调色盖过上述所有状态。
 ///
-/// `flash`（响铃视觉提示）优先级最高：以实底强调色盖过上述所有状态；持续时长由标签模块控制。
+/// 顶部聚焦指示条由渲染层拼装（iced `Border` 无法单边，见 `terminal_pane`），此处不画边框。
 pub fn tab_style(
     theme: &Theme,
     status: button::Status,
     active: bool,
     focused: bool,
     flash: bool,
+    merge_bg: Color,
 ) -> iced::widget::button::Style {
     if flash {
         return iced::widget::button::Style {
             background: Some(accent_color(theme).into()),
             // 实底强调色下固定白字：跟随主题的文本色在浅色主题是深字，会与实底糊在一起。
             text_color: Color::WHITE,
-            border: iced::Border {
-                radius: TAB_RADIUS.into(),
-                ..Default::default()
-            },
             ..Default::default()
         };
     }
-    let background = if active {
-        // 活动标签常亮高亮，不再叠加悬浮反馈。
-        if focused {
-            Some(accent_active_bg(theme).into())
-        } else {
-            Some(custom_palette(theme).hover.into())
-        }
-    } else {
-        match status {
-            button::Status::Hovered | button::Status::Pressed => {
-                Some(custom_palette(theme).hover.into())
-            }
-            _ => None,
-        }
+    if active {
+        let (primary, secondary) = merge_text_colors(merge_bg);
+        return iced::widget::button::Style {
+            background: Some(merge_bg.into()),
+            text_color: if focused { primary } else { secondary },
+            ..Default::default()
+        };
+    }
+    let p = custom_palette(theme);
+    let (background, text_color) = match status {
+        button::Status::Hovered | button::Status::Pressed => (Some(p.hover), theme.palette().text),
+        _ => (None, p.text_secondary),
     };
     iced::widget::button::Style {
-        background,
-        text_color: theme.palette().text,
-        border: iced::Border {
-            radius: TAB_RADIUS.into(),
-            ..Default::default()
-        },
+        background: background.map(iced::Background::Color),
+        text_color,
         ..Default::default()
     }
 }
 
+/// 融合底色上的主 / 次文本色：按底色亮度取深字或浅字，供活动标签与终端底色上的错误面板使用。
+///
+/// 终端背景随终端配色主题独立于程序主题，文本不能取程序主题文本色——深色程序 + 浅色终端
+/// 会把浅字铺在浅底上，故按融合底色自身亮度判定。
+pub fn merge_text_colors(bg: Color) -> (Color, Color) {
+    let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    if luminance > 0.5 {
+        (
+            Color::from_rgb(0.13, 0.13, 0.15),
+            Color::from_rgb(0.42, 0.42, 0.45),
+        )
+    } else {
+        (
+            Color::from_rgb(0.93, 0.93, 0.95),
+            Color::from_rgb(0.68, 0.68, 0.72),
+        )
+    }
+}
+
+/// 融合底色上的中性悬停底：按传入底色亮度推一档（深 +0.10 / 浅 -0.06），与程序主题无关。
+pub fn merge_hover_color(bg: Color) -> Color {
+    let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    let delta = if luminance > 0.5 { -0.06 } else { 0.10 };
+    Color::from_rgb(
+        (bg.r + delta).clamp(0.0, 1.0),
+        (bg.g + delta).clamp(0.0, 1.0),
+        (bg.b + delta).clamp(0.0, 1.0),
+    )
+}
+
 /// 标签列表 dropdown 内的行样式：活动行常显强调底色，悬浮 / 按下再加深一档。
 ///
-/// 面板底色取 `surface_raised`，与 [`tab_style`] 用的 `hover` 同值，故此处不能用
-/// `tab_style`：活动行（未聚焦分支取 `hover`）会与面板底色重合、悬浮行也看不出变化。
+/// 不复用 [`tab_style`]：其活动底是终端融合色、非活动底透明，均无法在抬升面板内
+/// 提供「强调选中 + 悬浮加深」的层级（面板底 `surface_raised` 与 `hover` 同值）。
 pub fn tab_list_row_style(
     theme: &Theme,
     status: button::Status,
@@ -555,10 +572,12 @@ pub fn tab_list_row_style(
     }
 }
 
-/// 标签关闭按钮（dismiss 图标）样式：悬停 / 按下时显示红色背景并带圆角，常态透明。
-pub fn tab_close_style(_theme: &Theme, status: button::Status) -> iced::widget::button::Style {
+/// 标签关闭按钮（dismiss 图标）样式：悬停 / 按下铺中性 hover 底，常态透明。
+pub fn tab_close_style(theme: &Theme, status: button::Status) -> iced::widget::button::Style {
     let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(TAB_CLOSE_HOVER.into()),
+        button::Status::Hovered | button::Status::Pressed => {
+            Some(custom_palette(theme).hover.into())
+        }
         _ => None,
     };
     iced::widget::button::Style {
@@ -571,26 +590,10 @@ pub fn tab_close_style(_theme: &Theme, status: button::Status) -> iced::widget::
     }
 }
 
-/// 错误面板中"关闭"按钮样式：透明底、随主题文字色，悬停时显示红色背景。
-pub fn error_close_style(theme: &Theme, status: button::Status) -> iced::widget::button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(TAB_CLOSE_HOVER.into()),
-        _ => None,
-    };
-    iced::widget::button::Style {
-        background,
-        text_color: theme.palette().text,
-        border: iced::Border {
-            radius: 4.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-/// 错误面板标题颜色：深色主题用亮红，浅色主题用标准红。
-pub fn error_title_color(theme: &Theme) -> Color {
-    let bg = theme.palette().background;
+/// 错误面板标题颜色：按所铺底色亮度取红——深底亮红、浅底标准红。
+///
+/// 错误面板铺在终端背景上（独立于程序主题），故按传入底色而非程序主题判定。
+pub fn error_title_color(bg: Color) -> Color {
     let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
     if luminance > 0.5 {
         Color::from_rgb(0.8, 0.2, 0.2)
@@ -599,9 +602,8 @@ pub fn error_title_color(theme: &Theme) -> Color {
     }
 }
 
-/// 错误详情文字颜色：深色主题用浅红，浅色主题用深红。
-pub fn error_detail_color(theme: &Theme) -> Color {
-    let bg = theme.palette().background;
+/// 错误详情文字颜色：按所铺底色亮度取红——深底浅红、浅底深红。
+pub fn error_detail_color(bg: Color) -> Color {
     let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
     if luminance > 0.5 {
         Color::from_rgb(0.55, 0.35, 0.35)
