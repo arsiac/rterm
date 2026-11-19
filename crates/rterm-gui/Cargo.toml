@@ -34,3 +34,6 @@ keyring.workspace = true
 [dev-dependencies]
 iced_runtime.workspace = true
 yaml-rust2.workspace = true
+
+[lints]
+workspace = true

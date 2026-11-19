@@ -1,3 +1,4 @@
+//! Build script: embeds the Windows executable icon via `winresource`.
 #[cfg(windows)]
 fn main() {
     let mut res = winresource::WindowsResource::new();

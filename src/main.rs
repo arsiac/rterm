@@ -1,3 +1,4 @@
+//! rterm 图形界面入口二进制。
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use rterm_config::{AppConfig, LogLevel};

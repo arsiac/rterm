@@ -138,3 +138,6 @@ assets = [
 debug = "limited"
 lto = "thin"
 codegen-units = 1
+
+[lints]
+workspace = true

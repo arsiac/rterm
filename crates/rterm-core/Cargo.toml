@@ -26,3 +26,6 @@ russh.workspace = true
 russh-sftp.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
+
+[lints]
+workspace = true
