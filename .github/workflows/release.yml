@@ -57,6 +57,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            cmake \
             libxkbcommon-dev \
             libwayland-dev \
             libx11-dev \
@@ -66,6 +67,20 @@ jobs:
             libfontconfig1-dev \
             pkg-config
 
+      # Pin the Linux binaries to glibc 2.28 (RHEL 8 / Debian 10 / Ubuntu 20.04).
+      # cargo-zigbuild pairs a Rust linker wrapper with zig as the C compiler,
+      # linking against old glibc stubs, so C dependencies (aws-lc-sys) no
+      # longer pull in newer symbols. ziglang is zig's official PyPI package.
+      - name: Install cargo-zigbuild (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # GitHub runners ship a pinned uv; install it if absent.
+          command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv tool install cargo-zigbuild
+          # `uv tool` venvs are isolated, so expose the bundled zig on PATH.
+          ZIGBIN="$(find ~/.local/share/uv/tools -path '*site-packages/ziglang/zig' | head -1)"
+          ln -sf "$ZIGBIN" "$HOME/.local/bin/zig"
+
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
@@ -74,7 +89,26 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --target ${{ matrix.target }}
 
-      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Build (Linux, glibc 2.28)
+        if: runner.os == 'Linux'
+        run: cargo zigbuild --release --target ${{ matrix.target }}.2.28
+
+      - name: Build (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify glibc floor (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          BINARY="target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}"
+          MAX_GLIBC=$(objdump -T "$BINARY" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+          echo "max required glibc: $MAX_GLIBC"
+          # Pass when MAX_GLIBC sorts before-or-equal to GLIBC_2.28 in version order.
+          if [ "$(printf '%s\nGLIBC_2.28\n' "$MAX_GLIBC" | sort -Vu | tail -1)" != "GLIBC_2.28" ]; then
+            echo "::error::glibc requirement ($MAX_GLIBC) exceeds pinned floor 2.28"
+            exit 1
+          fi
 
       - name: Package artifact
         shell: bash
@@ -120,8 +154,9 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           cargo install cargo-deb cargo-generate-rpm --locked
-          # deb builds the release binary itself; reuse target dir
-          cargo deb --target ${{ matrix.target }} --no-strip
+          # Reuse the zigbuild-produced binary; a plain `cargo deb` build would
+          # recompile with the system toolchain and raise the glibc floor again.
+          cargo deb --target ${{ matrix.target }} --no-build
           cargo generate-rpm --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/debian/*.deb \
             "${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.deb"
