@@ -457,21 +457,17 @@ impl<'a> TerminalView<'a> {
                     let lower = k.to_ascii_lowercase();
                     binding_action = self.term.bindings.get_action(
                         InputKind::Char(lower),
-                        state.keyboard_modifiers,
+                        *modifiers,
                         last_content.terminal_mode,
                     );
 
                     // 若无匹配绑定，则写入可打印文本（若有）；否则对 Ctrl+字母 / 数字
                     // 退回生成控制字符（如 Ctrl+C => \x03），避免这些组合键完全无输入。
-                    if binding_action == BindingAction::Ignore {
-                        if let Some(c) = text {
-                            return Some(Command::Write(c.as_bytes().to_vec()));
-                        } else if modifiers.control()
-                            && k.chars().count() == 1
-                            && let Some(ctrl_byte) = char_to_ctrl(k.chars().next().unwrap())
-                        {
-                            return Some(Command::Write(vec![ctrl_byte]));
-                        }
+                    // Alt 组合另由 char_key_bytes 补 ESC 前缀。
+                    if binding_action == BindingAction::Ignore
+                        && let Some(bytes) = char_key_bytes(k, *modifiers, text.as_deref())
+                    {
+                        return Some(Command::Write(bytes));
                     }
                 }
                 Key::Named(code) => {
@@ -674,6 +670,36 @@ fn char_to_ctrl(ch: char) -> Option<u8> {
     } else {
         None
     }
+}
+
+/// 把「无键位绑定」的字符键转成终端字节序列。
+///
+/// 系统给出 `text` 时原样采用；未给出时按物理键合成：Ctrl+单个字符退回 ASCII
+/// 控制字符（如 `Ctrl+C` => `\x03`），单个字符加 Alt 则用键字符本身（部分平台
+/// 在按住 Alt 时不给 `text`）。Alt 按 xterm 的 `metaSendsEscape` 惯例补 `ESC`
+/// 前缀（如 `Alt+.` => `\x1b.`），readline 的 `M-.`（`yank-last-arg`）等绑定
+/// 依赖该前缀区分「Alt+键」与裸键。
+pub(super) fn char_key_bytes(
+    key: &str,
+    modifiers: Modifiers,
+    text: Option<&str>,
+) -> Option<Vec<u8>> {
+    let mut bytes = match text.filter(|t| !t.is_empty()) {
+        Some(t) => t.as_bytes().to_vec(),
+        None if key.chars().count() == 1 && (modifiers.control() || modifiers.alt()) => {
+            let ch = key.chars().next()?;
+            if modifiers.control() {
+                vec![char_to_ctrl(ch)?]
+            } else {
+                ch.to_string().into_bytes()
+            }
+        }
+        None => return None,
+    };
+    if modifiers.contains(Modifiers::ALT) {
+        bytes.insert(0, 0x1b);
+    }
+    Some(bytes)
 }
 
 /// 把「无键位绑定」的命名键转成终端字节序列。
