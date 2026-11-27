@@ -22,11 +22,13 @@ jobs:
             artifact_os: linux
             artifact_arch: amd64
             ext: ""
+            glibc: 2.17
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_os: linux
             artifact_arch: arm64
             ext: ""
+            glibc: 2.17
           - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_os: darwin
@@ -71,10 +73,31 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
 
+      - name: Install cargo-zigbuild
+        if: runner.os == 'Linux'
+        run: |
+          pipx install cargo-zigbuild
+          # runner 的 pipx 装在 /opt/pipx，venv 不在 PATH，cargo-zigbuild 自己找不到 zig，
+          # 故显式指定 venv 内的 zig；都落空时回退到 python3 -m ziglang。
+          ZIG_BIN=$(ls /opt/pipx/venvs/cargo-zigbuild/lib/python*/site-packages/ziglang/zig 2>/dev/null || \
+                    ls "$HOME/.local/pipx/venvs/cargo-zigbuild/lib/python*/site-packages/ziglang/zig" 2>/dev/null || \
+                    true)
+          if [ -n "$ZIG_BIN" ]; then
+            echo "CARGO_ZIGBUILD_ZIG_COMMAND=$ZIG_BIN" >> "$GITHUB_ENV"
+            echo "Using zig: $ZIG_BIN"
+          else
+            echo "CARGO_ZIGBUILD_ZIG_COMMAND=python3 -m ziglang" >> "$GITHUB_ENV"
+            echo "Using fallback: python3 -m ziglang"
+          fi
+
       - name: Run tests
         run: cargo test --workspace --target ${{ matrix.target }}
 
+      - run: cargo zigbuild --release --target ${{ matrix.target }}.${{ matrix.glibc }}
+        if: runner.os == 'Linux'
+
       - run: cargo build --release --target ${{ matrix.target }}
+        if: runner.os != 'Linux'
 
       - name: Package artifact
         shell: bash
@@ -120,8 +143,9 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           cargo install cargo-deb cargo-generate-rpm --locked
-          # deb builds the release binary itself; reuse target dir
-          cargo deb --target ${{ matrix.target }} --no-strip
+          # Both tools would re-run cargo build with the system linker and raise
+          # the glibc floor again; reuse the zigbuild artifact instead.
+          cargo deb --target ${{ matrix.target }} --no-strip --no-build
           cargo generate-rpm --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/debian/*.deb \
             "${{ env.BINARY_NAME }}-${VERSION}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}.deb"
