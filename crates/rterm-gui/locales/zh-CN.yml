@@ -465,6 +465,15 @@ terminal:
   paste_suppress: 本次会话不再提醒
   menu_search: 查找
   menu_palette: 快速命令
+  menu_tab_duplicate: 复制
+  menu_tab_move_left: 左移
+  menu_tab_move_right: 右移
+  menu_tab_move_first: 移到开头
+  menu_tab_move_last: 移到末尾
+  menu_tab_close: 关闭
+  menu_tab_close_others: 关闭其他
+  menu_tab_close_right: 关闭右侧
+  menu_tab_close_all: 全部关闭
   search:
     placeholder: 查找
     no_results: 无命中

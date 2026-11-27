@@ -109,7 +109,7 @@ fn char_units(ch: char) -> usize {
     if wide { 2 } else { 1 }
 }
 
-/// 渲染右侧终端区：标签栏（切换 / 关闭）与当前活动标签的终端画布。
+/// 渲染右侧终端区：标签栏（切换 / 关闭 / 右键菜单）与当前活动标签的终端画布。
 pub fn view(app: &App) -> Element<'_, Message> {
     // 活动标签底色与终端区同色融合；首页标签则与首页内容底色（pane 基色）融合。
     let merge_bg = crate::theme::terminal_bg(&app.config.terminal.theme);
@@ -120,6 +120,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let focused = app.terminal_focused;
 
     // 每个标签 = 满高矩形本体 + 1px 分隔线；本体顶部 2px 聚焦指示条，整体可横向滚动。
+    // 标签右键菜单的可用态边界：首标签左移 / 末标签右移不可用；批量关闭同理。
+    let tab_count = tabs.len();
     let tab_row = row(tabs
         .iter()
         .enumerate()
@@ -142,6 +144,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                     ..container::Style::default()
                 }
             };
+            // 右键菜单按被右击的标签自身生成（非当前活动标签），闭包持有本标签的 id / 会话 /
+            // 位置，可用态在右击瞬间按当时布局计算。
             // container 不像 button 那样把 text_color 透传给子文本，标题颜色须显式给。
             let text_style = move |theme: &iced::Theme| iced::widget::text::Style {
                 color: Some(
@@ -194,11 +198,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .style(indicator_style);
 
             row![
-                mouse_area(face)
-                    .interaction(iced::mouse::Interaction::Pointer)
-                    .on_press(Message::Tabs(tabs::Message::TabPressed(tab.id)))
-                    .on_enter(Message::Tabs(tabs::Message::TabHoverEnter(tab.id)))
-                    .on_exit(Message::Tabs(tabs::Message::TabHoverExit(tab.id))),
+                tab_context_menu(
+                    mouse_area(face)
+                        .interaction(iced::mouse::Interaction::Pointer)
+                        .on_press(Message::Tabs(tabs::Message::TabPressed(tab.id)))
+                        .on_enter(Message::Tabs(tabs::Message::TabHoverEnter(tab.id)))
+                        .on_exit(Message::Tabs(tabs::Message::TabHoverExit(tab.id))),
+                    tab.id,
+                    tab.session_id.clone(),
+                    i,
+                    tab_count,
+                ),
                 tab_separator(!(active || next_active)),
             ]
             .spacing(0)
@@ -554,6 +564,108 @@ fn terminal_context_menu(
         )
     };
     ContextMenu::new(terminal, overlay).into()
+}
+
+/// 标签右键菜单：包住单个标签，按功能分三组、组间以横线分隔（与其它面板菜单同一套构件）。
+///
+/// 菜单按被右击的标签自身生成（非当前活动标签）：闭包持有该标签的 id / 会话 / 位置，
+/// 可用态在右击瞬间按当时布局计算（菜单打开期间列表不会变化，语义正确）。
+///
+/// - 会话组：连接此会话（同会话另开一个标签，走会话模块的连接链路）。
+/// - 移动组：左移 / 右移 / 移到开头 / 移到末尾，已在对应边界时呈禁用态。
+/// - 关闭组：关闭标签 / 关闭其他 / 关闭右侧 / 全部关闭，对应集合为空时呈禁用态。
+fn tab_context_menu<'a>(
+    underlay: impl Into<Element<'a, Message>>,
+    tab_id: u64,
+    session_id: String,
+    index: usize,
+    count: usize,
+) -> Element<'a, Message> {
+    let first = index == 0;
+    let last = index + 1 >= count;
+    let menu = move || {
+        // 会话组：复制标签（同会话另开一个标签，Chrome / Windows Terminal 的 Duplicate 惯例，
+        // 走会话模块的连接链路；用词与会话列表的 Duplicate 一致）。
+        let connect: Element<'_, Message> = crate::ui::menu_entry(
+            t!("terminal.menu_tab_duplicate"),
+            Message::Session(crate::app::session::Message::ConnectSession(
+                session_id.clone(),
+            )),
+        );
+        // 移动组：方向指向的边界不可用（首不能左移 / 移到开头，末不能右移 / 移到末尾）。
+        let move_left: Element<'_, Message> = if first {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_tab_move_left"))
+        } else {
+            crate::ui::menu_entry(
+                t!("terminal.menu_tab_move_left"),
+                Message::Tabs(tabs::Message::MoveTabRelative(tab_id, tabs::MoveDir::Left)),
+            )
+        };
+        let move_right: Element<'_, Message> = if last {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_tab_move_right"))
+        } else {
+            crate::ui::menu_entry(
+                t!("terminal.menu_tab_move_right"),
+                Message::Tabs(tabs::Message::MoveTabRelative(tab_id, tabs::MoveDir::Right)),
+            )
+        };
+        let move_first: Element<'_, Message> = if first {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_tab_move_first"))
+        } else {
+            crate::ui::menu_entry(
+                t!("terminal.menu_tab_move_first"),
+                Message::Tabs(tabs::Message::MoveTabRelative(tab_id, tabs::MoveDir::First)),
+            )
+        };
+        let move_last: Element<'_, Message> = if last {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_tab_move_last"))
+        } else {
+            crate::ui::menu_entry(
+                t!("terminal.menu_tab_move_last"),
+                Message::Tabs(tabs::Message::MoveTabRelative(tab_id, tabs::MoveDir::Last)),
+            )
+        };
+        // 关闭组：集合为空时禁用（仅此一个标签时不能「关其他」，已是最右时不能「关右侧」）。
+        let close_others: Element<'_, Message> = if count <= 1 {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_tab_close_others"))
+        } else {
+            crate::ui::menu_entry(
+                t!("terminal.menu_tab_close_others"),
+                Message::Tabs(tabs::Message::CloseOthers(tab_id)),
+            )
+        };
+        let close_right: Element<'_, Message> = if last {
+            crate::ui::menu_entry_disabled(t!("terminal.menu_tab_close_right"))
+        } else {
+            crate::ui::menu_entry(
+                t!("terminal.menu_tab_close_right"),
+                Message::Tabs(tabs::Message::CloseToRight(tab_id)),
+            )
+        };
+        crate::ui::menu_container(
+            MeasuredColumn::with_children(vec![
+                connect,
+                crate::ui::menu_separator(),
+                move_left,
+                move_right,
+                move_first,
+                move_last,
+                crate::ui::menu_separator(),
+                crate::ui::menu_entry(
+                    t!("terminal.menu_tab_close"),
+                    Message::Tabs(tabs::Message::CloseTab(tab_id)),
+                ),
+                close_others,
+                close_right,
+                crate::ui::menu_entry(
+                    t!("terminal.menu_tab_close_all"),
+                    Message::Tabs(tabs::Message::CloseAll),
+                ),
+            ])
+            .spacing(2),
+        )
+    };
+    ContextMenu::new(underlay, menu).into()
 }
 
 /// 断开态横幅：终端顶部窄条，告知连接已断并提供两条重连入口（Enter / 按钮）。

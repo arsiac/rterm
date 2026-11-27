@@ -465,6 +465,15 @@ terminal:
   paste_suppress: Don't warn again in this session
   menu_search: Find
   menu_palette: Quick commands
+  menu_tab_duplicate: Duplicate
+  menu_tab_move_left: Move left
+  menu_tab_move_right: Move right
+  menu_tab_move_first: Move to start
+  menu_tab_move_last: Move to end
+  menu_tab_close: Close
+  menu_tab_close_others: Close others
+  menu_tab_close_right: Close right
+  menu_tab_close_all: Close all
   search:
     placeholder: Find
     no_results: No results

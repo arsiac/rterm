@@ -79,6 +79,19 @@ pub struct State {
     home_hovered: Option<usize>,
 }
 
+/// 标签移动方向：右键菜单与后续快捷键共用的重排意图。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveDir {
+    /// 与左侧相邻标签交换位置；已是最左时为空操作。
+    Left,
+    /// 与右侧相邻标签交换位置；已是最右时为空操作。
+    Right,
+    /// 移到标签栏最左端。
+    First,
+    /// 移到标签栏最右端。
+    Last,
+}
+
 /// 标签模块内部消息：UI 意图与后台任务结果，由父层经 `Message::Tabs` 路由进本模块。
 #[derive(Clone)]
 pub enum Message {
@@ -135,6 +148,14 @@ pub enum Message {
     BannerFlashExpired(u64, u64),
     /// 断开态下按下回车 / 点击横幅「重新连接」按钮 / 点击覆盖层「重试」：请求重连该标签。
     ReconnectRequested(u64),
+    /// 右键菜单：按方向重排指定标签（左移 / 右移 / 移到头 / 移到尾）。
+    MoveTabRelative(u64, MoveDir),
+    /// 右键菜单：关闭除指定标签外的全部标签。
+    CloseOthers(u64),
+    /// 右键菜单：关闭指定标签右侧的全部标签。
+    CloseToRight(u64),
+    /// 右键菜单：关闭全部终端标签（关闭后中栏回首页 / 会话管理，同单个关闭的兜底）。
+    CloseAll,
 }
 
 /// 标签模块上行事件：需父层配合的副作用。模块绝不写 `App`。
@@ -416,6 +437,13 @@ impl State {
                 Some(e) => Task::done(e),
                 None => Task::none(),
             },
+            Message::MoveTabRelative(tab_id, dir) => {
+                self.move_tab_relative(tab_id, dir);
+                Task::none()
+            }
+            Message::CloseOthers(tab_id) => self.close_others(tab_id, ctx),
+            Message::CloseToRight(tab_id) => self.close_to_right(tab_id, ctx),
+            Message::CloseAll => self.close_all(ctx),
         }
     }
 
@@ -749,6 +777,83 @@ impl State {
         tab.status = ConnectionStatus::Connecting;
         tab.error = None;
         Some(Event::ReconnectTab(tab_id, tab.session_id.clone()))
+    }
+
+    /// 按方向重排指定标签（右键菜单触发）：移动只改 `Vec` 顺序，
+    /// `active_tab` / 铃闪 / SFTP 映射全按 id 引用，无需联动。
+    ///
+    /// 方向语义见 [`MoveDir`]；标签不存在、或已处在方向指向的边界时为空操作。
+    fn move_tab_relative(&mut self, tab_id: u64, dir: MoveDir) {
+        let Some(from) = self.tabs.iter().position(|t| t.id == tab_id) else {
+            return;
+        };
+        let len = self.tabs.len();
+        let to = match dir {
+            MoveDir::Left if from > 0 => from - 1,
+            MoveDir::Right if from + 1 < len => from + 1,
+            MoveDir::First if from > 0 => 0,
+            MoveDir::Last if from + 1 < len => len - 1,
+            _ => return,
+        };
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+    }
+
+    /// 批量关闭的公共路径：对快照出的 id 逐个走 [`Self::close_tab`]，事件合一批上行。
+    ///
+    /// 必须先快照 id 再逐个关（`close_tab` 会移除标签，不能边遍历边删）；每次关闭自带
+    /// 完整清理链（桥接停止 / 转发注销 / 悬浮移交），父层只看到最终态。
+    /// `fallback` 为批量关闭后的活动指针归属：指向仍存活的标签 id（通常是被保留的
+    /// 目标或被关集合的左邻），逐个关闭期间集合不断缩小，按 id 引用自然存活到最后。
+    fn close_batch(&mut self, ids: &[u64], fallback: Option<u64>, ctx: &Ctx) -> Task<Event> {
+        // 预置活动指针：中途 active_tab 若指向被关标签，close_tab 会先回退到 last，
+        // 下一轮又把它关掉，最终态不可控；先指到幸存者，中途回退就不会发生。
+        if let Some(f) = fallback
+            && self.tabs.iter().any(|t| t.id == f)
+        {
+            self.active_tab = Some(f);
+        }
+        let mut tasks = Vec::new();
+        for id in ids {
+            tasks.push(self.close_tab(*id, ctx));
+        }
+        Task::batch(tasks)
+    }
+
+    /// 右键菜单：关闭除指定标签外的全部标签；仅剩一个标签时为空操作。
+    fn close_others(&mut self, tab_id: u64, ctx: &Ctx) -> Task<Event> {
+        if !self.tabs.iter().any(|t| t.id == tab_id) {
+            return Task::none();
+        }
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .filter(|id| *id != tab_id)
+            .collect();
+        self.close_batch(&ids, Some(tab_id), ctx)
+    }
+
+    /// 右键菜单：关闭指定标签右侧的全部标签；已是最右时为空操作。
+    fn close_to_right(&mut self, tab_id: u64, ctx: &Ctx) -> Task<Event> {
+        let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) else {
+            return Task::none();
+        };
+        if pos + 1 >= self.tabs.len() {
+            return Task::none();
+        }
+        let ids: Vec<u64> = self.tabs[pos + 1..].iter().map(|t| t.id).collect();
+        // 关完后活动指针落在被关集合的左邻（即本标签自身）。
+        self.close_batch(&ids, Some(tab_id), ctx)
+    }
+
+    /// 右键菜单：关闭全部终端标签；无标签时为空操作。
+    fn close_all(&mut self, ctx: &Ctx) -> Task<Event> {
+        if self.tabs.is_empty() {
+            return Task::none();
+        }
+        let ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
+        self.close_batch(&ids, None, ctx)
     }
 }
 
@@ -1166,6 +1271,204 @@ mod tests {
             let _ = state.update(Message::TabPressed(ids[0]), &ctx(), &sftp);
             let _ = state.update(Message::WindowFocused(false), &ctx(), &sftp);
             assert!(!state.dragging());
+        }
+    }
+
+    mod context_menu_tests {
+        use super::*;
+
+        /// 建 n 个标签，返回按创建序的 id 列表。
+        fn tabs_with(state: &mut State, n: usize) -> Vec<u64> {
+            (1..=n)
+                .map(|i| state.add(format!("s{i}"), format!("t{i}")))
+                .collect()
+        }
+
+        /// 当前标签顺序（id 列表）。
+        fn order(state: &State) -> Vec<u64> {
+            state.list().iter().map(|t| t.id).collect()
+        }
+
+        #[test]
+        fn move_relative_covers_all_four_directions() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+            let sftp = sftp::State::default();
+
+            // 右移：与右侧相邻标签交换。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[0], MoveDir::Right),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(order(&state), vec![ids[1], ids[0], ids[2], ids[3]]);
+
+            // 左移：换回去。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[0], MoveDir::Left),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(order(&state), ids);
+
+            // 移到末尾。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[0], MoveDir::Last),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(order(&state), vec![ids[1], ids[2], ids[3], ids[0]]);
+
+            // 移到开头：回到原位。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[0], MoveDir::First),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(order(&state), ids);
+        }
+
+        #[test]
+        fn move_relative_at_boundary_is_no_op() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 2);
+            let sftp = sftp::State::default();
+
+            // 首标签左移 / 移到开头：不动。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[0], MoveDir::Left),
+                &ctx(),
+                &sftp,
+            );
+            let _ = state.update(
+                Message::MoveTabRelative(ids[0], MoveDir::First),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(order(&state), ids);
+
+            // 末标签右移 / 移到末尾：不动。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[1], MoveDir::Right),
+                &ctx(),
+                &sftp,
+            );
+            let _ = state.update(
+                Message::MoveTabRelative(ids[1], MoveDir::Last),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(order(&state), ids);
+
+            // 不存在的标签：不动。
+            let _ = state.update(Message::MoveTabRelative(999, MoveDir::Left), &ctx(), &sftp);
+            assert_eq!(order(&state), ids);
+        }
+
+        #[test]
+        fn move_relative_keeps_active_tab_pointer() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 3);
+            let sftp = sftp::State::default();
+            let _ = state.update(Message::SelectTab(ids[2]), &ctx(), &sftp);
+
+            // 移动别的标签，活动指针不随位置变化。
+            let _ = state.update(
+                Message::MoveTabRelative(ids[2], MoveDir::First),
+                &ctx(),
+                &sftp,
+            );
+            assert_eq!(state.active(), Some(ids[2]));
+            assert_eq!(order(&state), vec![ids[2], ids[0], ids[1]]);
+        }
+
+        #[test]
+        fn close_others_keeps_target_and_falls_back_to_it() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+            let sftp = sftp::State::default();
+            let _ = state.update(Message::SelectTab(ids[2]), &ctx(), &sftp);
+
+            let _ = state.update(Message::CloseOthers(ids[1]), &ctx(), &sftp);
+
+            assert_eq!(order(&state), vec![ids[1]]);
+            assert_eq!(state.active(), Some(ids[1]));
+        }
+
+        #[test]
+        fn close_others_with_single_tab_is_no_op() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 1);
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::CloseOthers(ids[0]), &ctx(), &sftp);
+            assert_eq!(order(&state), ids);
+            assert_eq!(state.active(), Some(ids[0]));
+        }
+
+        #[test]
+        fn close_to_right_removes_right_side_only() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 4);
+            let sftp = sftp::State::default();
+            let _ = state.update(Message::SelectTab(ids[3]), &ctx(), &sftp);
+
+            let _ = state.update(Message::CloseToRight(ids[1]), &ctx(), &sftp);
+
+            assert_eq!(order(&state), vec![ids[0], ids[1]]);
+            // 活动指针落在被关集合的左邻（即目标标签自身）。
+            assert_eq!(state.active(), Some(ids[1]));
+        }
+
+        #[test]
+        fn close_to_right_at_last_tab_is_no_op() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 2);
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::CloseToRight(ids[1]), &ctx(), &sftp);
+            assert_eq!(order(&state), ids);
+        }
+
+        #[test]
+        fn close_all_clears_tabs_and_falls_back_to_home() {
+            let mut state = State::new();
+            let _ids = tabs_with(&mut state, 3);
+            let sftp = sftp::State::default();
+            let _ = state.update(Message::SelectTab(_ids[0]), &ctx(), &sftp);
+            assert!(!state.home_active());
+
+            let _ = state.update(Message::CloseAll, &ctx(), &sftp);
+
+            assert!(state.list().is_empty());
+            assert_eq!(state.active(), None);
+            // 最后一个标签被关掉后首页接管（同单个关闭的兑底）。
+            assert!(state.home_active());
+        }
+
+        #[test]
+        fn close_all_with_no_tabs_is_no_op() {
+            let mut state = State::new();
+            let sftp = sftp::State::default();
+
+            let _ = state.update(Message::CloseAll, &ctx(), &sftp);
+            assert!(state.list().is_empty());
+            assert!(state.home_active());
+        }
+
+        #[test]
+        fn close_others_closes_connecting_target_and_drops_unknown_fallback() {
+            let mut state = State::new();
+            let ids = tabs_with(&mut state, 3);
+            let sftp = sftp::State::default();
+            // 目标不是当前活动标签：批量过程中 active 指向被关标签，
+            // 预置 fallback 后中途回退不应发生。
+            let _ = state.update(Message::SelectTab(ids[0]), &ctx(), &sftp);
+
+            let _ = state.update(Message::CloseOthers(ids[2]), &ctx(), &sftp);
+
+            assert_eq!(order(&state), vec![ids[2]]);
+            assert_eq!(state.active(), Some(ids[2]));
         }
     }
 }
